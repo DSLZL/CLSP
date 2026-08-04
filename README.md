@@ -1,12 +1,18 @@
 # CLSP
 
-CLSP 是面向 Codex CLI 的 Windows LSP 与 VS Code companion。一个发布压缩包包含 `clsp.exe` 和很薄的 `clsp-ide.vsix`：Rust Broker 继续管理 LSP、MCP 和 Codex hooks，扩展只通过 VS Code 公共 API 按需读取当前编辑器与 Problems 状态。
+CLSP 是面向 Codex CLI 的 Windows LSP 与 VS Code companion。npm 包同时包含 `clsp.exe` 和很薄的 `clsp-ide.vsix`：Rust Broker 继续管理 LSP、MCP 和 Codex hooks，扩展只通过 VS Code 公共 API 按需读取当前编辑器与 Problems 状态。
 
 目标平台是本地 `x86_64-pc-windows-msvc` 与 VS Code Desktop。远程窗口、Restricted Mode、虚拟工作区和 Windows GNU 不属于发布支持范围。
 
 ## 安装
 
-解压发布包，将其中目录加入 `PATH`，然后在项目中运行：
+需要 Windows x64、Node.js/npm，以及已加入 `PATH` 的 VS Code CLI。全局安装 CLSP：
+
+```powershell
+npm install -g clsp
+```
+
+然后在项目中运行：
 
 ```powershell
 clsp setup --workspace .
@@ -14,7 +20,7 @@ clsp setup --workspace .
 
 `setup` 会验证当前 `PATH` 中的 `clsp`、同目录 VSIX 和本机 `Code.exe`，安装/更新扩展，并合并项目级 `.codex/config.toml` 与 `.codex/hooks.json`。它保留无关 MCP 和 hooks；检测到冲突的 `mcp_servers.clsp` 或 TOML 内联 hooks 时会在写入前停止。完成后请在 Codex `/hooks` 中检查并信任项目 hooks，然后 reload VS Code。
 
-同一个下载包不需要再从 Marketplace 获取插件。VS Code 扩展仍然是读取实时编辑器内存状态所必需的部分，但由 `clsp setup` 本地安装。
+npm 包已同时包含 `clsp.exe` 和 `clsp-ide.vsix`，不需要手工下载 ZIP，也不需要从 Marketplace 获取插件。VS Code 扩展仍然是读取实时编辑器内存状态所必需的部分，但由 `clsp setup` 本地安装。
 
 ## 实时 IDE 能力
 
@@ -88,7 +94,7 @@ npm test --prefix vscode
 npm run package --prefix vscode
 ```
 
-`scripts\package-release.ps1` 会构建并组装包含 `clsp.exe`、`clsp-ide.vsix`、README 和 LICENSE 的单个 Windows ZIP。
+`scripts\package-release.ps1` 会构建并组装包含 `clsp.exe`、`clsp-ide.vsix`、README 和 LICENSE 的 Windows ZIP，同时把 npm 发布文件放入 `dist\npm\bin`。根目录执行 `npm pack --pack-destination dist` 可生成待发布的 `.tgz`。
 
 ## 回滚
 

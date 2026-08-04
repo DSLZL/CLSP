@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
 description = "A Windows-first LSP companion for Codex CLI"
+repository = "https://github.com/DSLZL/CLSP"
 
 [dependencies]
 anyhow = "1.0"

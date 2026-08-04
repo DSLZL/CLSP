@@ -1,0 +1,38 @@
+{
+  "name": "clsp",
+  "version": "0.1.0",
+  "description": "A Windows-first LSP companion for Codex CLI",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DSLZL/CLSP.git"
+  },
+  "homepage": "https://github.com/DSLZL/CLSP#readme",
+  "bugs": {
+    "url": "https://github.com/DSLZL/CLSP/issues"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "bin": {
+    "clsp": "dist/npm/bin/clsp.js"
+  },
+  "files": [
+    "dist/npm/bin/clsp.js",
+    "dist/npm/bin/clsp.exe",
+    "dist/npm/bin/clsp-ide.vsix",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "package": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1",
+    "prepack": "npm run package",
+    "test:package": "npm run package && node dist/npm/bin/clsp.js --version"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
