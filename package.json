@@ -1,5 +1,5 @@
 {
-  "name": "clsp",
+  "name": "@dslzl/clsp",
   "version": "0.1.0",
   "description": "A Windows-first LSP companion for Codex CLI",
   "license": "AGPL-3.0-only",

@@ -9,7 +9,7 @@ CLSP 是面向 Codex CLI 的 Windows LSP 与 VS Code companion。npm 包同时�
 需要 Windows x64、Node.js/npm，以及已加入 `PATH` 的 VS Code CLI。全局安装 CLSP：
 
 ```powershell
-npm install -g clsp
+npm install -g @dslzl/clsp
 ```
 
 然后在项目中运行：
