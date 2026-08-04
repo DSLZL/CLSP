@@ -1,0 +1,388 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Component, Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+use ignore::WalkBuilder;
+use sha2::{Digest, Sha256};
+
+use crate::{
+    config::DiscoveryConfig,
+    protocol::{ClientKey, ClspError, ErrorCode},
+    registry::{Registry, ServerDefinition},
+};
+
+#[derive(Clone, Debug)]
+pub struct Workspace {
+    root: PathBuf,
+    normalized_root: String,
+}
+
+impl Workspace {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, ClspError> {
+        let root = fs::canonicalize(path.as_ref())
+            .map_err(|error| path_error(ErrorCode::PathOutsideWorkspace, path.as_ref(), error))?;
+        if !root.is_dir() {
+            return Err(ClspError::new(
+                ErrorCode::PathOutsideWorkspace,
+                "workspace must be a directory",
+            )
+            .for_path(root));
+        }
+        Ok(Self {
+            normalized_root: normalize_for_comparison(&root),
+            root,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn hash(&self) -> String {
+        hex::encode(Sha256::digest(self.normalized_root.as_bytes()))
+    }
+
+    pub fn resolve_file(
+        &self,
+        input: impl AsRef<Path>,
+        max_bytes: u64,
+    ) -> Result<PathBuf, ClspError> {
+        let input = input.as_ref();
+        if input
+            .components()
+            .any(|component| component == Component::ParentDir)
+        {
+            return Err(ClspError::new(
+                ErrorCode::PathOutsideWorkspace,
+                "parent traversal is not allowed",
+            )
+            .for_path(input));
+        }
+        let candidate = if input.is_absolute() {
+            input.to_path_buf()
+        } else {
+            self.root.join(input)
+        };
+        let resolved = fs::canonicalize(&candidate)
+            .map_err(|error| path_error(ErrorCode::UnsupportedFile, &candidate, error))?;
+        if !path_is_within(&self.normalized_root, &resolved) {
+            return Err(ClspError::new(
+                ErrorCode::PathOutsideWorkspace,
+                "path resolves outside the workspace",
+            )
+            .for_path(input));
+        }
+        let metadata = fs::metadata(&resolved)
+            .map_err(|error| path_error(ErrorCode::UnsupportedFile, &resolved, error))?;
+        if !metadata.is_file() || metadata.len() > max_bytes {
+            return Err(ClspError::new(
+                ErrorCode::UnsupportedFile,
+                "path is not a supported bounded regular file",
+            )
+            .for_path(resolved));
+        }
+        Ok(resolved)
+    }
+
+    pub fn resolve_candidate(&self, input: impl AsRef<Path>) -> Result<PathBuf, ClspError> {
+        let input = input.as_ref();
+        if input
+            .components()
+            .any(|component| component == Component::ParentDir)
+        {
+            return Err(ClspError::new(
+                ErrorCode::PathOutsideWorkspace,
+                "parent traversal is not allowed",
+            )
+            .for_path(input));
+        }
+        let candidate = if input.is_absolute() {
+            input.to_path_buf()
+        } else {
+            self.root.join(input)
+        };
+        let mut ancestor = candidate.as_path();
+        let mut suffix = Vec::new();
+        while !ancestor.exists() {
+            let name = ancestor.file_name().ok_or_else(|| {
+                ClspError::new(
+                    ErrorCode::PathOutsideWorkspace,
+                    "candidate has no existing ancestor",
+                )
+                .for_path(&candidate)
+            })?;
+            suffix.push(name.to_owned());
+            ancestor = ancestor.parent().ok_or_else(|| {
+                ClspError::new(
+                    ErrorCode::PathOutsideWorkspace,
+                    "candidate has no existing ancestor",
+                )
+                .for_path(&candidate)
+            })?;
+        }
+        let mut resolved = fs::canonicalize(ancestor)
+            .map_err(|error| path_error(ErrorCode::UnsupportedFile, ancestor, error))?;
+        if !path_is_within(&self.normalized_root, &resolved) {
+            return Err(ClspError::new(
+                ErrorCode::PathOutsideWorkspace,
+                "candidate resolves outside the workspace",
+            )
+            .for_path(input));
+        }
+        for component in suffix.into_iter().rev() {
+            resolved.push(component);
+        }
+        if normalize_for_comparison(&resolved) == self.normalized_root {
+            return Err(ClspError::new(
+                ErrorCode::UnsupportedFile,
+                "workspace root is not an edit target",
+            )
+            .for_path(input));
+        }
+        Ok(resolved)
+    }
+
+    pub fn relative_candidate(&self, input: impl AsRef<Path>) -> Result<PathBuf, ClspError> {
+        let resolved = self.resolve_candidate(input)?;
+        resolved
+            .strip_prefix(&self.root)
+            .map(Path::to_path_buf)
+            .map_err(|_| {
+                ClspError::new(
+                    ErrorCode::PathOutsideWorkspace,
+                    "candidate is not relative to the workspace",
+                )
+                .for_path(resolved)
+            })
+    }
+
+    pub fn contains_existing(&self, path: impl AsRef<Path>) -> bool {
+        fs::canonicalize(path)
+            .ok()
+            .is_some_and(|path| path_is_within(&self.normalized_root, &path))
+    }
+
+    pub fn discover(&self, registry: &Registry, config: &DiscoveryConfig) -> DiscoveryResult {
+        let started = Instant::now();
+        let budget = Duration::from_millis(config.max_initial_ms);
+        let mut families = BTreeMap::<String, BTreeSet<PathBuf>>::new();
+        let mut visited = 0usize;
+        let mut complete = true;
+
+        for server in &registry.server {
+            for marker in &server.markers {
+                let marker_path = self.root.join(marker);
+                if marker_path.exists() {
+                    families
+                        .entry(server.id.clone())
+                        .or_default()
+                        .insert(self.root.clone());
+                    break;
+                }
+            }
+        }
+
+        let mut builder = WalkBuilder::new(&self.root);
+        builder
+            .hidden(false)
+            .git_ignore(config.respect_gitignore)
+            .git_global(config.respect_gitignore)
+            .git_exclude(config.respect_gitignore)
+            .max_depth(Some(config.max_depth));
+
+        for entry in builder.build() {
+            if visited >= config.max_entries || started.elapsed() >= budget {
+                complete = false;
+                break;
+            }
+            visited += 1;
+            let Ok(entry) = entry else { continue };
+            let Some(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(extension) = entry.path().extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            for server in registry.matching_extension(extension) {
+                let root = nearest_root(entry.path(), &self.root, server);
+                families.entry(server.id.clone()).or_default().insert(root);
+            }
+        }
+
+        let matches = families
+            .into_iter()
+            .flat_map(|(server_id, roots)| {
+                roots.into_iter().map(move |root| Detection {
+                    server_id: server_id.clone(),
+                    root,
+                })
+            })
+            .collect();
+        DiscoveryResult {
+            matches,
+            visited,
+            complete,
+        }
+    }
+
+    pub fn root_for_file(&self, file: &Path, server: &ServerDefinition) -> PathBuf {
+        nearest_root(file, &self.root, server)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Detection {
+    pub server_id: String,
+    pub root: PathBuf,
+}
+
+impl Detection {
+    pub fn client_key(&self, artifact_version: &str, config_digest: &str) -> ClientKey {
+        ClientKey {
+            root: self.root.clone(),
+            server_id: self.server_id.clone(),
+            artifact_version: artifact_version.to_owned(),
+            config_digest: config_digest.to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DiscoveryResult {
+    pub matches: Vec<Detection>,
+    pub visited: usize,
+    pub complete: bool,
+}
+
+fn nearest_root(file: &Path, workspace: &Path, server: &ServerDefinition) -> PathBuf {
+    let mut directory = file.parent();
+    while let Some(candidate) = directory {
+        if server
+            .markers
+            .iter()
+            .any(|marker| candidate.join(marker).exists())
+        {
+            return candidate.to_path_buf();
+        }
+        if candidate == workspace {
+            break;
+        }
+        directory = candidate.parent();
+    }
+    workspace.to_path_buf()
+}
+
+fn path_is_within(normalized_root: &str, candidate: &Path) -> bool {
+    let candidate = normalize_for_comparison(candidate);
+    candidate == normalized_root
+        || candidate
+            .strip_prefix(normalized_root)
+            .is_some_and(|rest| rest.starts_with('\\'))
+}
+
+fn normalize_for_comparison(path: &Path) -> String {
+    let mut value = path.to_string_lossy().replace('/', "\\");
+    while value.ends_with('\\') {
+        value.pop();
+    }
+    value.to_lowercase()
+}
+
+fn path_error(code: ErrorCode, path: &Path, error: impl std::fmt::Display) -> ClspError {
+    ClspError::new(code, error.to_string()).for_path(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_parent_and_sibling_paths() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("inside.rs"), "fn main() {}").unwrap();
+        fs::write(parent.path().join("outside.rs"), "").unwrap();
+        let workspace = Workspace::open(&root).unwrap();
+
+        assert!(workspace.resolve_file("inside.rs", 1_024).is_ok());
+        assert_eq!(
+            workspace
+                .resolve_file("../outside.rs", 1_024)
+                .unwrap_err()
+                .code,
+            ErrorCode::PathOutsideWorkspace
+        );
+        assert_eq!(
+            workspace
+                .resolve_file(parent.path().join("outside.rs"), 1_024)
+                .unwrap_err()
+                .code,
+            ErrorCode::PathOutsideWorkspace
+        );
+    }
+
+    #[test]
+    fn resolves_missing_edit_targets_through_the_nearest_existing_ancestor() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::open(&root).unwrap();
+
+        let target = workspace.resolve_candidate("new/nested.rs").unwrap();
+        assert_eq!(
+            target,
+            fs::canonicalize(&root).unwrap().join("new/nested.rs")
+        );
+        assert_eq!(
+            workspace.relative_candidate(&target).unwrap(),
+            PathBuf::from("new/nested.rs")
+        );
+        assert!(workspace.resolve_candidate("../outside.rs").is_err());
+        assert!(
+            workspace
+                .resolve_candidate(parent.path().join("outside.rs"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn discovers_nearest_monorepo_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("crate");
+        fs::create_dir(&nested).unwrap();
+        fs::write(
+            nested.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'",
+        )
+        .unwrap();
+        fs::write(nested.join("lib.rs"), "pub fn answer() -> u8 { 42 }").unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let result = workspace.discover(&Registry::builtin().unwrap(), &DiscoveryConfig::default());
+        let rust = result
+            .matches
+            .iter()
+            .find(|item| item.server_id == "rust")
+            .unwrap();
+        assert_eq!(rust.root, fs::canonicalize(nested).unwrap());
+    }
+
+    #[test]
+    fn path_comparison_requires_a_component_boundary() {
+        let root = normalize_for_comparison(Path::new("C:/work/project"));
+        assert!(path_is_within(
+            &root,
+            Path::new("C:/work/project/src/lib.rs")
+        ));
+        assert!(!path_is_within(
+            &root,
+            Path::new("C:/work/project-other/lib.rs")
+        ));
+    }
+}

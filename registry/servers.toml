@@ -1,0 +1,87 @@
+[[runtime]]
+id = "node"
+version = "22.23.2"
+version_req = ">=18.0.0"
+executable = "node.exe"
+version_args = ["--version"]
+archive = { url = "https://nodejs.org/dist/v22.23.2/node-v22.23.2-win-x64.zip", sha256 = "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97", executable = "node-v22.23.2-win-x64/node.exe" }
+
+[[runtime]]
+id = "npm-cli"
+version = "11.5.2"
+version_req = "=11.5.2"
+executable = "bin/npm-cli.js"
+version_args = ["--version"]
+archive = { url = "https://registry.npmjs.org/npm/-/npm-11.5.2.tgz", sha256 = "beb0d754f9759c17cdc10f63121d0e50636d146262cd0e3bcb231edf9f0b3a7d", executable = "package/bin/npm-cli.js" }
+
+[[server]]
+id = "rust"
+display_name = "rust-analyzer"
+language_id = "rust"
+version_req = ">=1.75.0"
+extensions = ["rs"]
+markers = ["Cargo.toml", "rust-project.json"]
+command = "rust-analyzer.exe"
+args = []
+version_args = ["--version"]
+install = { kind = "archive", version = "2026-07-27", url = "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-pc-windows-msvc.zip", sha256 = "7abdf50734026de963b3b25eba7714be8acf43a15ffb7f4f9d8b041e796ce2c9", executable = "rust-analyzer.exe" }
+
+[[server]]
+id = "typescript"
+display_name = "TypeScript Language Server"
+language_id = "typescript"
+version_req = ">=4.0.0, <5.0.0"
+extensions = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]
+markers = ["package.json", "tsconfig.json", "jsconfig.json"]
+command = "typescript-language-server.cmd"
+args = ["--stdio"]
+version_args = ["--version"]
+install = { kind = "npm", version = "4.4.0", package = "typescript-language-server", executable = "node_modules/.bin/typescript-language-server.cmd" }
+
+[[server]]
+id = "pyright"
+display_name = "Pyright"
+language_id = "python"
+version_req = ">=1.1.300, <2.0.0"
+extensions = ["py", "pyi"]
+markers = ["pyproject.toml", "pyrightconfig.json", "setup.py", "requirements.txt"]
+command = "pyright-langserver.cmd"
+args = ["--stdio"]
+version_args = ["--version"]
+install = { kind = "npm", version = "1.1.405", package = "pyright", executable = "node_modules/.bin/pyright-langserver.cmd" }
+
+[[server]]
+id = "gopls"
+display_name = "gopls"
+language_id = "go"
+version_req = ">=0.15.0, <1.0.0"
+extensions = ["go"]
+markers = ["go.work", "go.mod"]
+command = "gopls.exe"
+args = []
+version_args = ["version"]
+install = { kind = "go", version = "v0.19.1", module = "golang.org/x/tools/gopls@v0.19.1", executable = "gopls.exe" }
+
+[[server]]
+id = "clangd"
+display_name = "clangd"
+language_id = "cpp"
+version_req = ">=16.0.0"
+extensions = ["c", "cpp", "cc", "cxx", "c++", "h", "hpp", "hh", "hxx", "h++"]
+markers = ["compile_commands.json", "compile_flags.txt", "CMakeLists.txt", ".clangd"]
+command = "clangd.exe"
+args = []
+version_args = ["--version"]
+install = { kind = "archive", version = "22.1.6", url = "https://github.com/clangd/clangd/releases/download/22.1.6/clangd-windows-22.1.6.zip", sha256 = "ce54f16e0b4fd76d450eeda9664420b195360b73febcfe40e661108fa57f2ce1", executable = "clangd_22.1.6/bin/clangd.exe" }
+
+[[server]]
+id = "yaml-ls"
+display_name = "YAML Language Server"
+language_id = "yaml"
+version_req = ">=1.14.0, <2.0.0"
+extensions = ["yaml", "yml"]
+markers = [".yamllint", ".yamllint.yml"]
+command = "yaml-language-server.cmd"
+args = ["--stdio"]
+version_args = ["--version"]
+install = { kind = "npm", version = "1.18.0", package = "yaml-language-server", executable = "node_modules/.bin/yaml-language-server.cmd" }

@@ -1,0 +1,12 @@
+{
+  "name": "clsp-managed-lsp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Locked npm language-server closure for CLSP",
+  "dependencies": {
+    "pyright": "1.1.405",
+    "typescript": "5.9.2",
+    "typescript-language-server": "4.4.0",
+    "yaml-language-server": "1.18.0"
+  }
+}

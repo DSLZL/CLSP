@@ -1,0 +1,14 @@
+pub mod broker;
+pub mod cli;
+pub mod config;
+pub mod hook;
+pub mod ide;
+pub mod installer;
+pub mod ipc;
+pub mod lsp;
+pub mod mcp;
+pub mod protocol;
+pub mod registry;
+pub mod setup;
+pub mod tui;
+pub mod workspace;

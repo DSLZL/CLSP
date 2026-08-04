@@ -1,0 +1,49 @@
+{
+  "name": "clsp-ide",
+  "displayName": "CLSP IDE Bridge",
+  "description": "Local VS Code bridge for CLSP and Codex CLI",
+  "version": "0.1.0",
+  "publisher": "clsp",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "clsp.toggleSelectionSharing",
+        "title": "CLSP: Toggle Selection Sharing"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "check": "tsc -p . --noEmit",
+    "test": "npm run compile && node --test out/test/*.test.js",
+    "package": "npm run compile && vsce package --no-dependencies --out clsp-ide.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/vscode": "1.100.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^7.0.2"
+  }
+}
