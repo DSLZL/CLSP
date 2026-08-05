@@ -740,6 +740,7 @@ fn workspace_state_root() -> Result<PathBuf, ClspError> {
 
 pub fn apply_user_system_dacl(path: &Path, inheritable: bool) -> Result<(), ClspError> {
     let descriptor = SecurityDescriptor::for_current_user(inheritable)?;
+    let owner = AllocatedSid::from_string(&current_user_sid_string()?)?;
     let mut present = 0;
     let mut defaulted = 0;
     let mut dacl: *mut ACL = null_mut();
@@ -756,8 +757,10 @@ pub fn apply_user_system_dacl(path: &Path, inheritable: bool) -> Result<(), Clsp
         SetNamedSecurityInfoW(
             wide.as_mut_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            null_mut(),
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            owner.0,
             null_mut(),
             dacl,
             null_mut(),
