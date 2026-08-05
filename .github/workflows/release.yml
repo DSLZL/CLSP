@@ -271,7 +271,7 @@ jobs:
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
-        run: npm publish "dist/clsp-$($env:RELEASE_VERSION).tgz" --access public --provenance
+        run: npm publish "./dist/clsp-$($env:RELEASE_VERSION).tgz" --access public --provenance
 
       - name: Publish GitHub Release
         shell: pwsh
