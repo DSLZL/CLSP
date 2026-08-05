@@ -270,7 +270,7 @@ fn render(frame: &mut Frame, app: &App) {
         .map(|(index, server)| {
             let progress = server
                 .install_progress
-                .map(|value| format!("{:.0}%", value * 100.0))
+                .map(|value| if value >= 1.0 { "done" } else { "running" }.to_owned())
                 .unwrap_or_default();
             let row = Row::new(vec![
                 server.key.server_id.clone(),
@@ -366,7 +366,14 @@ fn event_label(event: &EventBody) -> String {
         EventBody::InstallProgress {
             server_id,
             progress,
-        } => format!("{server_id} install {:.0}%", progress * 100.0),
+        } => format!(
+            "{server_id} install {}",
+            if *progress >= 1.0 {
+                "completed"
+            } else {
+                "started"
+            }
+        ),
         EventBody::DiagnosticsChanged {
             path, server_id, ..
         } => format!("{server_id} diagnostics {}", path.display()),

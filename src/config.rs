@@ -35,9 +35,6 @@ impl Config {
         if let Some(enabled) = overrides.enabled {
             config.enabled = enabled;
         }
-        if let Some(policy) = overrides.runtime_policy {
-            config.runtime.policy = policy;
-        }
         config.validate()?;
         Ok(config)
     }
@@ -52,9 +49,7 @@ impl Config {
                 "discovery limits must be greater than zero",
             ));
         }
-        if !(1..=32).contains(&self.install.max_concurrency)
-            || !(1..=3_600).contains(&self.install.download_timeout_seconds)
-            || !(1..=4_294_967_296).contains(&self.install.max_download_bytes)
+        if !(1..=3_600).contains(&self.install.command_timeout_seconds)
             || !(1..=30_000).contains(&self.runtime.probe_timeout_ms)
             || !(1..=100).contains(&self.diagnostics.max_files)
             || !(1..=1_000).contains(&self.diagnostics.max_per_file)
@@ -126,7 +121,6 @@ impl Default for Config {
 #[derive(Clone, Debug, Default)]
 pub struct ConfigOverrides {
     pub enabled: Option<bool>,
-    pub runtime_policy: Option<RuntimePolicy>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -189,41 +183,27 @@ impl Default for IdeConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RuntimeConfig {
-    pub policy: RuntimePolicy,
     pub probe_timeout_ms: u64,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            policy: RuntimePolicy::PreferLocal,
             probe_timeout_ms: 1_500,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum RuntimePolicy {
-    PreferLocal,
-    LocalOnly,
-    ManagedOnly,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct InstallConfig {
-    pub max_concurrency: usize,
-    pub download_timeout_seconds: u64,
-    pub max_download_bytes: u64,
+    pub command_timeout_seconds: u64,
 }
 
 impl Default for InstallConfig {
     fn default() -> Self {
         Self {
-            max_concurrency: 3,
-            download_timeout_seconds: 120,
-            max_download_bytes: 1_073_741_824,
+            command_timeout_seconds: 180,
         }
     }
 }
@@ -329,7 +309,6 @@ impl Default for TuiConfig {
 pub struct ServerOverride {
     pub enabled: Option<bool>,
     pub executable: Option<std::path::PathBuf>,
-    pub policy: Option<RuntimePolicy>,
 }
 
 fn merge_file(base: &mut toml::Value, path: &Path) -> Result<(), ClspError> {
@@ -381,7 +360,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join(".clsp.toml"),
-            "prewarm = false\n[runtime]\npolicy = 'local-only'\n",
+            "prewarm = false\n[install]\ncommand_timeout_seconds = 60\n",
         )
         .unwrap();
 
@@ -389,8 +368,26 @@ mod tests {
         assert!(config.enabled);
         assert!(config.auto_install);
         assert!(!config.prewarm);
-        assert_eq!(config.runtime.policy, RuntimePolicy::LocalOnly);
+        assert_eq!(config.install.command_timeout_seconds, 60);
         assert_eq!(config.discovery.max_initial_ms, 300);
+    }
+
+    #[test]
+    fn rejects_removed_managed_install_settings() {
+        for source in [
+            "[runtime]\npolicy = 'managed-only'\n",
+            "[install]\ndownload_timeout_seconds = 120\n",
+            "[lsp.rust]\npolicy = 'local-only'\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join(".clsp.toml"), source).unwrap();
+            assert_eq!(
+                Config::load(dir.path(), ConfigOverrides::default())
+                    .unwrap_err()
+                    .code,
+                ErrorCode::InvalidConfig
+            );
+        }
     }
 
     #[test]

@@ -1,45 +1,34 @@
 use std::{
-    collections::{BTreeSet, HashMap},
-    fs::File,
-    io::Read,
-    path::{Component, Path, PathBuf},
-    process::Stdio,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, SystemTime},
+    collections::BTreeSet,
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    process::{ExitStatus, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
-use flate2::read::GzDecoder;
-use futures_util::StreamExt;
 use semver::{Version, VersionReq};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncRead, AsyncReadExt},
     process::Command,
-    sync::{Mutex, Semaphore},
+    sync::Mutex,
     time::timeout,
 };
 
 use crate::{
-    config::{Config, RuntimePolicy},
+    config::Config,
     protocol::{ClientKey, ClspError, ErrorCode},
-    registry::{ArchiveDefinition, InstallRecipe, Registry, ServerDefinition},
+    registry::{InstallRecipe, ServerDefinition},
 };
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const NPM_PACKAGE_JSON: &[u8] = include_bytes!("../registry/npm/package.json");
-const NPM_PACKAGE_LOCK: &[u8] = include_bytes!("../registry/npm/package-lock.json");
+const OUTPUT_LIMIT: usize = 4_096;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub struct StatePaths {
-    pub cache: PathBuf,
-    pub runtimes: PathBuf,
-    pub artifacts: PathBuf,
-    pub downloads: PathBuf,
     pub workspace_state: PathBuf,
     pub logs: PathBuf,
 }
@@ -52,34 +41,18 @@ impl StatePaths {
                 "LOCALAPPDATA is required on Windows",
             )
         })?;
-        let root = PathBuf::from(local).join("clsp");
-        let cache = root.join("cache");
-        let workspace_state = root.join("state").join("workspaces").join(workspace_hash);
+        let workspace_state = PathBuf::from(local)
+            .join("clsp")
+            .join("state")
+            .join("workspaces")
+            .join(workspace_hash);
         let paths = Self {
-            runtimes: cache.join("runtimes"),
-            artifacts: cache.join("artifacts"),
-            downloads: cache.join("downloads"),
             logs: workspace_state.join("logs"),
             workspace_state,
-            cache,
         };
-        for path in [
-            &paths.runtimes,
-            &paths.artifacts,
-            &paths.downloads,
-            &paths.workspace_state,
-            &paths.logs,
-        ] {
-            std::fs::create_dir_all(path).map_err(artifact_error)?;
+        for path in [&paths.workspace_state, &paths.logs] {
+            std::fs::create_dir_all(path).map_err(server_error)?;
         }
-        cleanup_stale_entries(&paths.downloads, false, Duration::from_secs(24 * 60 * 60));
-        cleanup_stale_entries(&paths.artifacts, true, Duration::from_secs(24 * 60 * 60));
-        cleanup_stale_entries(&paths.runtimes, true, Duration::from_secs(24 * 60 * 60));
-        cleanup_stale_entries(
-            &paths.workspace_state,
-            false,
-            Duration::from_secs(24 * 60 * 60),
-        );
         Ok(paths)
     }
 }
@@ -89,8 +62,7 @@ pub enum ExecutableSource {
     ProjectLocal,
     Explicit,
     Path,
-    Cache,
-    Managed,
+    Installed,
 }
 
 #[derive(Clone, Debug)]
@@ -98,34 +70,22 @@ pub struct ResolvedExecutable {
     pub path: PathBuf,
     pub version_output: String,
     pub source: ExecutableSource,
+    pub npm_modules_root: Option<PathBuf>,
 }
 
-pub struct ArtifactManager {
+pub struct ServerResolver {
     config: Config,
-    registry: Registry,
     paths: StatePaths,
-    client: reqwest::Client,
-    locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
-    installs: Semaphore,
-    npm_installs: Semaphore,
+    install_lock: Mutex<()>,
 }
 
-impl ArtifactManager {
-    pub fn new(config: Config, registry: Registry, paths: StatePaths) -> Result<Self, ClspError> {
-        let client = reqwest::Client::builder()
-            .https_only(true)
-            .timeout(Duration::from_secs(config.install.download_timeout_seconds))
-            .build()
-            .map_err(artifact_error)?;
-        Ok(Self {
-            installs: Semaphore::new(config.install.max_concurrency),
-            npm_installs: Semaphore::new(1),
+impl ServerResolver {
+    pub fn new(config: Config, paths: StatePaths) -> Self {
+        Self {
             config,
-            registry,
             paths,
-            client,
-            locks: Mutex::new(HashMap::new()),
-        })
+            install_lock: Mutex::new(()),
+        }
     }
 
     pub fn paths(&self) -> &StatePaths {
@@ -137,106 +97,86 @@ impl ArtifactManager {
         server: &ServerDefinition,
         workspace: &Path,
         explicit: Option<&Path>,
-        policy: RuntimePolicy,
         on_install: F,
     ) -> Result<ResolvedExecutable, ClspError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
-        if policy != RuntimePolicy::ManagedOnly {
-            for (source, candidate) in local_candidates(server, workspace, explicit) {
-                if let Ok(version_output) = self.probe_server(server, &candidate, workspace).await {
-                    return Ok(ResolvedExecutable {
-                        path: candidate,
-                        version_output,
-                        source,
-                    });
-                }
+        if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
+            return Ok(resolution);
+        }
+
+        if matches!(server.install, InstallRecipe::Npm { .. }) {
+            let manager = self
+                .select_npm_manager()
+                .await
+                .map_err(|error| error.for_server(&server.id))?;
+            if let Some(resolution) = self
+                .resolve_npm_global(server, &manager, false)
+                .await
+                .map_err(|error| error.for_server(&server.id))?
+            {
+                return Ok(resolution);
             }
         }
 
-        let managed_root = self.managed_server_root(server);
-        let managed_path = self.managed_server_path(server);
-        if artifact_ready(&managed_root, &managed_path)
-            && let Ok(version_output) = self.probe_server(server, &managed_path, workspace).await
-        {
-            return Ok(ResolvedExecutable {
-                path: managed_path,
-                version_output,
-                source: ExecutableSource::Cache,
-            });
+        if let InstallRecipe::Manual { hint, .. } = &server.install {
+            return Err(runtime_error(hint).for_server(&server.id));
         }
-        if policy == RuntimePolicy::LocalOnly {
-            return Err(ClspError::new(
-                ErrorCode::RuntimeUnavailable,
-                format!(
-                    "{} is unavailable under local-only policy",
-                    server.display_name
-                ),
-            )
-            .for_server(&server.id));
-        }
+
         if !self.config.auto_install {
-            return Err(ClspError::new(
-                ErrorCode::ArtifactUnavailable,
-                format!(
-                    "managed installation is disabled for {}",
-                    server.display_name
-                ),
-            )
+            return Err(runtime_error(format!(
+                "{} is unavailable and auto_install is false",
+                server.display_name
+            ))
             .for_server(&server.id));
         }
 
-        on_install().await;
-        let path = self.ensure_server(server).await?;
-        let version_output = self.probe_server(server, &path, workspace).await?;
-        Ok(ResolvedExecutable {
-            path,
-            version_output,
-            source: ExecutableSource::Managed,
-        })
-    }
+        let _guard = self.install_lock.lock().await;
+        if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
+            return Ok(resolution);
+        }
 
-    pub async fn ensure_server(&self, server: &ServerDefinition) -> Result<PathBuf, ClspError> {
         match &server.install {
-            InstallRecipe::Archive {
+            InstallRecipe::Manual { hint, .. } => Err(runtime_error(hint).for_server(&server.id)),
+            InstallRecipe::Npm {
                 version,
-                url,
-                sha256,
-                executable,
+                package,
+                companions,
             } => {
-                let final_dir = self.paths.artifacts.join(&server.id).join(version);
-                self.ensure_archive(
-                    &format!("server:{}:{version}", server.id),
-                    &final_dir,
-                    &ArchiveDefinition {
-                        url: url.clone(),
-                        sha256: sha256.clone(),
-                        executable: executable.clone(),
-                    },
-                    Some((&server.version_args, server.version_req.as_str())),
-                )
-                .await
+                let manager = self
+                    .select_npm_manager()
+                    .await
+                    .map_err(|error| error.for_server(&server.id))?;
+                if let Some(resolution) = self
+                    .resolve_npm_global(server, &manager, false)
+                    .await
+                    .map_err(|error| error.for_server(&server.id))?
+                {
+                    return Ok(resolution);
+                }
+                on_install().await;
+                self.install_npm(server, &manager, package, version, companions)
+                    .await
+                    .map_err(|error| error.for_server(&server.id))
             }
-            InstallRecipe::Npm { executable, .. } => {
-                let root = self.ensure_npm_bundle().await?;
-                Ok(root.join(executable))
-            }
-            InstallRecipe::Go {
-                version,
-                module,
-                executable,
-            } => {
-                self.ensure_go(
-                    &server.id,
-                    version,
-                    module,
-                    executable,
-                    &server.version_args,
-                    &server.version_req,
-                )
-                .await
+            InstallRecipe::Command { program, args, .. } => {
+                let program = self
+                    .require_program(program)
+                    .await
+                    .map_err(|error| error.for_server(&server.id))?;
+                if let Some(resolution) = self
+                    .resolve_toolchain_candidate(server, workspace, &program, false)
+                    .await
+                    .map_err(|error| error.for_server(&server.id))?
+                {
+                    return Ok(resolution);
+                }
+                on_install().await;
+                self.install_command(server, workspace, &program, args)
+                    .await
+                    .map_err(|error| error.for_server(&server.id))
             }
         }
     }
@@ -254,6 +194,7 @@ impl ArtifactManager {
             version: &'a str,
             source: &'a str,
         }
+
         let entries: Vec<_> = resolutions
             .into_iter()
             .map(|(key, resolution)| Entry {
@@ -266,405 +207,372 @@ impl ArtifactManager {
                     ExecutableSource::ProjectLocal => "project-local",
                     ExecutableSource::Explicit => "explicit",
                     ExecutableSource::Path => "path",
-                    ExecutableSource::Cache => "cache",
-                    ExecutableSource::Managed => "managed",
+                    ExecutableSource::Installed => "installed",
                 },
             })
             .collect();
-        let bytes = serde_json::to_vec_pretty(&entries).map_err(artifact_error)?;
+        let bytes = serde_json::to_vec_pretty(&entries).map_err(server_error)?;
         atomic_write(&self.paths.workspace_state.join("lsp.lock"), &bytes).await
     }
 
-    async fn ensure_archive(
+    async fn resolve_local(
         &self,
-        key: &str,
-        final_dir: &Path,
-        archive: &ArchiveDefinition,
-        probe: Option<(&[String], &str)>,
-    ) -> Result<PathBuf, ClspError> {
-        let executable = final_dir.join(&archive.executable);
-        if artifact_ready(final_dir, &executable) {
-            return Ok(executable);
+        server: &ServerDefinition,
+        workspace: &Path,
+        explicit: Option<&Path>,
+    ) -> Option<ResolvedExecutable> {
+        for (source, candidate) in local_candidates(server, workspace, explicit) {
+            if let Ok(probe) = self.probe_server(server, &candidate, workspace).await {
+                return Some(ResolvedExecutable {
+                    path: candidate,
+                    version_output: probe.version_output,
+                    source,
+                    npm_modules_root: probe.npm_modules_root,
+                });
+            }
         }
-        let lock = self.artifact_lock(key).await;
-        let _guard = lock.lock().await;
-        if artifact_ready(final_dir, &executable) {
-            return Ok(executable);
-        }
-        reject_incomplete_artifact(final_dir)?;
-        let _permit = self.installs.acquire().await.map_err(artifact_error)?;
-        let temp = temporary_sibling(final_dir);
-        tokio::fs::create_dir_all(&temp)
-            .await
-            .map_err(artifact_error)?;
-        let part = temporary_download(&self.paths.downloads, key);
+        None
+    }
 
-        let result = async {
-            self.download_verified(&archive.url, &archive.sha256, &part)
-                .await?;
-            extract_archive(
-                part.clone(),
-                temp.clone(),
-                archive.url.clone(),
-                self.config.install.max_download_bytes,
+    async fn select_npm_manager(&self) -> Result<NpmManagerSelection, ClspError> {
+        let candidates = NpmManager::ALL.into_iter().filter_map(|manager| {
+            which::which(manager.program())
+                .ok()
+                .map(|executable| (manager, executable))
+        });
+        self.select_npm_manager_from(candidates).await
+    }
+
+    async fn select_npm_manager_from(
+        &self,
+        candidates: impl IntoIterator<Item = (NpmManager, PathBuf)>,
+    ) -> Result<NpmManagerSelection, ClspError> {
+        for (manager, executable) in candidates {
+            let Ok(output) = run_command(
+                &executable,
+                &["--version".to_owned()],
+                &self.paths.workspace_state,
+                Duration::from_millis(self.config.runtime.probe_timeout_ms),
             )
-            .await?;
-            let temp_executable = temp.join(&archive.executable);
-            if !temp_executable.is_file() {
-                return Err(ClspError::new(
-                    ErrorCode::ArtifactUnavailable,
-                    "archive does not contain the declared executable",
-                )
-                .for_path(temp_executable));
+            .await
+            else {
+                continue;
+            };
+            if output.status.success() {
+                return Ok(NpmManagerSelection {
+                    manager,
+                    executable,
+                });
             }
-            if let Some((args, requirement)) = probe {
-                self.probe_compatible(&temp_executable, args, &temp, requirement)
-                    .await?;
-            }
-            write_metadata(&temp, key, &archive.url, &archive.sha256).await?;
-            publish_directory(&temp, final_dir).await
         }
-        .await;
+        Err(runtime_error(
+            "npm language servers require a working local package manager; checked bun, pnpm, then npm",
+        ))
+    }
 
-        let _ = tokio::fs::remove_file(&part).await;
-        if result.is_err() {
-            let _ = tokio::fs::remove_dir_all(&temp).await;
+    async fn resolve_npm_global(
+        &self,
+        server: &ServerDefinition,
+        manager: &NpmManagerSelection,
+        installed: bool,
+    ) -> Result<Option<ResolvedExecutable>, ClspError> {
+        let roots = self.npm_roots(manager, installed).await?;
+        if !roots.bin.is_dir() || !roots.modules.is_dir() {
+            return Ok(None);
         }
-        result?;
-        if !artifact_ready(final_dir, &executable) {
-            return Err(artifact_error("published artifact is incomplete"));
+        self.resolve_npm_in_roots(server, &roots, installed).await
+    }
+
+    async fn resolve_npm_in_roots(
+        &self,
+        server: &ServerDefinition,
+        roots: &NpmRoots,
+        installed: bool,
+    ) -> Result<Option<ResolvedExecutable>, ClspError> {
+        let Some(candidate) = executable_candidates_in(&roots.bin, &server.command)
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+        else {
+            return Ok(None);
+        };
+        let InstallRecipe::Npm { package, .. } = &server.install else {
+            return Ok(None);
+        };
+        let Ok(version_output) =
+            probe_npm_manifest_in_root(&roots.modules, package, &server.version_req).await
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ResolvedExecutable {
+            path: candidate,
+            version_output,
+            source: if installed {
+                ExecutableSource::Installed
+            } else {
+                ExecutableSource::Path
+            },
+            npm_modules_root: Some(roots.modules.clone()),
+        }))
+    }
+
+    async fn install_npm(
+        &self,
+        server: &ServerDefinition,
+        manager: &NpmManagerSelection,
+        package: &str,
+        version: &str,
+        companions: &[String],
+    ) -> Result<ResolvedExecutable, ClspError> {
+        let args = npm_install_args(manager.manager, package, version, companions);
+        run_checked(
+            &manager.executable,
+            &args,
+            &self.paths.workspace_state,
+            Duration::from_secs(self.config.install.command_timeout_seconds),
+            &format!("{} global install", manager.manager.program()),
+        )
+        .await?;
+
+        let roots = self.npm_roots(manager, true).await?;
+        verify_exact_npm_manifest(&roots.modules, package, version).await?;
+        for companion in companions {
+            let (name, version) = companion
+                .rsplit_once('@')
+                .ok_or_else(|| server_error("invalid pinned npm companion"))?;
+            verify_exact_npm_manifest(&roots.modules, name, version).await?;
+        }
+        self.resolve_npm_in_roots(server, &roots, true)
+            .await?
+            .ok_or_else(|| {
+                server_error(format!(
+                    "{} completed but {} was not found in {}",
+                    manager.manager.program(),
+                    server.command,
+                    roots.bin.display()
+                ))
+            })
+    }
+
+    async fn npm_roots(
+        &self,
+        manager: &NpmManagerSelection,
+        require_existing: bool,
+    ) -> Result<NpmRoots, ClspError> {
+        let duration = Duration::from_millis(self.config.runtime.probe_timeout_ms);
+        let label = format!("{} root query", manager.manager.program());
+        let bin_output = run_checked(
+            &manager.executable,
+            &manager.manager.bin_args(),
+            &self.paths.workspace_state,
+            duration,
+            &label,
+        )
+        .await?;
+        let modules_output = run_checked(
+            &manager.executable,
+            &manager.manager.modules_args(),
+            &self.paths.workspace_state,
+            duration,
+            &label,
+        )
+        .await?;
+        let mut bin = absolute_output_path(&bin_output.stdout, "package-manager bin root")?;
+        let modules = match manager.manager {
+            NpmManager::Bun => bun_modules_root(&modules_output.stdout)?,
+            NpmManager::Pnpm | NpmManager::Npm => {
+                absolute_output_path(&modules_output.stdout, "package-manager modules root")?
+            }
+        };
+        if manager.manager == NpmManager::Npm && !cfg!(windows) {
+            bin.push("bin");
+        }
+        if require_existing && (!bin.is_dir() || !modules.is_dir()) {
+            return Err(server_error(format!(
+                "{} reported missing global roots: bin={}, modules={}",
+                manager.manager.program(),
+                bin.display(),
+                modules.display()
+            )));
+        }
+        Ok(NpmRoots { bin, modules })
+    }
+
+    async fn require_program(&self, program: &str) -> Result<PathBuf, ClspError> {
+        let executable = which::which(program).map_err(|_| {
+            runtime_error(format!(
+                "{program} is required locally; CLSP does not install prerequisite toolchains"
+            ))
+        })?;
+        let version_args = if program == "go" {
+            vec!["version".to_owned()]
+        } else {
+            vec!["--version".to_owned()]
+        };
+        let output = run_command(
+            &executable,
+            &version_args,
+            &self.paths.workspace_state,
+            Duration::from_millis(self.config.runtime.probe_timeout_ms),
+        )
+        .await
+        .map_err(|error| {
+            runtime_error(format!("{program} version probe failed: {}", error.message))
+        })?;
+        if !output.status.success() {
+            return Err(runtime_error(format!(
+                "{program} version probe failed: {}",
+                command_output_detail(&output)
+            )));
         }
         Ok(executable)
     }
 
-    async fn ensure_runtime(&self, id: &str) -> Result<PathBuf, ClspError> {
-        let runtime = self
-            .registry
-            .runtime
-            .iter()
-            .find(|runtime| runtime.id == id)
-            .ok_or_else(|| {
-                ClspError::new(ErrorCode::InvalidConfig, format!("unknown runtime {id}"))
-            })?;
-        let final_dir = self.paths.runtimes.join(&runtime.id).join(&runtime.version);
-        self.ensure_archive(
-            &format!("runtime:{}:{}", runtime.id, runtime.version),
-            &final_dir,
-            &runtime.archive,
-            (runtime.id == "node").then_some((
-                runtime.version_args.as_slice(),
-                runtime.version_req.as_str(),
-            )),
-        )
-        .await
-    }
-
-    async fn ensure_node(&self) -> Result<PathBuf, ClspError> {
-        let runtime = self
-            .registry
-            .runtime
-            .iter()
-            .find(|runtime| runtime.id == "node")
-            .ok_or_else(|| artifact_error("Node runtime is missing from the registry"))?;
-        if self.config.runtime.policy != RuntimePolicy::ManagedOnly
-            && let Ok(path) = which::which("node")
-            && self
-                .probe_compatible(
-                    &path,
-                    &runtime.version_args,
-                    Path::new("."),
-                    &runtime.version_req,
-                )
-                .await
-                .is_ok()
-        {
-            return Ok(path);
-        }
-        if self.config.runtime.policy == RuntimePolicy::LocalOnly {
-            return Err(ClspError::new(
-                ErrorCode::RuntimeUnavailable,
-                "a compatible Node runtime is required",
-            ));
-        }
-        let path = self.ensure_runtime("node").await?;
-        self.probe_compatible(
-            &path,
-            &runtime.version_args,
-            Path::new("."),
-            &runtime.version_req,
-        )
-        .await?;
-        Ok(path)
-    }
-
-    async fn ensure_npm_bundle(&self) -> Result<PathBuf, ClspError> {
-        let digest = hex::encode(Sha256::digest(NPM_PACKAGE_LOCK));
-        let final_dir = self.paths.artifacts.join("npm-lsp").join(&digest[..16]);
-        if self.npm_bundle_ready(&final_dir).await {
-            return Ok(final_dir);
-        }
-        let node = self.ensure_node().await?;
-        let npm_cli = self.ensure_runtime("npm-cli").await?;
-        let npm_runtime = self
-            .registry
-            .runtime
-            .iter()
-            .find(|runtime| runtime.id == "npm-cli")
-            .ok_or_else(|| artifact_error("npm CLI runtime is missing from the registry"))?;
-        let mut npm_version_args = vec![npm_cli.to_string_lossy().into_owned()];
-        npm_version_args.extend(npm_runtime.version_args.iter().cloned());
-        self.probe_compatible(
-            &node,
-            &npm_version_args,
-            Path::new("."),
-            &npm_runtime.version_req,
-        )
-        .await?;
-        let lock = self.artifact_lock(&format!("npm-lsp:{digest}")).await;
-        let _guard = lock.lock().await;
-        if self.npm_bundle_ready(&final_dir).await {
-            return Ok(final_dir);
-        }
-        reject_incomplete_artifact(&final_dir)?;
-        let _install_permit = self.installs.acquire().await.map_err(artifact_error)?;
-        let _npm_permit = self.npm_installs.acquire().await.map_err(artifact_error)?;
-        let temp = temporary_sibling(&final_dir);
-        tokio::fs::create_dir_all(&temp)
-            .await
-            .map_err(artifact_error)?;
-
-        let result = async {
-            tokio::fs::write(temp.join("package.json"), NPM_PACKAGE_JSON)
-                .await
-                .map_err(artifact_error)?;
-            tokio::fs::write(temp.join("package-lock.json"), NPM_PACKAGE_LOCK)
-                .await
-                .map_err(artifact_error)?;
-            let user_config = temp.join("empty-user.npmrc");
-            let global_config = temp.join("empty-global.npmrc");
-            tokio::fs::write(&user_config, b"")
-                .await
-                .map_err(artifact_error)?;
-            tokio::fs::write(&global_config, b"")
-                .await
-                .map_err(artifact_error)?;
-            let cache = self.paths.cache.join("npm-cache");
-            tokio::fs::create_dir_all(&cache)
-                .await
-                .map_err(artifact_error)?;
-
-            let mut command = Command::new(&node);
-            command
-                .arg(&npm_cli)
-                .args(["ci", "--ignore-scripts", "--no-audit", "--no-fund"])
-                .current_dir(&temp);
-            sanitize_command(&mut command);
-            command
-                .env("NPM_CONFIG_USERCONFIG", &user_config)
-                .env("NPM_CONFIG_GLOBALCONFIG", &global_config)
-                .env("NPM_CONFIG_CACHE", &cache)
-                .env("NPM_CONFIG_REGISTRY", "https://registry.npmjs.org/")
-                .env("NPM_CONFIG_IGNORE_SCRIPTS", "true")
-                .env("NPM_CONFIG_AUDIT", "false")
-                .env("NPM_CONFIG_FUND", "false");
-            let output = timeout(Duration::from_secs(180), command.output())
-                .await
-                .map_err(|_| artifact_error("npm ci timed out"))?
-                .map_err(artifact_error)?;
-            if !output.status.success() {
-                return Err(artifact_error(format!(
-                    "npm ci failed: {}",
-                    bounded_stderr(&output.stderr)
-                )));
-            }
-            self.validate_npm_bundle(&temp).await?;
-            write_metadata(&temp, "npm-lsp", "locked package-lock.json", &digest).await?;
-            publish_directory(&temp, &final_dir).await
-        }
-        .await;
-        if result.is_err() {
-            let _ = tokio::fs::remove_dir_all(&temp).await;
-        }
-        result?;
-        if !self.npm_bundle_ready(&final_dir).await {
-            return Err(artifact_error("published npm bundle is incomplete"));
-        }
-        Ok(final_dir)
-    }
-
-    async fn ensure_go(
+    async fn resolve_toolchain_candidate(
         &self,
-        server_id: &str,
-        version: &str,
-        module: &str,
-        executable: &str,
-        version_args: &[String],
-        version_req: &str,
-    ) -> Result<PathBuf, ClspError> {
-        let final_dir = self.paths.artifacts.join(server_id).join(version);
-        let final_executable = final_dir.join(executable);
-        if artifact_ready(&final_dir, &final_executable) {
-            return Ok(final_executable);
-        }
-        let go = which::which("go").map_err(|_| {
-            ClspError::new(
-                ErrorCode::RuntimeUnavailable,
-                "Go is required to install gopls and is not managed by CLSP",
-            )
-        })?;
-        let lock = self.artifact_lock(&format!("go:{module}")).await;
-        let _guard = lock.lock().await;
-        if artifact_ready(&final_dir, &final_executable) {
-            return Ok(final_executable);
-        }
-        reject_incomplete_artifact(&final_dir)?;
-        let _permit = self.installs.acquire().await.map_err(artifact_error)?;
-        let temp = temporary_sibling(&final_dir);
-        tokio::fs::create_dir_all(&temp)
-            .await
-            .map_err(artifact_error)?;
-        let mut command = Command::new(go);
-        command.arg("install").arg(module).env("GOBIN", &temp);
-        sanitize_command(&mut command);
-        command.env("GOBIN", &temp);
-        let result = async {
-            let output = timeout(Duration::from_secs(180), command.output())
-                .await
-                .map_err(|_| artifact_error("go install timed out"))?
-                .map_err(artifact_error)?;
-            if !output.status.success() || !temp.join(executable).is_file() {
-                return Err(artifact_error(format!(
-                    "go install failed: {}",
-                    bounded_stderr(&output.stderr)
-                ))
-                .for_server(server_id));
-            }
-            self.probe_compatible(&temp.join(executable), version_args, &temp, version_req)
-                .await?;
-            write_metadata(&temp, server_id, module, version).await?;
-            publish_directory(&temp, &final_dir).await
-        }
-        .await;
-        if result.is_err() {
-            let _ = tokio::fs::remove_dir_all(&temp).await;
-        }
-        result?;
-        if !artifact_ready(&final_dir, &final_executable) {
-            return Err(artifact_error("published gopls artifact is incomplete"));
-        }
-        Ok(final_executable)
-    }
-
-    fn managed_server_root(&self, server: &ServerDefinition) -> PathBuf {
-        match &server.install {
-            InstallRecipe::Archive { version, .. } | InstallRecipe::Go { version, .. } => {
-                self.paths.artifacts.join(&server.id).join(version)
-            }
-            InstallRecipe::Npm { .. } => {
-                let digest = hex::encode(Sha256::digest(NPM_PACKAGE_LOCK));
-                self.paths.artifacts.join("npm-lsp").join(&digest[..16])
-            }
-        }
-    }
-
-    fn managed_server_path(&self, server: &ServerDefinition) -> PathBuf {
-        let executable = match &server.install {
-            InstallRecipe::Archive { executable, .. }
-            | InstallRecipe::Npm { executable, .. }
-            | InstallRecipe::Go { executable, .. } => executable,
+        server: &ServerDefinition,
+        workspace: &Path,
+        program: &Path,
+        installed: bool,
+    ) -> Result<Option<ResolvedExecutable>, ClspError> {
+        let candidate = match server.id.as_str() {
+            "gopls" => self.gopls_candidate(program).await?,
+            "rust" => self.rustup_candidate(program, workspace, installed).await?,
+            _ => None,
         };
-        self.managed_server_root(server).join(executable)
+        let Some(candidate) = candidate else {
+            return Ok(None);
+        };
+        let probe = self.probe_server(server, &candidate, workspace).await?;
+        Ok(Some(ResolvedExecutable {
+            path: candidate,
+            version_output: probe.version_output,
+            source: if installed {
+                ExecutableSource::Installed
+            } else {
+                ExecutableSource::Path
+            },
+            npm_modules_root: None,
+        }))
     }
 
-    async fn artifact_lock(&self, key: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.locks.lock().await;
-        locks
-            .entry(key.to_owned())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    }
-
-    async fn download_verified(
+    async fn install_command(
         &self,
-        url: &str,
-        expected_sha256: &str,
-        destination: &Path,
-    ) -> Result<(), ClspError> {
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(artifact_error)?
-            .error_for_status()
-            .map_err(artifact_error)?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.config.install.max_download_bytes)
-        {
-            return Err(artifact_error("artifact exceeds configured download limit"));
-        }
-        let mut file = tokio::fs::File::create(destination)
-            .await
-            .map_err(artifact_error)?;
-        let mut stream = response.bytes_stream();
-        let mut digest = Sha256::new();
-        let mut total = 0u64;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(artifact_error)?;
-            total = total.saturating_add(chunk.len() as u64);
-            if total > self.config.install.max_download_bytes {
-                return Err(artifact_error("artifact exceeds configured download limit"));
-            }
-            digest.update(&chunk);
-            file.write_all(&chunk).await.map_err(artifact_error)?;
-        }
-        file.flush().await.map_err(artifact_error)?;
-        let actual = hex::encode(digest.finalize());
-        if !actual.eq_ignore_ascii_case(expected_sha256) {
-            return Err(ClspError::new(
-                ErrorCode::IntegrityFailure,
-                format!("artifact SHA-256 mismatch: expected {expected_sha256}, got {actual}"),
-            ));
-        }
-        Ok(())
-    }
-
-    async fn probe(
-        &self,
-        executable: &Path,
+        server: &ServerDefinition,
+        workspace: &Path,
+        program: &Path,
         args: &[String],
-        working_dir: &Path,
-    ) -> Result<String, ClspError> {
-        if !executable.is_file() {
-            return Err(artifact_error("executable candidate is not a file"));
-        }
-        let mut command = Command::new(executable);
-        command.args(args).current_dir(working_dir);
-        sanitize_command(&mut command);
-        let output = timeout(
-            Duration::from_millis(self.config.runtime.probe_timeout_ms),
-            command.output(),
-        )
-        .await
-        .map_err(|_| artifact_error("executable probe timed out"))?
-        .map_err(artifact_error)?;
-        if !output.status.success() {
-            return Err(artifact_error(format!(
-                "executable probe failed: {}",
-                bounded_stderr(&output.stderr)
-            )));
-        }
-        let text = if output.stdout.is_empty() {
-            &output.stderr
+    ) -> Result<ResolvedExecutable, ClspError> {
+        let cwd = if server.id == "rust" {
+            workspace
         } else {
-            &output.stdout
+            &self.paths.workspace_state
         };
-        Ok(String::from_utf8_lossy(text)
-            .trim()
-            .chars()
-            .take(512)
-            .collect())
+        run_checked(
+            program,
+            args,
+            cwd,
+            Duration::from_secs(self.config.install.command_timeout_seconds),
+            &format!("{} install", server.display_name),
+        )
+        .await?;
+
+        if let Some(mut resolution) = self.resolve_local(server, workspace, None).await {
+            resolution.source = ExecutableSource::Installed;
+            return Ok(resolution);
+        }
+        self.resolve_toolchain_candidate(server, workspace, program, true)
+            .await?
+            .ok_or_else(|| {
+                server_error(format!(
+                    "{} install command succeeded but no compatible executable was found",
+                    server.display_name
+                ))
+            })
+    }
+
+    async fn gopls_candidate(&self, go: &Path) -> Result<Option<PathBuf>, ClspError> {
+        let output = run_checked(
+            go,
+            &["env".to_owned(), "GOBIN".to_owned(), "GOPATH".to_owned()],
+            &self.paths.workspace_state,
+            Duration::from_millis(self.config.runtime.probe_timeout_ms),
+            "go env GOBIN GOPATH",
+        )
+        .await?;
+        let Some(bin) = go_bin_from_env_output(&output.stdout)? else {
+            return Ok(None);
+        };
+        Ok(executable_candidates_in(&bin, "gopls")
+            .into_iter()
+            .find(|path| path.is_file()))
+    }
+
+    async fn rustup_candidate(
+        &self,
+        rustup: &Path,
+        workspace: &Path,
+        required: bool,
+    ) -> Result<Option<PathBuf>, ClspError> {
+        let output = run_command(
+            rustup,
+            &["which".to_owned(), "rust-analyzer".to_owned()],
+            workspace,
+            Duration::from_millis(self.config.runtime.probe_timeout_ms),
+        )
+        .await?;
+        if !output.status.success() {
+            return if required {
+                Err(server_error(format!(
+                    "rustup which rust-analyzer failed: {}",
+                    command_output_detail(&output)
+                )))
+            } else {
+                Ok(None)
+            };
+        }
+        let path = absolute_output_path(&output.stdout, "rustup component path")?;
+        if !path.is_file() {
+            return if required {
+                Err(server_error(format!(
+                    "rustup reported a missing rust-analyzer: {}",
+                    path.display()
+                )))
+            } else {
+                Ok(None)
+            };
+        }
+        Ok(Some(path))
+    }
+
+    async fn probe_server(
+        &self,
+        server: &ServerDefinition,
+        executable: &Path,
+        working_dir: &Path,
+    ) -> Result<ServerProbe, ClspError> {
+        match &server.install {
+            InstallRecipe::Npm { package, .. } => {
+                let probe = probe_npm_package(executable, package, &server.version_req).await?;
+                Ok(ServerProbe {
+                    version_output: probe.version_output,
+                    npm_modules_root: Some(probe.modules_root),
+                })
+            }
+            InstallRecipe::Command { .. } | InstallRecipe::Manual { .. } => {
+                let version_output = self
+                    .probe_compatible(
+                        executable,
+                        &server.version_args,
+                        working_dir,
+                        &server.version_req,
+                    )
+                    .await?;
+                Ok(ServerProbe {
+                    version_output,
+                    npm_modules_root: None,
+                })
+            }
+        }
     }
 
     async fn probe_compatible(
@@ -674,57 +582,124 @@ impl ArtifactManager {
         working_dir: &Path,
         requirement: &str,
     ) -> Result<String, ClspError> {
-        let output = self.probe(executable, args, working_dir).await?;
-        validate_version_output(&output, requirement)?;
-        Ok(output)
+        if !executable.is_file() {
+            return Err(server_error("executable candidate is not a file"));
+        }
+        let output = run_checked(
+            executable,
+            args,
+            working_dir,
+            Duration::from_millis(self.config.runtime.probe_timeout_ms),
+            "executable probe",
+        )
+        .await?;
+        let text = if output.stdout.is_empty() {
+            &output.stderr
+        } else {
+            &output.stdout
+        };
+        let text: String = String::from_utf8_lossy(text)
+            .trim()
+            .chars()
+            .take(512)
+            .collect();
+        validate_version_output(&text, requirement)?;
+        Ok(text)
     }
+}
 
-    async fn probe_server(
-        &self,
-        server: &ServerDefinition,
-        executable: &Path,
-        working_dir: &Path,
-    ) -> Result<String, ClspError> {
-        match &server.install {
-            InstallRecipe::Npm { package, .. } => {
-                probe_npm_package(executable, package, &server.version_req).await
-            }
-            _ => {
-                self.probe_compatible(
-                    executable,
-                    &server.version_args,
-                    working_dir,
-                    &server.version_req,
-                )
-                .await
-            }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NpmManager {
+    Bun,
+    Pnpm,
+    Npm,
+}
+
+impl NpmManager {
+    const ALL: [Self; 3] = [Self::Bun, Self::Pnpm, Self::Npm];
+
+    fn program(self) -> &'static str {
+        match self {
+            Self::Bun => "bun",
+            Self::Pnpm => "pnpm",
+            Self::Npm => "npm",
         }
     }
 
-    async fn validate_npm_bundle(&self, root: &Path) -> Result<(), ClspError> {
-        for server in &self.registry.server {
-            if let InstallRecipe::Npm { executable, .. } = &server.install {
-                self.probe_server(server, &root.join(executable), root)
-                    .await?;
-            }
-        }
-        Ok(())
+    fn install_args(self) -> Vec<String> {
+        let args: &[&str] = match self {
+            Self::Bun => &["install", "--global", "--ignore-scripts"],
+            Self::Pnpm => &["add", "--global", "--ignore-scripts"],
+            Self::Npm => &[
+                "install",
+                "--global",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+            ],
+        };
+        args.iter().map(|value| (*value).to_owned()).collect()
     }
 
-    async fn npm_bundle_ready(&self, root: &Path) -> bool {
-        root.join("artifact.json").is_file() && self.validate_npm_bundle(root).await.is_ok()
+    fn bin_args(self) -> Vec<String> {
+        match self {
+            Self::Bun => ["pm", "bin", "--global"].as_slice(),
+            Self::Pnpm => ["bin", "--global"].as_slice(),
+            Self::Npm => ["prefix", "--global"].as_slice(),
+        }
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect()
     }
+
+    fn modules_args(self) -> Vec<String> {
+        match self {
+            Self::Bun => ["pm", "ls", "--global"].as_slice(),
+            Self::Pnpm | Self::Npm => ["root", "--global"].as_slice(),
+        }
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect()
+    }
+}
+
+#[derive(Debug)]
+struct NpmManagerSelection {
+    manager: NpmManager,
+    executable: PathBuf,
+}
+
+struct NpmRoots {
+    bin: PathBuf,
+    modules: PathBuf,
+}
+
+struct ServerProbe {
+    version_output: String,
+    npm_modules_root: Option<PathBuf>,
+}
+
+struct NpmProbe {
+    version_output: String,
+    modules_root: PathBuf,
+}
+
+#[derive(Debug)]
+struct CommandOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 fn validate_version_output(output: &str, requirement: &str) -> Result<Version, ClspError> {
     let version = parse_version(output).ok_or_else(|| {
-        artifact_error(format!(
+        server_error(format!(
             "executable version probe returned no semantic version: {output}"
         ))
     })?;
-    let requirement = VersionReq::parse(requirement).map_err(artifact_error)?;
+    let requirement = VersionReq::parse(requirement).map_err(server_error)?;
     if !requirement.matches(&version) {
-        return Err(artifact_error(format!(
+        return Err(server_error(format!(
             "executable version {version} does not satisfy {requirement}"
         )));
     }
@@ -747,62 +722,116 @@ async fn probe_npm_package(
     executable: &Path,
     package: &str,
     requirement: &str,
-) -> Result<String, ClspError> {
+) -> Result<NpmProbe, ClspError> {
     if !executable.is_file() {
-        return Err(artifact_error("executable candidate is not a file"));
+        return Err(server_error("executable candidate is not a file"));
     }
-    for manifest in npm_package_manifest_candidates(executable, package) {
+    for (manifest, modules_root) in npm_package_manifest_candidates(executable, package) {
         let Ok(bytes) = tokio::fs::read(&manifest).await else {
             continue;
         };
-        if bytes.len() > 1024 * 1024 {
-            return Err(artifact_error("npm package manifest exceeds limit"));
-        }
-        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(artifact_error)?;
-        let version = value
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| artifact_error("npm package manifest has no version"))?;
-        let parsed = validate_version_output(version, requirement)?;
-        return Ok(format!("{package} {parsed}"));
+        let version_output = parse_npm_manifest_probe(&bytes, package, requirement)?;
+        return Ok(NpmProbe {
+            version_output,
+            modules_root,
+        });
     }
-    Err(artifact_error(format!(
+    Err(server_error(format!(
         "cannot locate package metadata for {package}"
     )))
 }
 
-fn npm_package_manifest_candidates(executable: &Path, package: &str) -> Vec<PathBuf> {
-    let mut candidates = BTreeSet::new();
-    for ancestor in executable.ancestors().skip(1).take(8) {
-        candidates.insert(
-            ancestor
-                .join("node_modules")
-                .join(package)
-                .join("package.json"),
-        );
-        if ancestor
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("node_modules"))
-        {
-            candidates.insert(ancestor.join(package).join("package.json"));
+async fn probe_npm_manifest_in_root(
+    modules_root: &Path,
+    package: &str,
+    requirement: &str,
+) -> Result<String, ClspError> {
+    let manifest = modules_root.join(package).join("package.json");
+    let bytes = tokio::fs::read(&manifest).await.map_err(|error| {
+        server_error(format!(
+            "cannot read npm manifest {}: {error}",
+            manifest.display()
+        ))
+    })?;
+    parse_npm_manifest_probe(&bytes, package, requirement)
+}
+
+fn parse_npm_manifest_probe(
+    bytes: &[u8],
+    package: &str,
+    requirement: &str,
+) -> Result<String, ClspError> {
+    if bytes.len() > 1024 * 1024 {
+        return Err(server_error("npm package manifest exceeds limit"));
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some(package) {
+        return Err(server_error(format!(
+            "npm package manifest name does not match {package}"
+        )));
+    }
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| server_error("npm package manifest has no version"))?;
+    let parsed = validate_version_output(version, requirement)?;
+    Ok(format!("{package} {parsed}"))
+}
+
+fn npm_package_manifest_candidates(executable: &Path, package: &str) -> Vec<(PathBuf, PathBuf)> {
+    let mut executables = vec![executable.to_path_buf()];
+    if let Ok(canonical) = std::fs::canonicalize(executable)
+        && canonical != executable
+    {
+        executables.push(canonical);
+    }
+    let mut roots = Vec::new();
+    let mut seen = BTreeSet::new();
+    for executable in executables {
+        for ancestor in executable.ancestors().skip(1).take(10) {
+            let nested = ancestor.join("node_modules");
+            if seen.insert(nested.clone()) {
+                roots.push(nested);
+            }
+            if ancestor
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("node_modules"))
+                && seen.insert(ancestor.to_path_buf())
+            {
+                roots.push(ancestor.to_path_buf());
+            }
         }
     }
-    candidates.into_iter().collect()
+    roots
+        .into_iter()
+        .map(|root| (root.join(package).join("package.json"), root))
+        .collect()
 }
 
-fn artifact_ready(root: &Path, executable: &Path) -> bool {
-    root.join("artifact.json").is_file() && executable.is_file()
-}
-
-fn reject_incomplete_artifact(root: &Path) -> Result<(), ClspError> {
-    if root.exists() {
-        Err(artifact_error(format!(
-            "cached artifact is incomplete: {}",
-            root.display()
-        )))
-    } else {
-        Ok(())
+async fn verify_exact_npm_manifest(
+    modules_root: &Path,
+    package: &str,
+    version: &str,
+) -> Result<(), ClspError> {
+    let manifest = modules_root.join(package).join("package.json");
+    let bytes = tokio::fs::read(&manifest).await.map_err(|error| {
+        server_error(format!(
+            "cannot read installed npm manifest {}: {error}",
+            manifest.display()
+        ))
+    })?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(server_error("installed npm manifest exceeds limit"));
     }
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some(package)
+        || value.get("version").and_then(serde_json::Value::as_str) != Some(version)
+    {
+        return Err(server_error(format!(
+            "installed npm manifest must be exactly {package}@{version}"
+        )));
+    }
+    Ok(())
 }
 
 fn local_candidates<'a>(
@@ -811,27 +840,68 @@ fn local_candidates<'a>(
     explicit: Option<&'a Path>,
 ) -> Vec<(ExecutableSource, PathBuf)> {
     let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    let virtual_env_bin = if cfg!(windows) { "Scripts" } else { "bin" };
     for base in [
         workspace.join("node_modules").join(".bin"),
-        workspace.join(".venv").join("Scripts"),
+        workspace.join(".venv").join(virtual_env_bin),
         workspace.join("bin"),
     ] {
-        candidates.push((ExecutableSource::ProjectLocal, base.join(&server.command)));
+        for path in executable_candidates_in(&base, &server.command) {
+            if seen.insert(path.clone()) {
+                candidates.push((ExecutableSource::ProjectLocal, path));
+            }
+        }
     }
     if let Some(explicit) = explicit {
-        candidates.push((
-            ExecutableSource::Explicit,
-            if explicit.is_absolute() {
-                explicit.to_path_buf()
-            } else {
-                workspace.join(explicit)
-            },
-        ));
+        let path = if explicit.is_absolute() {
+            explicit.to_path_buf()
+        } else {
+            workspace.join(explicit)
+        };
+        if seen.insert(path.clone()) {
+            candidates.push((ExecutableSource::Explicit, path));
+        }
     }
-    if let Ok(path) = which::which(&server.command) {
-        candidates.push((ExecutableSource::Path, path));
+    for name in executable_names(&server.command) {
+        if let Ok(path) = which::which(&name)
+            && seen.insert(path.clone())
+        {
+            candidates.push((ExecutableSource::Path, path));
+        }
     }
     candidates
+}
+
+fn executable_candidates_in(directory: &Path, command: &str) -> Vec<PathBuf> {
+    executable_names(command)
+        .into_iter()
+        .map(|name| directory.join(name))
+        .collect()
+}
+
+fn executable_names(command: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![
+            format!("{command}.exe"),
+            format!("{command}.cmd"),
+            command.to_owned(),
+        ]
+    } else {
+        vec![command.to_owned()]
+    }
+}
+
+fn npm_install_args(
+    manager: NpmManager,
+    package: &str,
+    version: &str,
+    companions: &[String],
+) -> Vec<String> {
+    let mut args = manager.install_args();
+    args.push(format!("{package}@{version}"));
+    args.extend(companions.iter().cloned());
+    args
 }
 
 pub(crate) fn resolution_fingerprint(
@@ -866,13 +936,36 @@ pub(crate) fn sanitize_command(command: &mut Command) {
     let preserved: Vec<_> = [
         "SystemRoot",
         "WINDIR",
+        "COMSPEC",
         "PATH",
         "PATHEXT",
         "TEMP",
         "TMP",
+        "TMPDIR",
         "USERPROFILE",
         "LOCALAPPDATA",
         "APPDATA",
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "GOBIN",
+        "GOPATH",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "RUSTUP_TOOLCHAIN",
+        "PNPM_HOME",
+        "NPM_CONFIG_PREFIX",
+        "BUN_INSTALL",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
     ]
     .into_iter()
     .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
@@ -888,191 +981,158 @@ pub(crate) fn sanitize_command(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
-async fn extract_archive(
-    archive: PathBuf,
-    destination: PathBuf,
-    url: String,
-    max_bytes: u64,
-) -> Result<(), ClspError> {
-    tokio::task::spawn_blocking(move || {
-        if url.ends_with(".zip") {
-            extract_zip(&archive, &destination, max_bytes)
-        } else if url.ends_with(".tgz") || url.ends_with(".tar.gz") {
-            extract_tar_gz(&archive, &destination, max_bytes)
-        } else if url.ends_with(".gz") {
-            extract_single_gzip(&archive, &destination, max_bytes)
-        } else {
-            Err(artifact_error("unsupported archive format"))
+async fn run_command(
+    executable: &Path,
+    args: &[String],
+    cwd: &Path,
+    duration: Duration,
+) -> Result<CommandOutput, ClspError> {
+    let mut command = Command::new(executable);
+    command.args(args).current_dir(cwd);
+    sanitize_command(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| server_error(format!("cannot start {}: {error}", executable.display())))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| server_error("child stdout was not captured"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| server_error("child stderr was not captured"))?;
+    let stdout = tokio::spawn(read_prefix(stdout));
+    let stderr = tokio::spawn(read_prefix(stderr));
+
+    let result = timeout(duration, child.wait()).await;
+    let timed_out = result.is_err();
+    let status = match result {
+        Ok(Ok(status)) => Some(status),
+        Ok(Err(error)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(server_error(format!(
+                "cannot wait for {}: {error}",
+                executable.display()
+            )));
         }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            None
+        }
+    };
+    let stdout = stdout.await.unwrap_or_default();
+    let stderr = stderr.await.unwrap_or_default();
+    if timed_out {
+        return Err(server_error(format!(
+            "{} timed out after {}s; stdout: {}; stderr: {}",
+            executable.display(),
+            duration.as_secs_f64(),
+            bounded_text(&stdout),
+            bounded_text(&stderr)
+        )));
+    }
+    Ok(CommandOutput {
+        status: status.expect("non-timeout child has an exit status"),
+        stdout,
+        stderr,
     })
-    .await
-    .map_err(artifact_error)?
 }
 
-fn extract_zip(archive: &Path, destination: &Path, max_bytes: u64) -> Result<(), ClspError> {
-    let file = File::open(archive).map_err(artifact_error)?;
-    let mut zip = zip::ZipArchive::new(file).map_err(artifact_error)?;
-    let mut total = 0u64;
-    for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).map_err(artifact_error)?;
-        let Some(relative) = entry.enclosed_name() else {
-            return Err(artifact_error("ZIP contains an unsafe path"));
-        };
-        validate_archive_path(&relative)?;
-        if entry
-            .unix_mode()
-            .is_some_and(|mode| mode & 0o170000 == 0o120000)
-        {
-            return Err(artifact_error("ZIP links are not allowed"));
+async fn read_prefix(mut reader: impl AsyncRead + Unpin) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let mut buffer = [0u8; 1024];
+    while let Ok(read) = reader.read(&mut buffer).await {
+        if read == 0 {
+            break;
         }
-        total = total.saturating_add(entry.size());
-        if total > max_bytes {
-            return Err(artifact_error("extracted ZIP exceeds configured limit"));
-        }
-        let target = destination.join(relative);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&target).map_err(artifact_error)?;
-            continue;
-        }
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(artifact_error)?;
-        }
-        let mut output = File::create(target).map_err(artifact_error)?;
-        std::io::copy(&mut entry, &mut output).map_err(artifact_error)?;
+        let remaining = OUTPUT_LIMIT.saturating_sub(kept.len());
+        kept.extend_from_slice(&buffer[..read.min(remaining)]);
     }
-    Ok(())
+    kept
 }
 
-fn extract_tar_gz(archive: &Path, destination: &Path, max_bytes: u64) -> Result<(), ClspError> {
-    let file = File::open(archive).map_err(artifact_error)?;
-    let mut archive = tar::Archive::new(GzDecoder::new(file));
-    let mut total = 0u64;
-    for entry in archive.entries().map_err(artifact_error)? {
-        let mut entry = entry.map_err(artifact_error)?;
-        let kind = entry.header().entry_type();
-        if !(kind.is_file() || kind.is_dir()) {
-            return Err(artifact_error(
-                "TAR links and special files are not allowed",
-            ));
-        }
-        let path = entry.path().map_err(artifact_error)?.into_owned();
-        validate_archive_path(&path)?;
-        total = total.saturating_add(entry.size());
-        if total > max_bytes {
-            return Err(artifact_error("extracted TAR exceeds configured limit"));
-        }
-        let target = destination.join(path);
-        if kind.is_dir() {
-            std::fs::create_dir_all(target).map_err(artifact_error)?;
-        } else {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent).map_err(artifact_error)?;
-            }
-            entry.unpack(target).map_err(artifact_error)?;
-        }
+async fn run_checked(
+    executable: &Path,
+    args: &[String],
+    cwd: &Path,
+    duration: Duration,
+    label: &str,
+) -> Result<CommandOutput, ClspError> {
+    let output = run_command(executable, args, cwd, duration).await?;
+    if !output.status.success() {
+        return Err(server_error(format!(
+            "{label} exited with {}; {}",
+            output.status,
+            command_output_detail(&output)
+        )));
     }
-    Ok(())
+    Ok(output)
 }
 
-fn extract_single_gzip(
-    archive: &Path,
-    destination: &Path,
-    max_bytes: u64,
-) -> Result<(), ClspError> {
-    let file = File::open(archive).map_err(artifact_error)?;
-    let mut decoder = GzDecoder::new(file).take(max_bytes.saturating_add(1));
-    let target = destination.join("artifact");
-    let mut output = File::create(target).map_err(artifact_error)?;
-    let written = std::io::copy(&mut decoder, &mut output).map_err(artifact_error)?;
-    if written > max_bytes {
-        return Err(artifact_error("extracted gzip exceeds configured limit"));
-    }
-    Ok(())
+fn command_output_detail(output: &CommandOutput) -> String {
+    format!(
+        "stdout: {}; stderr: {}",
+        bounded_text(&output.stdout),
+        bounded_text(&output.stderr)
+    )
 }
 
-fn validate_archive_path(path: &Path) -> Result<(), ClspError> {
-    if path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::Prefix(_) | Component::RootDir
-            )
-        })
-    {
-        return Err(artifact_error("archive contains an unsafe path"));
+fn bounded_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(OUTPUT_LIMIT)]).replace(['\r', '\n'], " ")
+}
+
+fn absolute_output_path(output: &[u8], label: &str) -> Result<PathBuf, ClspError> {
+    let text = std::str::from_utf8(output).map_err(server_error)?;
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .ok_or_else(|| server_error(format!("{label} returned no path")))?;
+    let path = PathBuf::from(line);
+    if !path.is_absolute() {
+        return Err(server_error(format!("{label} is not absolute: {line}")));
     }
-    for component in path.components() {
-        let Component::Normal(name) = component else {
-            continue;
-        };
-        let name = name.to_string_lossy();
-        if name.contains(':') || name.ends_with([' ', '.']) {
-            return Err(artifact_error(
-                "archive contains a Windows alternate stream or ambiguous name",
-            ));
-        }
-        let stem = name
-            .split('.')
+    Ok(path)
+}
+
+fn bun_modules_root(output: &[u8]) -> Result<PathBuf, ClspError> {
+    let text = std::str::from_utf8(output).map_err(server_error)?;
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .ok_or_else(|| server_error("bun pm ls --global returned no root"))?;
+    let root = line
+        .split_once(" node_modules (")
+        .map(|(root, _)| PathBuf::from(root.trim()))
+        .filter(|root| root.is_absolute())
+        .ok_or_else(|| server_error("bun pm ls --global returned an unsupported root shape"))?;
+    Ok(root.join("node_modules"))
+}
+
+fn go_bin_from_env_output(output: &[u8]) -> Result<Option<PathBuf>, ClspError> {
+    let text = std::str::from_utf8(output).map_err(server_error)?;
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = normalized.split('\n');
+    let gobin = lines.next().unwrap_or_default().trim();
+    let gopath = lines.next().unwrap_or_default().trim();
+    let bin = if gobin.is_empty() {
+        std::env::split_paths(OsStr::new(gopath))
             .next()
-            .unwrap_or_default()
-            .trim_end_matches([' ', '.'])
-            .to_ascii_uppercase();
-        if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || stem
-                .strip_prefix("COM")
-                .or_else(|| stem.strip_prefix("LPT"))
-                .is_some_and(|number| {
-                    matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-                })
-        {
-            return Err(artifact_error(
-                "archive contains a reserved Windows device name",
-            ));
-        }
+            .map(|path| path.join("bin"))
+    } else {
+        Some(PathBuf::from(gobin))
+    };
+    match bin {
+        Some(path) if path.is_absolute() => Ok(Some(path)),
+        Some(path) => Err(server_error(format!(
+            "go env reported a non-absolute bin path: {}",
+            path.display()
+        ))),
+        None => Ok(None),
     }
-    Ok(())
-}
-
-async fn publish_directory(temp: &Path, final_dir: &Path) -> Result<(), ClspError> {
-    if final_dir.exists() {
-        tokio::fs::remove_dir_all(temp)
-            .await
-            .map_err(artifact_error)?;
-        return Ok(());
-    }
-    if let Some(parent) = final_dir.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(artifact_error)?;
-    }
-    tokio::fs::rename(temp, final_dir)
-        .await
-        .map_err(artifact_error)
-}
-
-async fn write_metadata(
-    directory: &Path,
-    id: &str,
-    source: &str,
-    digest: &str,
-) -> Result<(), ClspError> {
-    #[derive(Serialize)]
-    struct Metadata<'a> {
-        id: &'a str,
-        source: &'a str,
-        digest: &'a str,
-        target: &'a str,
-    }
-    let bytes = serde_json::to_vec_pretty(&Metadata {
-        id,
-        source,
-        digest,
-        target: "x86_64-pc-windows-msvc",
-    })
-    .map_err(artifact_error)?;
-    tokio::fs::write(directory.join("artifact.json"), bytes)
-        .await
-        .map_err(artifact_error)
 }
 
 async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ClspError> {
@@ -1081,173 +1141,248 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ClspError> {
         std::process::id(),
         TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    tokio::fs::write(&temp, bytes)
-        .await
-        .map_err(artifact_error)?;
-    crate::ipc::atomic_replace(&temp, path).map_err(artifact_error)
+    tokio::fs::write(&temp, bytes).await.map_err(server_error)?;
+    crate::ipc::atomic_replace(&temp, path).map_err(server_error)
 }
 
-fn temporary_sibling(final_dir: &Path) -> PathBuf {
-    let name = final_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("artifact");
-    final_dir.with_file_name(format!(
-        ".{name}.tmp-{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
+fn runtime_error(error: impl std::fmt::Display) -> ClspError {
+    ClspError::new(ErrorCode::RuntimeUnavailable, error.to_string())
 }
 
-fn temporary_download(directory: &Path, key: &str) -> PathBuf {
-    directory.join(format!(
-        "{}.{}-{}.part",
-        safe_key(key),
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-fn cleanup_stale_entries(root: &Path, descend_once: bool, minimum_age: Duration) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let temporary = name.ends_with(".part") || name.contains(".tmp-");
-        let old_enough = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-            .is_some_and(|age| age >= minimum_age);
-        if temporary && old_enough {
-            if metadata.is_dir() {
-                let _ = std::fs::remove_dir_all(path);
-            } else {
-                let _ = std::fs::remove_file(path);
-            }
-        } else if descend_once && metadata.is_dir() {
-            cleanup_stale_entries(&path, false, minimum_age);
-        }
-    }
-}
-
-fn safe_key(key: &str) -> String {
-    key.chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-fn bounded_stderr(stderr: &[u8]) -> String {
-    String::from_utf8_lossy(&stderr[..stderr.len().min(4_096)]).replace(['\r', '\n'], " ")
-}
-
-fn artifact_error(error: impl std::fmt::Display) -> ClspError {
-    ClspError::new(ErrorCode::ArtifactUnavailable, error.to_string()).retryable()
+fn server_error(error: impl std::fmt::Display) -> ClspError {
+    ClspError::new(ErrorCode::ServerUnavailable, error.to_string()).retryable()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::Registry;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
-    #[test]
-    fn rejects_unsafe_archive_paths() {
-        assert!(validate_archive_path(Path::new("bin/server.exe")).is_ok());
-        assert!(validate_archive_path(Path::new("../server.exe")).is_err());
-        assert!(validate_archive_path(Path::new("C:/server.exe")).is_err());
-        assert!(validate_archive_path(Path::new("bin/server.exe:payload")).is_err());
-        assert!(validate_archive_path(Path::new("bin/server.exe.")).is_err());
+    fn test_resolver(root: &Path) -> ServerResolver {
+        let paths = StatePaths {
+            workspace_state: root.join("state"),
+            logs: root.join("state/logs"),
+        };
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        ServerResolver::new(Config::default(), paths)
+    }
+
+    #[cfg(windows)]
+    fn fake_executable(root: &Path, name: &str, body: &str) -> PathBuf {
+        let path = root.join(format!("{name}.cmd"));
+        std::fs::write(&path, format!("@echo off\r\n{body}\r\n")).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn fake_executable(root: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = root.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 
     #[test]
-    fn temporary_names_are_unique_and_adjacent() {
-        let final_dir = Path::new("C:/cache/server/1.0");
-        let first = temporary_sibling(final_dir);
-        let second = temporary_sibling(final_dir);
-        assert_ne!(first, second);
-        assert_eq!(first.parent(), final_dir.parent());
-
-        let first = temporary_download(final_dir, "server:rust");
-        let second = temporary_download(final_dir, "server:rust");
-        assert_ne!(first, second);
-        assert_eq!(first.parent(), Some(final_dir));
+    fn npm_manager_order_and_exact_argv_are_fixed() {
+        assert_eq!(
+            NpmManager::ALL,
+            [NpmManager::Bun, NpmManager::Pnpm, NpmManager::Npm]
+        );
+        assert_eq!(
+            NpmManager::Bun.install_args(),
+            ["install", "--global", "--ignore-scripts"]
+        );
+        assert_eq!(
+            NpmManager::Pnpm.install_args(),
+            ["add", "--global", "--ignore-scripts"]
+        );
+        assert_eq!(
+            NpmManager::Npm.install_args(),
+            [
+                "install",
+                "--global",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund"
+            ]
+        );
+        assert_eq!(
+            npm_install_args(
+                NpmManager::Bun,
+                "@astrojs/language-server",
+                "2.16.13",
+                &["typescript@5.9.2".to_owned()]
+            ),
+            [
+                "install",
+                "--global",
+                "--ignore-scripts",
+                "@astrojs/language-server@2.16.13",
+                "typescript@5.9.2"
+            ]
+        );
     }
 
-    #[test]
-    fn stale_cleanup_only_removes_temporary_entries() {
+    #[tokio::test]
+    async fn manager_probe_skips_failures_without_reordering() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("download.1-1.part"), b"partial").unwrap();
-        std::fs::write(root.path().join("artifact.json"), b"keep").unwrap();
-        cleanup_stale_entries(root.path(), false, Duration::ZERO);
-        assert!(!root.path().join("download.1-1.part").exists());
-        assert!(root.path().join("artifact.json").exists());
+        let resolver = test_resolver(root.path());
+        let failed = fake_executable(root.path(), "bun", "exit /b 9");
+        let working = fake_executable(root.path(), "pnpm", "echo 10.0.0");
+        let unused = fake_executable(root.path(), "npm", "echo 12.0.0");
+
+        let selected = resolver
+            .select_npm_manager_from([
+                (NpmManager::Bun, failed),
+                (NpmManager::Pnpm, working.clone()),
+                (NpmManager::Npm, unused),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(selected.manager, NpmManager::Pnpm);
+        assert_eq!(selected.executable, working);
+        assert_eq!(
+            resolver
+                .select_npm_manager_from(Vec::new())
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::RuntimeUnavailable
+        );
     }
 
-    #[test]
-    fn npm_lock_has_exact_https_integrity_for_every_package() {
-        let lock: serde_json::Value = serde_json::from_slice(NPM_PACKAGE_LOCK).unwrap();
-        let package: serde_json::Value = serde_json::from_slice(NPM_PACKAGE_JSON).unwrap();
-        for (package, metadata) in lock["packages"].as_object().unwrap() {
-            if package.is_empty() {
-                continue;
-            }
-            assert!(metadata["version"].is_string(), "{package}");
-            assert!(
-                metadata["resolved"]
-                    .as_str()
-                    .is_some_and(|value| value.starts_with("https://registry.npmjs.org/")),
-                "{package}"
-            );
-            assert!(
-                metadata["integrity"]
-                    .as_str()
-                    .is_some_and(|value| value.starts_with("sha512-")),
-                "{package}"
-            );
-        }
-        let registry = Registry::builtin().unwrap();
-        for server in &registry.server {
-            if let InstallRecipe::Npm {
-                version,
-                package: name,
-                ..
-            } = &server.install
-            {
-                assert_eq!(package["dependencies"][name], version.as_str());
-                assert_eq!(lock["packages"][""]["dependencies"][name], version.as_str());
-                assert!(validate_version_output(version, &server.version_req).is_ok());
-            }
-        }
+    #[tokio::test]
+    async fn selected_manager_install_failure_is_terminal() {
+        let root = tempfile::tempdir().unwrap();
+        let resolver = test_resolver(root.path());
+        let failed = fake_executable(root.path(), "bun", "exit /b 9");
+        let server = Registry::builtin()
+            .unwrap()
+            .server("pyright")
+            .unwrap()
+            .clone();
+        let manager = NpmManagerSelection {
+            manager: NpmManager::Bun,
+            executable: failed,
+        };
+
+        let error = resolver
+            .install_npm(&server, &manager, "pyright", "1.1.405", &[])
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("bun global install"));
+    }
+
+    #[tokio::test]
+    async fn post_install_missing_manager_roots_fail() {
+        let root = tempfile::tempdir().unwrap();
+        let resolver = test_resolver(root.path());
+        let missing = root.path().join("missing-global-root");
+        let manager = NpmManagerSelection {
+            manager: NpmManager::Npm,
+            executable: fake_executable(
+                root.path(),
+                "npm-roots",
+                &format!("echo {}", missing.display()),
+            ),
+        };
+
+        let error = match resolver.npm_roots(&manager, true).await {
+            Ok(_) => panic!("missing roots must fail"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("reported missing global roots"));
+    }
+
+    #[tokio::test]
+    async fn compatible_project_executable_never_starts_install() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let bin = workspace.join("node_modules/.bin");
+        let package = workspace.join("node_modules/pyright");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        let server = Registry::builtin()
+            .unwrap()
+            .server("pyright")
+            .unwrap()
+            .clone();
+        std::fs::write(bin.join(&executable_names(&server.command)[0]), b"wrapper").unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            br#"{"name":"pyright","version":"1.1.405"}"#,
+        )
+        .unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let callback = Arc::clone(&called);
+
+        let resolution = test_resolver(root.path())
+            .resolve_server(&server, &workspace, None, move || async move {
+                callback.store(true, Ordering::Relaxed);
+            })
+            .await
+            .unwrap();
+        assert_eq!(resolution.source, ExecutableSource::ProjectLocal);
+        assert!(!called.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn command_runner_bounds_output_and_reports_nonzero() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let body = "for /L %%i in (1,1,5000) do <nul set /p \"=x\"\r\n>&2 echo failed\r\nexit /b 7";
+        #[cfg(unix)]
+        let body = "head -c 5000 /dev/zero | tr '\\0' x\necho failed >&2\nexit 7";
+        let executable = fake_executable(root.path(), "bounded", body);
+        let output = run_command(&executable, &[], root.path(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(output.stdout.len(), OUTPUT_LIMIT);
+        assert!(bounded_text(&output.stderr).contains("failed"));
+    }
+
+    #[tokio::test]
+    async fn command_runner_times_out_and_reaps() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let body = ":loop\r\ngoto loop";
+        #[cfg(unix)]
+        let body = "while :; do :; done";
+        let executable = fake_executable(root.path(), "timeout", body);
+        let error = run_command(&executable, &[], root.path(), Duration::from_millis(25))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("timed out"));
     }
 
     #[test]
     fn locates_project_and_global_npm_package_manifests() {
         let project = Path::new("C:/work/node_modules/.bin/pyright-langserver.cmd");
         assert!(
-            npm_package_manifest_candidates(project, "pyright")
-                .contains(&PathBuf::from("C:/work/node_modules/pyright/package.json"))
+            npm_package_manifest_candidates(project, "pyright").contains(&(
+                PathBuf::from("C:/work/node_modules/pyright/package.json"),
+                PathBuf::from("C:/work/node_modules")
+            ))
         );
 
         let global = Path::new("C:/Users/me/AppData/Roaming/npm/pyright-langserver.cmd");
         assert!(
-            npm_package_manifest_candidates(global, "pyright").contains(&PathBuf::from(
-                "C:/Users/me/AppData/Roaming/npm/node_modules/pyright/package.json"
+            npm_package_manifest_candidates(global, "pyright").contains(&(
+                PathBuf::from("C:/Users/me/AppData/Roaming/npm/node_modules/pyright/package.json"),
+                PathBuf::from("C:/Users/me/AppData/Roaming/npm/node_modules")
             ))
         );
     }
 
     #[tokio::test]
-    async fn npm_server_version_comes_from_manifest_without_running_the_wrapper() {
+    async fn npm_server_version_comes_from_named_manifest_without_running_wrapper() {
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("node_modules/.bin");
         let package = root.path().join("node_modules/pyright");
@@ -1255,14 +1390,140 @@ mod tests {
         std::fs::create_dir_all(&package).unwrap();
         let executable = bin.join("pyright-langserver.cmd");
         std::fs::write(&executable, b"@exit /b 99").unwrap();
-        std::fs::write(package.join("package.json"), br#"{"version":"1.1.405"}"#).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            br#"{"name":"pyright","version":"1.1.405"}"#,
+        )
+        .unwrap();
+
+        let probe = probe_npm_package(&executable, "pyright", ">=1.1.300, <2.0.0")
+            .await
+            .unwrap();
+        assert_eq!(probe.version_output, "pyright 1.1.405");
+        assert_eq!(probe.modules_root, root.path().join("node_modules"));
+    }
+
+    #[tokio::test]
+    async fn npm_global_resolution_uses_the_manager_modules_root() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("global-bin");
+        let modules = root.path().join("global-store/node_modules");
+        let package = modules.join("pyright");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        let server = Registry::builtin()
+            .unwrap()
+            .server("pyright")
+            .unwrap()
+            .clone();
+        std::fs::write(bin.join(&executable_names(&server.command)[0]), b"wrapper").unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            br#"{"name":"pyright","version":"1.1.405"}"#,
+        )
+        .unwrap();
+
+        let resolution = test_resolver(root.path())
+            .resolve_npm_in_roots(
+                &server,
+                &NpmRoots {
+                    bin,
+                    modules: modules.clone(),
+                },
+                false,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolution.npm_modules_root, Some(modules));
+        assert_eq!(resolution.version_output, "pyright 1.1.405");
+    }
+
+    #[tokio::test]
+    async fn exact_npm_manifest_rejects_wrong_name_or_version() {
+        let root = tempfile::tempdir().unwrap();
+        let package = root.path().join("pyright");
+        std::fs::create_dir(&package).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            br#"{"name":"other","version":"1.1.405"}"#,
+        )
+        .unwrap();
+        assert!(
+            verify_exact_npm_manifest(root.path(), "pyright", "1.1.405")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn rustup_candidate_uses_reported_component_path() {
+        let root = tempfile::tempdir().unwrap();
+        let resolver = test_resolver(root.path());
+        let analyzer = root.path().join(&executable_names("rust-analyzer")[0]);
+        std::fs::write(&analyzer, b"binary").unwrap();
+        let rustup = fake_executable(
+            root.path(),
+            "rustup",
+            &format!("echo {}", analyzer.display()),
+        );
 
         assert_eq!(
-            probe_npm_package(&executable, "pyright", ">=1.1.300, <2.0.0")
+            resolver
+                .rustup_candidate(&rustup, root.path(), true)
                 .await
                 .unwrap(),
-            "pyright 1.1.405"
+            Some(analyzer)
         );
+    }
+
+    #[tokio::test]
+    async fn manual_recipe_blocks_without_starting_install() {
+        let root = tempfile::tempdir().unwrap();
+        let mut server = Registry::builtin()
+            .unwrap()
+            .server("clangd")
+            .unwrap()
+            .clone();
+        server.command = "missing-clangd-for-test".to_owned();
+        let called = Arc::new(AtomicBool::new(false));
+        let callback = Arc::clone(&called);
+
+        let error = test_resolver(root.path())
+            .resolve_server(&server, root.path(), None, move || async move {
+                callback.store(true, Ordering::Relaxed);
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::RuntimeUnavailable);
+        assert!(!called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn parses_bun_and_go_roots() {
+        let bun = if cfg!(windows) {
+            br#"C:\Users\me\.bun\install\global node_modules (3)"#.as_slice()
+        } else {
+            b"/home/me/.bun/install/global node_modules (3)"
+        };
+        let expected = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\me\.bun\install\global\node_modules")
+        } else {
+            PathBuf::from("/home/me/.bun/install/global/node_modules")
+        };
+        assert_eq!(bun_modules_root(bun).unwrap(), expected);
+
+        let go = if cfg!(windows) {
+            b"\r\nC:\\Users\\me\\go\r\n".as_slice()
+        } else {
+            b"\n/home/me/go\n".as_slice()
+        };
+        let expected = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\me\go\bin")
+        } else {
+            PathBuf::from("/home/me/go/bin")
+        };
+        assert_eq!(go_bin_from_env_output(go).unwrap(), Some(expected));
     }
 
     #[test]
@@ -1303,7 +1564,7 @@ mod tests {
         std::fs::create_dir(&bin).unwrap();
         let registry = Registry::builtin().unwrap();
         let server = registry.server("rust").unwrap();
-        let executable = bin.join(&server.command);
+        let executable = bin.join(&executable_names(&server.command)[0]);
         std::fs::write(&executable, b"one").unwrap();
         let first = resolution_fingerprint(server, directory.path(), None);
         std::fs::write(executable, b"different-size").unwrap();

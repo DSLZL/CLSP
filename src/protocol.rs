@@ -19,8 +19,6 @@ pub enum ErrorCode {
     PathOutsideWorkspace,
     UnsupportedFile,
     RuntimeUnavailable,
-    ArtifactUnavailable,
-    IntegrityFailure,
     ServerUnavailable,
     BrokerUnavailable,
     AuthenticationFailed,

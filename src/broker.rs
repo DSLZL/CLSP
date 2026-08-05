@@ -23,7 +23,7 @@ use tokio::{
 use crate::{
     config::{Config, ConfigOverrides},
     installer::{
-        ArtifactManager, ExecutableSource, ResolvedExecutable, StatePaths, resolution_fingerprint,
+        ExecutableSource, ResolvedExecutable, ServerResolver, StatePaths, resolution_fingerprint,
     },
     ipc::{
         BrokerMetadata, apply_user_system_dacl, authenticate_server, create_pipe_server, pipe_name,
@@ -186,7 +186,7 @@ pub struct Broker {
     config: Config,
     workspace: Workspace,
     registry: Registry,
-    artifacts: Arc<ArtifactManager>,
+    resolver: Arc<ServerResolver>,
     servers: RwLock<BTreeMap<ClientKey, Arc<ServerHandle>>>,
     leases: Mutex<LeaseBook>,
     ide: Mutex<IdeRegistry>,
@@ -218,17 +218,13 @@ impl Broker {
         ));
         let event_log = paths.logs.join("events.jsonl");
         cleanup_ide_reviews(&paths.workspace_state.join("ide-review"));
-        let artifacts = Arc::new(ArtifactManager::new(
-            config.clone(),
-            registry.clone(),
-            paths,
-        )?);
+        let resolver = Arc::new(ServerResolver::new(config.clone(), paths));
         let (event_tx, _) = broadcast::channel(EVENT_RING_CAPACITY);
         Ok(Arc::new(Self {
             config,
             workspace,
             registry,
-            artifacts,
+            resolver,
             servers: RwLock::new(BTreeMap::new()),
             leases: Mutex::new(LeaseBook::default()),
             ide: Mutex::new(IdeRegistry::default()),
@@ -250,7 +246,7 @@ impl Broker {
     }
 
     pub fn paths(&self) -> &StatePaths {
-        self.artifacts.paths()
+        self.resolver.paths()
     }
 
     pub async fn handle(self: &Arc<Self>, request: RpcRequest) -> Result<RpcResponse, ClspError> {
@@ -1446,20 +1442,16 @@ impl Broker {
             (server.definition.clone(), server.key.clone())
         };
         let override_config = self.config.lsp.get(&definition.id);
-        let policy = override_config
-            .and_then(|value| value.policy)
-            .unwrap_or(self.config.runtime.policy);
         let explicit = override_config.and_then(|value| value.executable.clone());
         let install_broker = Arc::clone(self);
         let install_handle = Arc::clone(&handle);
         let install_server_id = definition.id.clone();
         let resolution = self
-            .artifacts
+            .resolver
             .resolve_server(
                 &definition,
                 &server_key.root,
                 explicit.as_deref(),
-                policy,
                 move || async move {
                     let mut server = install_handle.inner.lock().await;
                     server.install_progress = Some(0.0);
@@ -1496,7 +1488,7 @@ impl Broker {
             .await;
         {
             let mut server = handle.inner.lock().await;
-            if resolution.source == ExecutableSource::Managed {
+            if resolution.source == ExecutableSource::Installed {
                 server.install_progress = Some(1.0);
                 self.publish(EventBody::InstallProgress {
                     server_id: definition.id.clone(),
@@ -1519,6 +1511,7 @@ impl Broker {
             max_file_bytes: self.config.limits.max_file_bytes,
             max_stderr_bytes: self.config.limits.max_stderr_bytes,
             max_diagnostics_per_file: self.config.diagnostics.max_per_file,
+            npm_modules_root: resolution.npm_modules_root.as_deref(),
         })
         .await;
         match client {
@@ -1533,13 +1526,22 @@ impl Broker {
             }
             Err(error) => {
                 let mut server = handle.inner.lock().await;
-                let retry_seconds = mark_failure(&mut server);
-                self.set_state(
-                    &mut server,
-                    ServerState::Failed,
-                    Some(format!("{}; retry in {retry_seconds}s", error.message)),
-                )
-                .await;
+                if error.code == ErrorCode::RuntimeUnavailable {
+                    self.set_state(
+                        &mut server,
+                        ServerState::Blocked,
+                        Some(error.message.clone()),
+                    )
+                    .await;
+                } else {
+                    let retry_seconds = mark_failure(&mut server);
+                    self.set_state(
+                        &mut server,
+                        ServerState::Failed,
+                        Some(format!("{}; retry in {retry_seconds}s", error.message)),
+                    )
+                    .await;
+                }
                 Err(error)
             }
         }
@@ -1814,11 +1816,7 @@ impl Broker {
     async fn record_resolution(&self, key: ClientKey, resolution: ResolvedExecutable) {
         let mut resolutions = self.resolutions.lock().await;
         resolutions.insert(key, resolution);
-        if let Err(error) = self
-            .artifacts
-            .write_workspace_lock(resolutions.iter())
-            .await
-        {
+        if let Err(error) = self.resolver.write_workspace_lock(resolutions.iter()).await {
             drop(resolutions);
             self.publish(EventBody::BrokerMessage {
                 message: format!("cannot update lsp.lock: {}", error.message),
@@ -2201,9 +2199,9 @@ impl Drop for WorkGuard {
 
 fn recipe_version(recipe: &InstallRecipe) -> &str {
     match recipe {
-        InstallRecipe::Archive { version, .. }
-        | InstallRecipe::Npm { version, .. }
-        | InstallRecipe::Go { version, .. } => version,
+        InstallRecipe::Npm { version, .. }
+        | InstallRecipe::Command { version, .. }
+        | InstallRecipe::Manual { version, .. } => version,
     }
 }
 
@@ -2447,23 +2445,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace_root = directory.path().join("workspace");
         let state = directory.path().join("state");
-        let cache = directory.path().join("cache");
         let paths = StatePaths {
-            runtimes: cache.join("runtimes"),
-            artifacts: cache.join("artifacts"),
-            downloads: cache.join("downloads"),
             logs: state.join("logs"),
             workspace_state: state,
-            cache,
         };
         fs::create_dir_all(&workspace_root).unwrap();
-        for path in [
-            &paths.runtimes,
-            &paths.artifacts,
-            &paths.downloads,
-            &paths.logs,
-            &paths.workspace_state,
-        ] {
+        for path in [&paths.logs, &paths.workspace_state] {
             fs::create_dir_all(path).unwrap();
         }
         let workspace = Workspace::open(&workspace_root).unwrap();

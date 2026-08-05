@@ -22,6 +22,17 @@ clsp setup --workspace .
 
 npm 包已同时包含 `clsp.exe` 和 `clsp-ide.vsix`，不需要手工下载 ZIP，也不需要从 Marketplace 获取插件。VS Code 扩展仍然是读取实时编辑器内存状态所必需的部分，但由 `clsp setup` 本地安装。
 
+## Language Server 安装
+
+CLSP 先复用项目 `node_modules/.bin`、虚拟环境、项目 `bin`、显式路径或 `PATH` 中版本兼容的服务器。缺失且 `auto_install = true` 时，CLSP 只执行用户本机已有的安装命令并验证结果；它不再直接下载、解压、校验或持有 Node/npm/LSP 制品。
+
+- npm 型服务器固定按 `bun` > `pnpm` > `npm` 探测，使用第一个版本探测成功的管理器执行全局、精确版本安装。选中后安装或 root 查询失败不会静默改用下一个管理器。
+- Astro 与 TypeScript Language Server 会在同一命令中安装固定版本 TypeScript；Pyright 与 YAML Language Server 只安装自身。
+- gopls 使用本地 `go install`，不覆盖 `GOBIN`；rust-analyzer 使用当前 workspace 对应的 `rustup component add rust-analyzer`。
+- clangd 缺失时进入 `Blocked` 并提示本地安装或配置显式路径，不自动调用 winget、Chocolatey、Scoop 或系统包管理器。
+
+命令退出成功后，CLSP 仍会从所选工具报告的用户目录重新发现 executable、校验包名/版本并完成 LSP initialize。全局目录不可用或未包含兼容服务器时不会报告安装成功。网络、代理、证书和 registry 行为由被调用的本地包管理器或工具链负责。
+
 ## 实时 IDE 能力
 
 - 每个 VS Code 窗口生成一个临时 session ID，并只绑定该窗口新开的 integrated terminals。
@@ -50,7 +61,7 @@ CLSP 向模型开放四个只读工具：
 
 通常应使用 `clsp setup`。需要审阅生成内容时参见 [examples/codex-config.toml](examples/codex-config.toml) 和 [examples/codex-hooks.json](examples/codex-hooks.json)。旧的 `[mcp_servers.lsp]` 若 command 是 CLSP，会被原位接管，不会创建第二个 CLSP MCP。
 
-项目 `.clsp.toml` 仍可配置运行时和诊断：
+项目 `.clsp.toml` 仍可配置探测、命令执行和诊断：
 
 ```toml
 enabled = true
@@ -58,7 +69,10 @@ auto_install = true
 prewarm = true
 
 [runtime]
-policy = "prefer-local" # prefer-local | local-only | managed-only
+probe_timeout_ms = 1500
+
+[install]
+command_timeout_seconds = 180
 
 [diagnostics]
 minimum_severity = "warning"
@@ -68,6 +82,8 @@ session_lease_seconds = 300
 server_idle_seconds = 600
 broker_idle_seconds = 900
 ```
+
+`auto_install = false` 只复用已经可发现的兼容服务器，不执行任何安装命令。旧的 `runtime.policy`、per-LSP `policy` 和下载配置已移除，继续配置会返回明确的无效配置错误。
 
 ## 状态与降级
 

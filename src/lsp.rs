@@ -31,6 +31,7 @@ const HEADER_LIMIT: usize = 8 * 1024;
 const MAX_HOVER_CHARS: usize = 64 * 1024;
 const MAX_LOCATIONS: usize = 100;
 const ASTRO_SERVER_ID: &str = "astro";
+const TYPESCRIPT_SERVER_ID: &str = "typescript";
 
 type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, ClspError>>>>>;
 
@@ -259,6 +260,7 @@ pub struct LspStartOptions<'a> {
     pub max_file_bytes: u64,
     pub max_stderr_bytes: usize,
     pub max_diagnostics_per_file: usize,
+    pub npm_modules_root: Option<&'a Path>,
 }
 
 impl LspClient {
@@ -268,6 +270,7 @@ impl LspClient {
             options.root,
             options.workspace.root(),
             options.executable,
+            options.npm_modules_root,
         )?;
         let mut command = Command::new(options.executable);
         command.args(options.args).current_dir(options.root);
@@ -1021,21 +1024,29 @@ fn server_initialization_options(
     server_root: &Path,
     workspace_root: &Path,
     executable: &Path,
+    npm_modules_root: Option<&Path>,
 ) -> Result<Option<Value>, ClspError> {
-    if server_id != ASTRO_SERVER_ID {
+    if !matches!(server_id, ASTRO_SERVER_ID | TYPESCRIPT_SERVER_ID) {
         return Ok(None);
     }
-    let tsdk = astro_typescript_sdk(server_root, workspace_root, executable)
-        .ok_or_else(|| server_error("Astro language server requires typescript/lib/tsserver.js"))?;
-    Ok(Some(json!({
-        "typescript": {"tsdk": tsdk.to_string_lossy()}
-    })))
+    let tsdk = astro_typescript_sdk(server_root, workspace_root, executable, npm_modules_root)
+        .ok_or_else(|| {
+            runtime_error(format!(
+                "{server_id} language server requires typescript/lib/tsserver.js"
+            ))
+        })?;
+    Ok((server_id == ASTRO_SERVER_ID).then(|| {
+        json!({
+            "typescript": {"tsdk": tsdk.to_string_lossy()}
+        })
+    }))
 }
 
 fn astro_typescript_sdk(
     server_root: &Path,
     workspace_root: &Path,
     executable: &Path,
+    npm_modules_root: Option<&Path>,
 ) -> Option<PathBuf> {
     if server_root.starts_with(workspace_root) {
         for ancestor in server_root.ancestors() {
@@ -1049,6 +1060,9 @@ fn astro_typescript_sdk(
                 break;
             }
         }
+    }
+    if let Some(tsdk) = npm_modules_root.and_then(typescript_sdk_in) {
+        return Some(tsdk);
     }
     executable
         .ancestors()
@@ -1067,6 +1081,10 @@ fn typescript_sdk_in(node_modules: &Path) -> Option<PathBuf> {
 
 fn server_error(error: impl std::fmt::Display) -> ClspError {
     ClspError::new(ErrorCode::ServerUnavailable, error.to_string()).retryable()
+}
+
+fn runtime_error(error: impl std::fmt::Display) -> ClspError {
+    ClspError::new(ErrorCode::RuntimeUnavailable, error.to_string()).retryable()
 }
 
 #[cfg(test)]
@@ -1188,6 +1206,7 @@ mod tests {
             &root,
             workspace,
             &root.join("node_modules/.bin/astro-ls.cmd"),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -1198,25 +1217,38 @@ mod tests {
     }
 
     #[test]
-    fn astro_initialization_uses_managed_typescript() {
+    fn astro_initialization_uses_manager_typescript() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path().join("workspace");
         let root = workspace.join("site");
         std::fs::create_dir_all(&root).unwrap();
-        let bundle = directory.path().join("managed");
-        let managed = write_typescript_sdk(&bundle);
+        let manager = directory.path().join("manager");
+        let installed = write_typescript_sdk(&manager);
 
         let options = server_initialization_options(
             ASTRO_SERVER_ID,
             &root,
             &workspace,
-            &bundle.join("node_modules/.bin/astro-ls.cmd"),
+            &manager.join("bin/astro-ls.cmd"),
+            Some(&manager.join("node_modules")),
         )
         .unwrap()
         .unwrap();
         assert_eq!(
             options.pointer("/typescript/tsdk").and_then(Value::as_str),
-            Some(managed.to_string_lossy().as_ref())
+            Some(installed.to_string_lossy().as_ref())
+        );
+
+        assert!(
+            server_initialization_options(
+                TYPESCRIPT_SERVER_ID,
+                &root,
+                &workspace,
+                &manager.join("bin/typescript-language-server.cmd"),
+                Some(&manager.join("node_modules")),
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
@@ -1226,12 +1258,13 @@ mod tests {
         let root = directory.path();
         let executable = root.join("astro-ls.cmd");
         assert!(
-            server_initialization_options("rust", root, root, &executable)
+            server_initialization_options("rust", root, root, &executable, None)
                 .unwrap()
                 .is_none()
         );
-        let error =
-            server_initialization_options(ASTRO_SERVER_ID, root, root, &executable).unwrap_err();
+        let error = server_initialization_options(ASTRO_SERVER_ID, root, root, &executable, None)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::RuntimeUnavailable);
         assert!(
             error
                 .message
