@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 6] = [
+const APPROVED_IDS: [&str; 7] = [
+    "astro",
     "clangd",
     "gopls",
     "pyright",
@@ -14,9 +15,9 @@ const APPROVED_IDS: [&str; 6] = [
     "yaml-ls",
 ];
 const APPROVED_RUNTIME_IDS: [&str; 2] = ["node", "npm-cli"];
-const APPROVED_EXTENSIONS: [&str; 24] = [
-    "c", "c++", "cc", "cjs", "cpp", "cts", "cxx", "go", "h", "h++", "hh", "hpp", "hxx", "js",
-    "jsx", "mjs", "mts", "py", "pyi", "rs", "ts", "tsx", "yaml", "yml",
+const APPROVED_EXTENSIONS: [&str; 25] = [
+    "astro", "c", "c++", "cc", "cjs", "cpp", "cts", "cxx", "go", "h", "h++", "hh", "hpp", "hxx",
+    "js", "jsx", "mjs", "mts", "py", "pyi", "rs", "ts", "tsx", "yaml", "yml",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -256,9 +257,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_six_server_set() {
+    fn builtin_is_the_closed_seven_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 6);
+        assert_eq!(registry.server.len(), 7);
         assert_eq!(
             registry
                 .server
@@ -273,9 +274,39 @@ mod tests {
     fn matches_only_declared_extensions() {
         let registry = Registry::builtin().unwrap();
         assert_eq!(
+            registry
+                .matching_extension(".astro")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["astro"]
+        );
+        assert_eq!(
             registry.matching_extension(".rs").next().unwrap().id,
             "rust"
         );
         assert!(registry.matching_extension("java").next().is_none());
+    }
+
+    #[test]
+    fn astro_uses_the_locked_official_language_server() {
+        let registry = Registry::builtin().unwrap();
+        let astro = registry.server("astro").unwrap();
+        assert_eq!(astro.command, "astro-ls.cmd");
+        assert_eq!(astro.args, ["--stdio"]);
+        assert_eq!(
+            astro.markers,
+            ["astro.config.js", "astro.config.mjs", "astro.config.ts"]
+        );
+        let InstallRecipe::Npm {
+            version,
+            package,
+            executable,
+        } = &astro.install
+        else {
+            panic!("Astro must use the managed npm closure");
+        };
+        assert_eq!(version, "2.16.13");
+        assert_eq!(package, "@astrojs/language-server");
+        assert_eq!(executable, "node_modules/.bin/astro-ls.cmd");
     }
 }

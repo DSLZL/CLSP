@@ -29,7 +29,7 @@ npm 包已同时包含 `clsp.exe` 和 `clsp-ide.vsix`，不需要手工下载 ZI
 - selection 最多 8 KiB，完整 hook 输出最多 12 KiB，并明确标记为不可信工作区数据。
 - `CLSP: Toggle Selection Sharing` 可停止分享选择文本，同时保留允许的活动文件元数据。
 - `ide_diagnostics` 读取 VS Code Problems（`Ctrl+Shift+M`）当前内容，包括未保存文档的诊断；它不会伪装成 CLSP 的磁盘 LSP 诊断。
-- `apply_patch` 前会在内存中记录目标文件的 Problems error 基线；编辑后通过同一 VS Code session 再读一次，只把新增 error 注入 Codex。这条自动路径复用 rust-analyzer 等扩展已经发布的诊断，不会再启动同语言的 CLSP LSP。
+- `apply_patch` 前会在内存中记录目标文件的 Problems error 基线；编辑后通过同一 VS Code session 再读一次，只把新增 error 注入 Codex。这条自动路径会复用 rust-analyzer、Astro 等官方扩展已经发布的诊断，不会再启动同语言的 CLSP LSP。
 - `apply_patch` 前会检查全部目标文档。存在 dirty buffer 时，VS Code 原生确认框只在用户选择 `Save and continue` 后保存这些目标。
 - 编辑成功后最多打开五个 `Before Codex <-> After Codex` 原生 diff。关闭 diff 不会回滚编辑。
 

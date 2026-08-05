@@ -4,6 +4,7 @@
   "private": true,
   "description": "Locked npm language-server closure for CLSP",
   "dependencies": {
+    "@astrojs/language-server": "2.16.13",
     "pyright": "1.1.405",
     "typescript": "5.9.2",
     "typescript-language-server": "4.4.0",

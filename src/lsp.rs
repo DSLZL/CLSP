@@ -30,6 +30,7 @@ use crate::{
 const HEADER_LIMIT: usize = 8 * 1024;
 const MAX_HOVER_CHARS: usize = 64 * 1024;
 const MAX_LOCATIONS: usize = 100;
+const ASTRO_SERVER_ID: &str = "astro";
 
 type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, ClspError>>>>>;
 
@@ -262,6 +263,12 @@ pub struct LspStartOptions<'a> {
 
 impl LspClient {
     pub async fn start(options: LspStartOptions<'_>) -> Result<Arc<Self>, ClspError> {
+        let initialization_options = server_initialization_options(
+            options.server_id,
+            options.root,
+            options.workspace.root(),
+            options.executable,
+        )?;
         let mut command = Command::new(options.executable);
         command.args(options.args).current_dir(options.root);
         sanitize_command(&mut command);
@@ -331,27 +338,26 @@ impl LspClient {
             options.max_stderr_bytes,
         ));
 
-        let result = client
-            .request(
-                "initialize",
-                json!({
-                    "processId": std::process::id(),
-                    "rootUri": root_uri,
-                    "workspaceFolders": [{"uri": root_uri, "name": root_name}],
-                    "capabilities": {
-                        "general": {"positionEncodings": ["utf-8", "utf-16", "utf-32"]},
-                        "textDocument": {
-                            "hover": {"contentFormat": ["markdown", "plaintext"]},
-                            "definition": {"linkSupport": true},
-                            "references": {},
-                            "diagnostic": {}
-                        },
-                        "workspace": {"workspaceFolders": true, "configuration": true}
-                    },
-                    "clientInfo": {"name": "clsp", "version": env!("CARGO_PKG_VERSION")}
-                }),
-            )
-            .await?;
+        let mut initialize_params = json!({
+            "processId": std::process::id(),
+            "rootUri": root_uri,
+            "workspaceFolders": [{"uri": root_uri, "name": root_name}],
+            "capabilities": {
+                "general": {"positionEncodings": ["utf-8", "utf-16", "utf-32"]},
+                "textDocument": {
+                    "hover": {"contentFormat": ["markdown", "plaintext"]},
+                    "definition": {"linkSupport": true},
+                    "references": {},
+                    "diagnostic": {}
+                },
+                "workspace": {"workspaceFolders": true, "configuration": true}
+            },
+            "clientInfo": {"name": "clsp", "version": env!("CARGO_PKG_VERSION")}
+        });
+        if let Some(initialization_options) = initialization_options {
+            initialize_params["initializationOptions"] = initialization_options;
+        }
+        let result = client.request("initialize", initialize_params).await?;
         *client.encoding.write().await = PositionEncoding::from_initialize(&result);
         *client.supports_pull_diagnostics.write().await = result
             .pointer("/capabilities/diagnosticProvider")
@@ -1010,6 +1016,55 @@ fn uri_to_path(uri: &str) -> Result<PathBuf, ClspError> {
         .map_err(|_| server_error("LSP URI is not a local file"))
 }
 
+fn server_initialization_options(
+    server_id: &str,
+    server_root: &Path,
+    workspace_root: &Path,
+    executable: &Path,
+) -> Result<Option<Value>, ClspError> {
+    if server_id != ASTRO_SERVER_ID {
+        return Ok(None);
+    }
+    let tsdk = astro_typescript_sdk(server_root, workspace_root, executable)
+        .ok_or_else(|| server_error("Astro language server requires typescript/lib/tsserver.js"))?;
+    Ok(Some(json!({
+        "typescript": {"tsdk": tsdk.to_string_lossy()}
+    })))
+}
+
+fn astro_typescript_sdk(
+    server_root: &Path,
+    workspace_root: &Path,
+    executable: &Path,
+) -> Option<PathBuf> {
+    if server_root.starts_with(workspace_root) {
+        for ancestor in server_root.ancestors() {
+            if !ancestor.starts_with(workspace_root) {
+                break;
+            }
+            if let Some(tsdk) = typescript_sdk_in(&ancestor.join("node_modules")) {
+                return Some(tsdk);
+            }
+            if ancestor == workspace_root {
+                break;
+            }
+        }
+    }
+    executable
+        .ancestors()
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .is_some_and(|name| name == "node_modules")
+        })
+        .and_then(typescript_sdk_in)
+}
+
+fn typescript_sdk_in(node_modules: &Path) -> Option<PathBuf> {
+    let tsdk = node_modules.join("typescript").join("lib");
+    tsdk.join("tsserver.js").is_file().then_some(tsdk)
+}
+
 fn server_error(error: impl std::fmt::Display) -> ClspError {
     ClspError::new(ErrorCode::ServerUnavailable, error.to_string()).retryable()
 }
@@ -1017,6 +1072,13 @@ fn server_error(error: impl std::fmt::Display) -> ClspError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_typescript_sdk(root: &Path) -> PathBuf {
+        let tsdk = root.join("node_modules").join("typescript").join("lib");
+        std::fs::create_dir_all(&tsdk).unwrap();
+        std::fs::write(tsdk.join("tsserver.js"), "").unwrap();
+        tsdk
+    }
 
     #[tokio::test]
     async fn codec_handles_fragmented_frames() {
@@ -1109,6 +1171,71 @@ mod tests {
         assert_eq!(
             report.sources[0].reason.as_deref(),
             Some("diagnostics_timeout")
+        );
+    }
+
+    #[test]
+    fn astro_initialization_prefers_nearest_project_typescript() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let root = workspace.join("packages").join("site");
+        std::fs::create_dir_all(&root).unwrap();
+        write_typescript_sdk(workspace);
+        let nearest = write_typescript_sdk(&root);
+
+        let options = server_initialization_options(
+            ASTRO_SERVER_ID,
+            &root,
+            workspace,
+            &root.join("node_modules/.bin/astro-ls.cmd"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            options.pointer("/typescript/tsdk").and_then(Value::as_str),
+            Some(nearest.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn astro_initialization_uses_managed_typescript() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let root = workspace.join("site");
+        std::fs::create_dir_all(&root).unwrap();
+        let bundle = directory.path().join("managed");
+        let managed = write_typescript_sdk(&bundle);
+
+        let options = server_initialization_options(
+            ASTRO_SERVER_ID,
+            &root,
+            &workspace,
+            &bundle.join("node_modules/.bin/astro-ls.cmd"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            options.pointer("/typescript/tsdk").and_then(Value::as_str),
+            Some(managed.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn only_astro_requires_typescript_initialization() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let executable = root.join("astro-ls.cmd");
+        assert!(
+            server_initialization_options("rust", root, root, &executable)
+                .unwrap()
+                .is_none()
+        );
+        let error =
+            server_initialization_options(ASTRO_SERVER_ID, root, root, &executable).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("requires typescript/lib/tsserver.js")
         );
     }
 }

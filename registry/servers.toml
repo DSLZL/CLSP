@@ -15,6 +15,18 @@ version_args = ["--version"]
 archive = { url = "https://registry.npmjs.org/npm/-/npm-11.5.2.tgz", sha256 = "beb0d754f9759c17cdc10f63121d0e50636d146262cd0e3bcb231edf9f0b3a7d", executable = "package/bin/npm-cli.js" }
 
 [[server]]
+id = "astro"
+display_name = "Astro Language Server"
+language_id = "astro"
+version_req = ">=2.16.0, <3.0.0"
+extensions = ["astro"]
+markers = ["astro.config.js", "astro.config.mjs", "astro.config.ts"]
+command = "astro-ls.cmd"
+args = ["--stdio"]
+version_args = ["--version"]
+install = { kind = "npm", version = "2.16.13", package = "@astrojs/language-server", executable = "node_modules/.bin/astro-ls.cmd" }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"
