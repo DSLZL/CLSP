@@ -4,10 +4,19 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated release tag to publish
+        required: true
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -22,6 +31,7 @@ jobs:
       - name: Checkout tag
         uses: actions/checkout@v7
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -40,7 +50,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $tag = $env:GITHUB_REF_NAME
+          $tag = $env:RELEASE_TAG
           if ($tag -notmatch "^v[0-9]+[.][0-9]+[.][0-9]+$") {
               throw "Release tag '$tag' must match vX.Y.Z"
           }
@@ -74,15 +84,15 @@ jobs:
 
           $rootPackage = Get-Content -LiteralPath package.json -Raw -Encoding UTF8 | ConvertFrom-Json
           $vscodePackage = Get-Content -LiteralPath vscode/package.json -Raw -Encoding UTF8 | ConvertFrom-Json
-          $vscodeLock = Get-Content -LiteralPath vscode/package-lock.json -Raw -Encoding UTF8 | ConvertFrom-Json
-          $vscodeLockRoot = $vscodeLock.packages.PSObject.Properties[""].Value
+          $vscodeLock = Get-Content -LiteralPath vscode/package-lock.json -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+          $vscodeLockRoot = $vscodeLock.packages[""]
 
           $versions = [ordered]@{
               "Cargo.toml/Cargo.lock" = [string]$cargoPackages[0].version
               "package.json" = [string]$rootPackage.version
               "vscode/package.json" = [string]$vscodePackage.version
-              "vscode/package-lock.json" = [string]$vscodeLock.version
-              "vscode/package-lock.json root package" = [string]$vscodeLockRoot.version
+              "vscode/package-lock.json" = [string]$vscodeLock["version"]
+              "vscode/package-lock.json root package" = [string]$vscodeLockRoot["version"]
           }
           foreach ($entry in $versions.GetEnumerator()) {
               if ($entry.Value -ne $version) {
@@ -244,7 +254,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: |
           $arguments = @(
-              "release", "create", $env:GITHUB_REF_NAME
+              "release", "create", $env:RELEASE_TAG
               "dist/clsp-$($env:RELEASE_VERSION)-windows-x64.zip"
               "dist/clsp-$($env:RELEASE_VERSION).tgz"
               "dist/SHA256SUMS.txt"
@@ -268,5 +278,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
