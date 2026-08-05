@@ -1,0 +1,272 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Setup Rust target
+        shell: pwsh
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Validate tag, release notes, and versions
+        id: release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch "^v[0-9]+[.][0-9]+[.][0-9]+$") {
+              throw "Release tag '$tag' must match vX.Y.Z"
+          }
+
+          $tagType = & git cat-file -t "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0 -or ([string]$tagType).Trim() -ne "tag") {
+              throw "Release tag '$tag' must be an annotated tag"
+          }
+
+          $notes = (& git for-each-ref --format="%(contents:body)" "refs/tags/$tag") -join [Environment]::NewLine
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($notes)) {
+              throw "Annotated tag '$tag' must contain release notes in its body"
+          }
+          $notes = $notes.Trim()
+          $version = $tag.Substring(1)
+
+          $npmVersionText = (& npm --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or [version]$npmVersionText -lt [version]"11.5.1") {
+              throw "npm 11.5.1 or newer is required for trusted publishing"
+          }
+
+          $cargoMetadataText = (& cargo metadata --locked --no-deps --format-version 1) -join [Environment]::NewLine
+          if ($LASTEXITCODE -ne 0) {
+              throw "Cargo metadata or Cargo.lock validation failed"
+          }
+          $cargoMetadata = $cargoMetadataText | ConvertFrom-Json
+          $cargoPackages = @($cargoMetadata.packages | Where-Object { $_.name -eq "clsp" })
+          if ($cargoPackages.Count -ne 1) {
+              throw "Expected exactly one Cargo package named clsp"
+          }
+
+          $rootPackage = Get-Content -LiteralPath package.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $vscodePackage = Get-Content -LiteralPath vscode/package.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $vscodeLock = Get-Content -LiteralPath vscode/package-lock.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $vscodeLockRoot = $vscodeLock.packages.PSObject.Properties[""].Value
+
+          $versions = [ordered]@{
+              "Cargo.toml/Cargo.lock" = [string]$cargoPackages[0].version
+              "package.json" = [string]$rootPackage.version
+              "vscode/package.json" = [string]$vscodePackage.version
+              "vscode/package-lock.json" = [string]$vscodeLock.version
+              "vscode/package-lock.json root package" = [string]$vscodeLockRoot.version
+          }
+          foreach ($entry in $versions.GetEnumerator()) {
+              if ($entry.Value -ne $version) {
+                  throw "$($entry.Key) version '$($entry.Value)' does not match tag version '$version'"
+              }
+          }
+
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $notesPath = Join-Path $PWD "dist/release-notes.md"
+          [IO.File]::WriteAllText(
+              $notesPath,
+              "$notes$([Environment]::NewLine)",
+              [Text.UTF8Encoding]::new($false)
+          )
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Check Rust
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --all-targets --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --all-targets --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: npm run package
+
+      - name: Check VS Code extension
+        shell: pwsh
+        run: |
+          npm run check --prefix vscode
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test --prefix vscode
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Pack and verify artifacts
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:RELEASE_VERSION
+
+          $packOutput = (& npm pack --ignore-scripts --json --pack-destination dist) -join [Environment]::NewLine
+          if ($LASTEXITCODE -ne 0) {
+              throw "npm pack failed"
+          }
+          $pack = @(ConvertFrom-Json $packOutput)[0]
+          if ($pack.name -ne "@dslzl/clsp" -or $pack.version -ne $version) {
+              throw "Packed npm identity '$($pack.name)@$($pack.version)' is not @dslzl/clsp@$version"
+          }
+
+          $expectedNpmFiles = @(
+              "LICENSE"
+              "README.md"
+              "dist/npm/bin/clsp-ide.vsix"
+              "dist/npm/bin/clsp.exe"
+              "dist/npm/bin/clsp.js"
+              "package.json"
+          ) | Sort-Object
+          $actualNpmFiles = @($pack.files | ForEach-Object { [string]$_.path }) | Sort-Object
+          $npmFileDiff = Compare-Object -ReferenceObject $expectedNpmFiles -DifferenceObject $actualNpmFiles
+          if ($npmFileDiff) {
+              throw "Unexpected npm tarball file list: $($npmFileDiff | Out-String)"
+          }
+
+          $zipPath = (Resolve-Path -LiteralPath "dist/clsp-$version-windows-x64.zip").Path
+          $packedTgzPath = (Resolve-Path -LiteralPath (Join-Path "dist" $pack.filename)).Path
+          $tgzPath = Join-Path $PWD "dist/clsp-$version.tgz"
+          Move-Item -LiteralPath $packedTgzPath -Destination $tgzPath -Force
+          $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+              $actualZipFiles = @(
+                  $archive.Entries |
+                      Where-Object { -not [string]::IsNullOrEmpty($_.Name) } |
+                      ForEach-Object { $_.FullName.Replace("\", "/") }
+              ) | Sort-Object
+          } finally {
+              $archive.Dispose()
+          }
+          $expectedZipFiles = @("LICENSE", "README.md", "clsp-ide.vsix", "clsp.exe") | Sort-Object
+          $zipFileDiff = Compare-Object -ReferenceObject $expectedZipFiles -DifferenceObject $actualZipFiles
+          if ($zipFileDiff) {
+              throw "Unexpected Windows ZIP file list: $($zipFileDiff | Out-String)"
+          }
+
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "clsp-npm-smoke"
+          New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
+          & npm install --global --prefix $smokeRoot $tgzPath --ignore-scripts
+          if ($LASTEXITCODE -ne 0) {
+              throw "Clean npm tarball installation failed"
+          }
+          $installedVersion = (& (Join-Path $smokeRoot "clsp.cmd") --version) -join [Environment]::NewLine
+          if ($LASTEXITCODE -ne 0 -or $installedVersion.Trim() -ne "clsp $version") {
+              throw "Installed CLI version '$($installedVersion.Trim())' does not match clsp $version"
+          }
+          $installedBin = Join-Path $smokeRoot "node_modules/@dslzl/clsp/dist/npm/bin"
+          foreach ($file in @("clsp.js", "clsp.exe", "clsp-ide.vsix")) {
+              if (-not (Test-Path -LiteralPath (Join-Path $installedBin $file) -PathType Leaf)) {
+                  throw "Installed npm package is missing $file"
+              }
+          }
+
+          $checksumPath = Join-Path $PWD "dist/SHA256SUMS.txt"
+          @($zipPath, $tgzPath) | ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $(Split-Path -Leaf $_)"
+          } | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
+
+      - name: Upload verified release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ steps.release.outputs.version }}
+          path: |
+            dist/clsp-${{ steps.release.outputs.version }}-windows-x64.zip
+            dist/clsp-${{ steps.release.outputs.version }}.tgz
+            dist/SHA256SUMS.txt
+            dist/release-notes.md
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Setup Node.js for npm OIDC
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          scope: "@dslzl"
+
+      - name: Verify npm trusted publishing support
+        shell: pwsh
+        run: |
+          $npmVersionText = (& npm --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or [version]$npmVersionText -lt [version]"11.5.1") {
+              throw "npm 11.5.1 or newer is required for trusted publishing"
+          }
+
+      - name: Download verified release bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: release-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Create draft GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $arguments = @(
+              "release", "create", $env:GITHUB_REF_NAME
+              "dist/clsp-$($env:RELEASE_VERSION)-windows-x64.zip"
+              "dist/clsp-$($env:RELEASE_VERSION).tgz"
+              "dist/SHA256SUMS.txt"
+              "--repo", $env:GITHUB_REPOSITORY
+              "--title", $env:RELEASE_VERSION
+              "--notes-file", "dist/release-notes.md"
+              "--draft"
+              "--verify-tag"
+          )
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish npm package with OIDC
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: npm publish "dist/clsp-$($env:RELEASE_VERSION).tgz" --access public --provenance
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
