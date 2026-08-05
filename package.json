@@ -28,9 +28,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "package": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1",
-    "prepack": "npm run package",
-    "test:package": "npm run package && node dist/npm/bin/clsp.js --version"
+    "check": "cargo fmt --all -- --check && cargo test --all-targets --locked && cargo clippy --all-targets --locked -- -D warnings && bun run --cwd vscode check && bun run --cwd vscode test",
+    "clean": "cargo clean && bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'vscode/out', 'vscode/clsp-ide.vsix']) rmSync(path, { recursive: true, force: true });\""
   },
   "publishConfig": {
     "access": "public"

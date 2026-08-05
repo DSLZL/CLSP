@@ -1,5 +1,8 @@
 /target/
 /dist/
+/npm/
+/scripts/
 /vscode/node_modules/
 /vscode/out/
 /vscode/*.vsix
+/vscode/package-lock.json

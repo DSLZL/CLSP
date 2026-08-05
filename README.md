@@ -59,7 +59,7 @@ CLSP 向模型开放四个只读工具：
 
 ## 手工配置
 
-通常应使用 `clsp setup`。需要审阅生成内容时参见 [examples/codex-config.toml](examples/codex-config.toml) 和 [examples/codex-hooks.json](examples/codex-hooks.json)。旧的 `[mcp_servers.lsp]` 若 command 是 CLSP，会被原位接管，不会创建第二个 CLSP MCP。
+通常应使用 `clsp setup`。旧的 `[mcp_servers.lsp]` 若 command 是 CLSP，会被原位接管，不会创建第二个 CLSP MCP。
 
 项目 `.clsp.toml` 仍可配置探测、命令执行和诊断：
 
@@ -100,17 +100,15 @@ Problems 为空只表示 VS Code 当前没有发布结构化诊断，不代表�
 
 ## 构建与检查
 
-需要 Rust 1.88+、Visual Studio Build Tools、Windows SDK、Node.js 和 VS Code CLI：
+需要 Rust 1.88+、Visual Studio Build Tools、Windows SDK、Node.js、Bun 1.3.14+ 和 VS Code CLI：
 
 ```powershell
-cargo build --release --locked --target x86_64-pc-windows-msvc
-npm ci --prefix vscode
-npm run check --prefix vscode
-npm test --prefix vscode
-npm run package --prefix vscode
+bun ci --cwd vscode
+bun run check
+bun run clean
 ```
 
-`scripts\package-release.ps1` 会构建并组装包含 `clsp.exe`、`clsp-ide.vsix`、README 和 LICENSE 的 Windows ZIP，同时把 npm 发布文件放入 `dist\npm\bin`。根目录执行 `npm pack --pack-destination dist` 可生成待发布的 `.tgz`。
+带发布说明正文的注释标签会触发 GitHub Actions：检查通过后构建 Windows ZIP 与 npm tarball，再创建 GitHub Release，并使用 npm Trusted Publishing 发布 `@dslzl/clsp`。本地仓库不保留发布组装脚本。
 
 ## 回滚
 
