@@ -11,14 +11,14 @@ repository = "https://github.com/DSLZL/CLSP"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
-flate2 = "1.1"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 futures-util = "0.3"
 getrandom = "0.3"
 hex = "0.4"
 ignore = "0.4"
 notify = "8.2"
-ratatui = "0.30"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "stream"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "stream"] }
 rmcp = { version = "3.1", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
 schemars = "1.0"
 semver = "1.0"
@@ -28,10 +28,10 @@ sha2 = "0.10"
 tar = "0.4"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "fs", "net", "signal", "sync", "time"] }
-toml = "0.9"
+toml = { version = "0.9", default-features = false, features = ["std", "serde", "parse"] }
 url = "2.5"
 which = "8.0"
-zip = { version = "4.6", default-features = false, features = ["deflate"] }
+zip = { version = "4.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
