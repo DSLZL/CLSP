@@ -2201,6 +2201,7 @@ fn recipe_version(recipe: &InstallRecipe) -> &str {
     match recipe {
         InstallRecipe::Npm { version, .. }
         | InstallRecipe::Command { version, .. }
+        | InstallRecipe::GithubZip { version, .. }
         | InstallRecipe::Manual { version, .. } => version,
     }
 }
@@ -2447,10 +2448,11 @@ mod tests {
         let state = directory.path().join("state");
         let paths = StatePaths {
             logs: state.join("logs"),
+            artifacts: directory.path().join("artifacts"),
             workspace_state: state,
         };
         fs::create_dir_all(&workspace_root).unwrap();
-        for path in [&paths.logs, &paths.workspace_state] {
+        for path in [&paths.logs, &paths.workspace_state, &paths.artifacts] {
             fs::create_dir_all(path).unwrap();
         }
         let workspace = Workspace::open(&workspace_root).unwrap();

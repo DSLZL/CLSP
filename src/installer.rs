@@ -25,12 +25,17 @@ use crate::{
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const OUTPUT_LIMIT: usize = 4_096;
+const ARCHIVE_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
+const ARCHIVE_EXTRACT_LIMIT: u64 = 512 * 1024 * 1024;
+const ARCHIVE_ENTRY_LIMIT: usize = 4_096;
+const VSCODE_INSTALL_ENTRY_LIMIT: usize = 32;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub struct StatePaths {
     pub workspace_state: PathBuf,
     pub logs: PathBuf,
+    pub artifacts: PathBuf,
 }
 
 impl StatePaths {
@@ -41,16 +46,17 @@ impl StatePaths {
                 "LOCALAPPDATA is required on Windows",
             )
         })?;
-        let workspace_state = PathBuf::from(local)
-            .join("clsp")
+        let clsp_root = PathBuf::from(local).join("clsp");
+        let workspace_state = clsp_root
             .join("state")
             .join("workspaces")
             .join(workspace_hash);
         let paths = Self {
             logs: workspace_state.join("logs"),
             workspace_state,
+            artifacts: clsp_root.join("artifacts"),
         };
-        for path in [&paths.workspace_state, &paths.logs] {
+        for path in [&paths.workspace_state, &paths.logs, &paths.artifacts] {
             std::fs::create_dir_all(path).map_err(server_error)?;
         }
         Ok(paths)
@@ -62,6 +68,7 @@ pub enum ExecutableSource {
     ProjectLocal,
     Explicit,
     Path,
+    VsCodeExtension,
     Installed,
 }
 
@@ -76,6 +83,7 @@ pub struct ResolvedExecutable {
 pub struct ServerResolver {
     config: Config,
     paths: StatePaths,
+    vscode_app_data: Option<PathBuf>,
     install_lock: Mutex<()>,
 }
 
@@ -84,6 +92,7 @@ impl ServerResolver {
         Self {
             config,
             paths,
+            vscode_app_data: std::env::var_os("APPDATA").map(PathBuf::from),
             install_lock: Mutex::new(()),
         }
     }
@@ -121,6 +130,18 @@ impl ServerResolver {
             }
         }
 
+        if let InstallRecipe::GithubZip {
+            version,
+            executable,
+            ..
+        } = &server.install
+            && let Some(resolution) = self
+                .resolve_github_zip_existing(server, workspace, version, executable)
+                .await
+        {
+            return Ok(resolution);
+        }
+
         if let InstallRecipe::Manual { hint, .. } = &server.install {
             return Err(runtime_error(hint).for_server(&server.id));
         }
@@ -135,6 +156,17 @@ impl ServerResolver {
 
         let _guard = self.install_lock.lock().await;
         if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
+            return Ok(resolution);
+        }
+        if let InstallRecipe::GithubZip {
+            version,
+            executable,
+            ..
+        } = &server.install
+            && let Some(resolution) = self
+                .resolve_github_zip_existing(server, workspace, version, executable)
+                .await
+        {
             return Ok(resolution);
         }
 
@@ -178,6 +210,17 @@ impl ServerResolver {
                     .await
                     .map_err(|error| error.for_server(&server.id))
             }
+            InstallRecipe::GithubZip {
+                version,
+                url,
+                sha256,
+                executable,
+            } => {
+                on_install().await;
+                self.install_github_zip(server, workspace, version, url, sha256, executable)
+                    .await
+                    .map_err(|error| error.for_server(&server.id))
+            }
         }
     }
 
@@ -207,6 +250,7 @@ impl ServerResolver {
                     ExecutableSource::ProjectLocal => "project-local",
                     ExecutableSource::Explicit => "explicit",
                     ExecutableSource::Path => "path",
+                    ExecutableSource::VsCodeExtension => "vscode-extension",
                     ExecutableSource::Installed => "installed",
                 },
             })
@@ -232,6 +276,170 @@ impl ServerResolver {
             }
         }
         None
+    }
+
+    async fn resolve_github_zip_existing(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+        version: &str,
+        executable: &str,
+    ) -> Option<ResolvedExecutable> {
+        if server.id == "clangd"
+            && let Some(app_data) = &self.vscode_app_data
+        {
+            for candidate in vscode_clangd_candidates_from(app_data) {
+                if let Some(resolution) = self
+                    .resolve_candidate(
+                        server,
+                        workspace,
+                        candidate,
+                        ExecutableSource::VsCodeExtension,
+                    )
+                    .await
+                {
+                    return Some(resolution);
+                }
+            }
+        }
+
+        self.resolve_candidate(
+            server,
+            workspace,
+            github_zip_candidate(&self.paths.artifacts, &server.id, version, executable),
+            ExecutableSource::Installed,
+        )
+        .await
+    }
+
+    async fn resolve_candidate(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+        candidate: PathBuf,
+        source: ExecutableSource,
+    ) -> Option<ResolvedExecutable> {
+        let probe = self
+            .probe_server(server, &candidate, workspace)
+            .await
+            .ok()?;
+        Some(ResolvedExecutable {
+            path: candidate,
+            version_output: probe.version_output,
+            source,
+            npm_modules_root: probe.npm_modules_root,
+        })
+    }
+
+    async fn install_github_zip(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+        version: &str,
+        url: &str,
+        sha256: &str,
+        executable: &str,
+    ) -> Result<ResolvedExecutable, ClspError> {
+        if !cfg!(all(windows, target_arch = "x86_64")) {
+            return Err(runtime_error(
+                "CLSP clangd self-install currently supports Windows x86-64 only; install clangd locally or set lsp.clangd.executable",
+            ));
+        }
+
+        let server_root = self.paths.artifacts.join(&server.id);
+        let install_root = server_root.join(version);
+        if install_root.exists() {
+            tokio::fs::remove_dir_all(&install_root)
+                .await
+                .map_err(server_error)?;
+        }
+        tokio::fs::create_dir_all(&server_root)
+            .await
+            .map_err(server_error)?;
+
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let archive_path = server_root.join(format!(".{version}-{suffix}.zip.part"));
+        let extraction_root = server_root.join(format!(".{version}-{suffix}.tmp"));
+        let curl = system_curl()?;
+        let args = vec![
+            "--fail".to_owned(),
+            "--location".to_owned(),
+            "--silent".to_owned(),
+            "--show-error".to_owned(),
+            "--proto".to_owned(),
+            "=https".to_owned(),
+            "--proto-redir".to_owned(),
+            "=https".to_owned(),
+            "--max-filesize".to_owned(),
+            ARCHIVE_DOWNLOAD_LIMIT.to_string(),
+            "--output".to_owned(),
+            archive_path.to_string_lossy().into_owned(),
+            url.to_owned(),
+        ];
+
+        let install_result = async {
+            run_checked(
+                &curl,
+                &args,
+                &server_root,
+                Duration::from_secs(self.config.install.command_timeout_seconds),
+                &format!("{} archive download", server.display_name),
+            )
+            .await?;
+            let archive_size = tokio::fs::metadata(&archive_path)
+                .await
+                .map_err(server_error)?
+                .len();
+            if archive_size == 0 || archive_size > ARCHIVE_DOWNLOAD_LIMIT {
+                return Err(server_error(format!(
+                    "{} archive is outside the {} byte limit",
+                    server.display_name, ARCHIVE_DOWNLOAD_LIMIT
+                )));
+            }
+            verify_file_sha256(&archive_path, sha256).await?;
+
+            let archive = archive_path.clone();
+            let destination = extraction_root.clone();
+            tokio::task::spawn_blocking(move || {
+                extract_zip(&archive, &destination, ARCHIVE_EXTRACT_LIMIT)
+            })
+            .await
+            .map_err(server_error)??;
+            if !extraction_root.join(executable).is_file() {
+                return Err(server_error(format!(
+                    "{} archive does not contain {executable}",
+                    server.display_name
+                )));
+            }
+            tokio::fs::rename(&extraction_root, &install_root)
+                .await
+                .map_err(server_error)
+        }
+        .await;
+
+        let _ = tokio::fs::remove_file(&archive_path).await;
+        if let Err(error) = install_result {
+            let _ = tokio::fs::remove_dir_all(&extraction_root).await;
+            return Err(error);
+        }
+
+        let candidate =
+            github_zip_candidate(&self.paths.artifacts, &server.id, version, executable);
+        let Some(resolution) = self
+            .resolve_candidate(server, workspace, candidate, ExecutableSource::Installed)
+            .await
+        else {
+            let _ = tokio::fs::remove_dir_all(&install_root).await;
+            return Err(server_error(format!(
+                "{} archive installed but the executable failed its version probe",
+                server.display_name
+            )));
+        };
+        Ok(resolution)
     }
 
     async fn select_npm_manager(&self) -> Result<NpmManagerSelection, ClspError> {
@@ -558,7 +766,9 @@ impl ServerResolver {
                     npm_modules_root: Some(probe.modules_root),
                 })
             }
-            InstallRecipe::Command { .. } | InstallRecipe::Manual { .. } => {
+            InstallRecipe::Command { .. }
+            | InstallRecipe::GithubZip { .. }
+            | InstallRecipe::Manual { .. } => {
                 let version_output = self
                     .probe_compatible(
                         executable,
@@ -834,6 +1044,150 @@ async fn verify_exact_npm_manifest(
     Ok(())
 }
 
+fn system_curl() -> Result<PathBuf, ClspError> {
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        let curl = PathBuf::from(system_root).join("System32/curl.exe");
+        if curl.is_file() {
+            return Ok(curl);
+        }
+    }
+    let program = if cfg!(windows) { "curl.exe" } else { "curl" };
+    which::which(program).map_err(|_| {
+        runtime_error(
+            "Windows curl.exe is required for CLSP clangd self-install; install clangd locally or set lsp.clangd.executable",
+        )
+    })
+}
+
+async fn verify_file_sha256(path: &Path, expected: &str) -> Result<(), ClspError> {
+    let mut file = tokio::fs::File::open(path).await.map_err(server_error)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await.map_err(server_error)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    let actual = hex::encode(digest.finalize());
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(server_error(format!(
+            "archive SHA-256 mismatch: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(())
+}
+
+fn extract_zip(
+    archive_path: &Path,
+    destination: &Path,
+    expanded_limit: u64,
+) -> Result<(), ClspError> {
+    let file = std::fs::File::open(archive_path).map_err(server_error)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(server_error)?;
+    if archive.len() > ARCHIVE_ENTRY_LIMIT {
+        return Err(server_error("archive contains too many entries"));
+    }
+    std::fs::create_dir_all(destination).map_err(server_error)?;
+    let mut expanded = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(server_error)?;
+        if entry.is_symlink() {
+            return Err(server_error("archive contains a symbolic link"));
+        }
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| server_error("archive contains an unsafe path"))?;
+        if !entry.is_dir() {
+            expanded = expanded
+                .checked_add(entry.size())
+                .ok_or_else(|| server_error("archive expanded size overflow"))?;
+            if expanded > expanded_limit {
+                return Err(server_error("archive exceeds the expanded size limit"));
+            }
+        }
+        let output = destination.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&output).map_err(server_error)?;
+            continue;
+        }
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent).map_err(server_error)?;
+        }
+        let mut output_file = std::fs::File::create(&output).map_err(server_error)?;
+        let copied = std::io::copy(&mut entry, &mut output_file).map_err(server_error)?;
+        if copied != entry.size() {
+            return Err(server_error("archive entry size changed during extraction"));
+        }
+    }
+    Ok(())
+}
+
+fn github_zip_candidate(
+    artifacts: &Path,
+    server_id: &str,
+    version: &str,
+    executable: &str,
+) -> PathBuf {
+    artifacts.join(server_id).join(version).join(executable)
+}
+
+fn vscode_clangd_candidates_from(app_data: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    for product in ["Code", "Code - Insiders"] {
+        let install_root = app_data
+            .join(product)
+            .join("User/globalStorage/llvm-vs-code-extensions.vscode-clangd/install");
+        let Ok(entries) = std::fs::read_dir(install_root) else {
+            continue;
+        };
+        for outer in entries
+            .filter_map(Result::ok)
+            .take(VSCODE_INSTALL_ENTRY_LIMIT)
+        {
+            let outer = outer.path();
+            push_vscode_clangd_candidate(&outer, &mut candidates, &mut seen);
+            let Ok(children) = std::fs::read_dir(&outer) else {
+                continue;
+            };
+            for child in children
+                .filter_map(Result::ok)
+                .take(VSCODE_INSTALL_ENTRY_LIMIT)
+            {
+                push_vscode_clangd_candidate(&child.path(), &mut candidates, &mut seen);
+            }
+        }
+    }
+    candidates.sort_by(|(left_version, left_path), (right_version, right_path)| {
+        right_version
+            .cmp(left_version)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    candidates.into_iter().map(|(_, path)| path).collect()
+}
+
+fn push_vscode_clangd_candidate(
+    directory: &Path,
+    candidates: &mut Vec<(Version, PathBuf)>,
+    seen: &mut BTreeSet<PathBuf>,
+) {
+    let Some(version) = directory
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|name| name.strip_prefix("clangd_"))
+        .and_then(|version| Version::parse(version).ok())
+    else {
+        return;
+    };
+    let executable = directory.join("bin/clangd.exe");
+    if executable.is_file() && seen.insert(executable.clone()) {
+        candidates.push((version, executable));
+    }
+}
+
 fn local_candidates<'a>(
     server: &'a ServerDefinition,
     workspace: &'a Path,
@@ -917,19 +1271,55 @@ pub(crate) fn resolution_fingerprint(
             .to_string_lossy()
             .as_bytes(),
     );
-    for (_, candidate) in local_candidates(server, workspace, explicit) {
-        let canonical = std::fs::canonicalize(&candidate).unwrap_or(candidate);
-        digest.update(canonical.to_string_lossy().as_bytes());
-        if let Ok(metadata) = std::fs::metadata(&canonical) {
-            digest.update(metadata.len().to_le_bytes());
-            if let Ok(modified) = metadata.modified()
-                && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
-            {
-                digest.update(duration.as_nanos().to_le_bytes());
-            }
+    let mut candidates: Vec<_> = local_candidates(server, workspace, explicit)
+        .into_iter()
+        .map(|(_, candidate)| candidate)
+        .collect();
+    if let InstallRecipe::GithubZip {
+        version,
+        executable,
+        ..
+    } = &server.install
+    {
+        for name in ["APPDATA", "LOCALAPPDATA"] {
+            digest.update(
+                std::env::var_os(name)
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+        }
+        if server.id == "clangd"
+            && let Some(app_data) = std::env::var_os("APPDATA")
+        {
+            candidates.extend(vscode_clangd_candidates_from(&PathBuf::from(app_data)));
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(github_zip_candidate(
+                &PathBuf::from(local_app_data).join("clsp/artifacts"),
+                &server.id,
+                version,
+                executable,
+            ));
         }
     }
+    for candidate in candidates {
+        hash_executable_candidate(&mut digest, candidate);
+    }
     hex::encode(digest.finalize())
+}
+
+fn hash_executable_candidate(digest: &mut Sha256, candidate: PathBuf) {
+    let canonical = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+    digest.update(canonical.to_string_lossy().as_bytes());
+    if let Ok(metadata) = std::fs::metadata(&canonical) {
+        digest.update(metadata.len().to_le_bytes());
+        if let Ok(modified) = metadata.modified()
+            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            digest.update(duration.as_nanos().to_le_bytes());
+        }
+    }
 }
 
 pub(crate) fn sanitize_command(command: &mut Command) {
@@ -1157,6 +1547,7 @@ fn server_error(error: impl std::fmt::Display) -> ClspError {
 mod tests {
     use super::*;
     use crate::registry::Registry;
+    use std::io::Write;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -1166,9 +1557,14 @@ mod tests {
         let paths = StatePaths {
             workspace_state: root.join("state"),
             logs: root.join("state/logs"),
+            artifacts: root.join("artifacts"),
         };
-        std::fs::create_dir_all(&paths.logs).unwrap();
-        ServerResolver::new(Config::default(), paths)
+        for path in [&paths.logs, &paths.artifacts] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let mut resolver = ServerResolver::new(Config::default(), paths);
+        resolver.vscode_app_data = None;
+        resolver
     }
 
     #[cfg(windows)]
@@ -1176,6 +1572,29 @@ mod tests {
         let path = root.join(format!("{name}.cmd"));
         std::fs::write(&path, format!("@echo off\r\n{body}\r\n")).unwrap();
         path
+    }
+
+    #[cfg(windows)]
+    fn compatible_test_executable(path: &Path) {
+        std::fs::copy(system_curl().unwrap(), path).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn compatible_test_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::write(path, "#!/bin/sh\necho clangd version 22.1.6\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn write_test_zip(path: &Path, name: &str, bytes: &[u8]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(bytes).unwrap();
+        archive.finish().unwrap();
     }
 
     #[cfg(unix)]
@@ -1332,6 +1751,128 @@ mod tests {
         assert!(!called.load(Ordering::Relaxed));
     }
 
+    #[test]
+    fn vscode_clangd_candidates_are_newest_first() {
+        let root = tempfile::tempdir().unwrap();
+        let older = root
+            .path()
+            .join("Code/User/globalStorage/llvm-vs-code-extensions.vscode-clangd/install/18.1.8/clangd_18.1.8/bin/clangd.exe");
+        let newer = root
+            .path()
+            .join("Code - Insiders/User/globalStorage/llvm-vs-code-extensions.vscode-clangd/install/22.1.6/clangd_22.1.6/bin/clangd.exe");
+        for path in [&older, &newer] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"candidate").unwrap();
+        }
+
+        assert_eq!(vscode_clangd_candidates_from(root.path()), [newer, older]);
+    }
+
+    #[tokio::test]
+    async fn github_zip_resolution_prefers_vscode_then_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let app_data = root.path().join("appdata");
+        let extension = app_data
+            .join("Code/User/globalStorage/llvm-vs-code-extensions.vscode-clangd/install/22.1.6/clangd_22.1.6/bin/clangd.exe");
+        std::fs::create_dir_all(extension.parent().unwrap()).unwrap();
+        compatible_test_executable(&extension);
+
+        let mut resolver = test_resolver(root.path());
+        resolver.vscode_app_data = Some(app_data);
+        let mut server = Registry::builtin()
+            .unwrap()
+            .server("clangd")
+            .unwrap()
+            .clone();
+        server.version_req = ">=1.0.0".into();
+        let (version, executable) = match &server.install {
+            InstallRecipe::GithubZip {
+                version,
+                executable,
+                ..
+            } => (version.clone(), executable.clone()),
+            _ => unreachable!(),
+        };
+        let cached =
+            github_zip_candidate(&resolver.paths.artifacts, &server.id, &version, &executable);
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        compatible_test_executable(&cached);
+        let extension_candidates =
+            vscode_clangd_candidates_from(resolver.vscode_app_data.as_deref().unwrap());
+        assert_eq!(
+            extension_candidates.as_slice(),
+            std::slice::from_ref(&extension)
+        );
+        resolver
+            .probe_server(&server, &extension, &workspace)
+            .await
+            .unwrap();
+
+        let resolution = resolver
+            .resolve_github_zip_existing(&server, &workspace, &version, &executable)
+            .await
+            .unwrap();
+        assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+        assert_eq!(resolution.path, extension);
+
+        std::fs::remove_file(&resolution.path).unwrap();
+        let resolution = resolver
+            .resolve_github_zip_existing(&server, &workspace, &version, &executable)
+            .await
+            .unwrap();
+        assert_eq!(resolution.source, ExecutableSource::Installed);
+        assert_eq!(resolution.path, cached);
+    }
+
+    #[tokio::test]
+    async fn auto_install_false_does_not_create_github_zip_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        let mut resolver = test_resolver(root.path());
+        resolver.config.auto_install = false;
+        let mut server = Registry::builtin()
+            .unwrap()
+            .server("clangd")
+            .unwrap()
+            .clone();
+        server.command = "missing-clangd-for-auto-install-test".into();
+        let called = Arc::new(AtomicBool::new(false));
+        let callback = Arc::clone(&called);
+
+        let error = resolver
+            .resolve_server(&server, root.path(), None, move || async move {
+                callback.store(true, Ordering::Relaxed);
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::RuntimeUnavailable);
+        assert!(!called.load(Ordering::Relaxed));
+        assert!(!resolver.paths.artifacts.join("clangd").exists());
+    }
+
+    #[tokio::test]
+    async fn github_zip_checksum_and_extraction_are_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("clangd.zip");
+        write_test_zip(&archive, "clangd/bin/clangd.exe", b"binary");
+        let expected = hex::encode(Sha256::digest(std::fs::read(&archive).unwrap()));
+        verify_file_sha256(&archive, &expected).await.unwrap();
+        assert!(verify_file_sha256(&archive, &"0".repeat(64)).await.is_err());
+
+        let destination = root.path().join("expanded");
+        extract_zip(&archive, &destination, 6).unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("clangd/bin/clangd.exe")).unwrap(),
+            b"binary"
+        );
+        assert!(extract_zip(&archive, &root.path().join("too-large"), 5).is_err());
+
+        let unsafe_archive = root.path().join("unsafe.zip");
+        write_test_zip(&unsafe_archive, "../outside.exe", b"bad");
+        assert!(extract_zip(&unsafe_archive, &root.path().join("unsafe"), 16).is_err());
+    }
+
     #[tokio::test]
     async fn command_runner_bounds_output_and_reports_nonzero() {
         let root = tempfile::tempdir().unwrap();
@@ -1486,6 +2027,10 @@ mod tests {
             .unwrap()
             .clone();
         server.command = "missing-clangd-for-test".to_owned();
+        server.install = InstallRecipe::Manual {
+            version: "system".into(),
+            hint: "install manually".into(),
+        };
         let called = Arc::new(AtomicBool::new(false));
         let callback = Arc::clone(&called);
 

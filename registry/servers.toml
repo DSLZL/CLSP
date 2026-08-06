@@ -11,6 +11,18 @@ version_args = ["--version"]
 install = { kind = "npm", version = "2.16.13", package = "@astrojs/language-server", companions = ["typescript@5.9.2"] }
 
 [[server]]
+id = "bash"
+display_name = "Bash Language Server"
+language_id = "shellscript"
+version_req = ">=5.6.0, <6.0.0"
+extensions = ["sh", "bash", "zsh", "ksh"]
+markers = [".shellcheckrc"]
+command = "bash-language-server"
+args = ["start"]
+version_args = ["--version"]
+install = { kind = "npm", version = "5.6.0", package = "bash-language-server", companions = [] }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"
@@ -68,7 +80,7 @@ markers = ["compile_commands.json", "compile_flags.txt", "CMakeLists.txt", ".cla
 command = "clangd"
 args = []
 version_args = ["--version"]
-install = { kind = "manual", version = "system", hint = "Install clangd locally or set lsp.clangd.executable in .clsp.toml" }
+install = { kind = "github_zip", version = "22.1.6", url = "https://github.com/clangd/clangd/releases/download/22.1.6/clangd-windows-22.1.6.zip", sha256 = "ce54f16e0b4fd76d450eeda9664420b195360b73febcfe40e661108fa57f2ce1", executable = "clangd_22.1.6/bin/clangd.exe" }
 
 [[server]]
 id = "yaml-ls"

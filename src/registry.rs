@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 7] = [
+const APPROVED_IDS: [&str; 8] = [
     "astro",
+    "bash",
     "clangd",
     "gopls",
     "pyright",
@@ -14,9 +15,10 @@ const APPROVED_IDS: [&str; 7] = [
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 25] = [
-    "astro", "c", "c++", "cc", "cjs", "cpp", "cts", "cxx", "go", "h", "h++", "hh", "hpp", "hxx",
-    "js", "jsx", "mjs", "mts", "py", "pyi", "rs", "ts", "tsx", "yaml", "yml",
+const APPROVED_EXTENSIONS: [&str; 29] = [
+    "astro", "bash", "c", "c++", "cc", "cjs", "cpp", "cts", "cxx", "go", "h", "h++", "hh", "hpp",
+    "hxx", "js", "jsx", "ksh", "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "yaml", "yml",
+    "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -68,7 +70,13 @@ impl Registry {
             let requirement =
                 semver::VersionReq::parse(&server.version_req).map_err(registry_error)?;
             validate_recipe(&server.install, &server.id)?;
-            if let InstallRecipe::Npm { version, .. } = &server.install
+            let pinned_version = match &server.install {
+                InstallRecipe::Npm { version, .. } | InstallRecipe::GithubZip { version, .. } => {
+                    Some(version)
+                }
+                InstallRecipe::Command { .. } | InstallRecipe::Manual { .. } => None,
+            };
+            if let Some(version) = pinned_version
                 && !requirement.matches(&semver::Version::parse(version).map_err(registry_error)?)
             {
                 return Err(registry_error(format!(
@@ -125,6 +133,12 @@ pub enum InstallRecipe {
         program: String,
         args: Vec<String>,
     },
+    GithubZip {
+        version: String,
+        url: String,
+        sha256: String,
+        executable: String,
+    },
     Manual {
         version: String,
         hint: String,
@@ -158,6 +172,48 @@ fn validate_recipe(recipe: &InstallRecipe, server_id: &str) -> Result<(), ClspEr
             }
             validate_program_basename(program)?;
             validate_args(args)
+        }
+        InstallRecipe::GithubZip {
+            version,
+            url,
+            sha256,
+            executable,
+        } => {
+            if server_id != "clangd" || semver::Version::parse(version).is_err() {
+                return Err(registry_error(format!(
+                    "{server_id} has an invalid GitHub ZIP recipe"
+                )));
+            }
+            let parsed = url::Url::parse(url).map_err(registry_error)?;
+            if parsed.scheme() != "https"
+                || parsed.host_str() != Some("github.com")
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+            {
+                return Err(registry_error(format!(
+                    "{server_id} GitHub ZIP URL is not an approved HTTPS URL"
+                )));
+            }
+            if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(registry_error(format!(
+                    "{server_id} GitHub ZIP SHA-256 is invalid"
+                )));
+            }
+            let executable_path = Path::new(executable);
+            if executable.is_empty()
+                || executable.len() > 512
+                || executable_path.is_absolute()
+                || executable_path
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(registry_error(format!(
+                    "{server_id} GitHub ZIP executable path is unsafe"
+                )));
+            }
+            Ok(())
         }
         InstallRecipe::Manual { version, hint } => {
             if version.is_empty() || version.len() > 128 || hint.is_empty() || hint.len() > 1_024 {
@@ -236,9 +292,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_seven_server_set() {
+    fn builtin_is_the_closed_eight_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 7);
+        assert_eq!(registry.server.len(), 8);
         assert_eq!(
             registry
                 .server
@@ -262,6 +318,13 @@ mod tests {
         assert_eq!(
             registry.matching_extension(".rs").next().unwrap().id,
             "rust"
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".SH")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bash"]
         );
         assert!(registry.matching_extension("java").next().is_none());
     }
@@ -287,6 +350,81 @@ mod tests {
         assert_eq!(version, "2.16.13");
         assert_eq!(package, "@astrojs/language-server");
         assert_eq!(companions, &vec!["typescript@5.9.2".to_owned()]);
+    }
+
+    #[test]
+    fn bash_uses_the_locked_official_language_server() {
+        let registry = Registry::builtin().unwrap();
+        let bash = registry.server("bash").unwrap();
+        assert_eq!(bash.language_id, "shellscript");
+        assert_eq!(bash.version_req, ">=5.6.0, <6.0.0");
+        assert_eq!(bash.extensions, ["sh", "bash", "zsh", "ksh"]);
+        assert_eq!(bash.markers, [".shellcheckrc"]);
+        assert_eq!(bash.command, "bash-language-server");
+        assert_eq!(bash.args, ["start"]);
+        let InstallRecipe::Npm {
+            version,
+            package,
+            companions,
+        } = &bash.install
+        else {
+            panic!("Bash must use the npm recipe");
+        };
+        assert_eq!(version, "5.6.0");
+        assert_eq!(package, "bash-language-server");
+        assert!(companions.is_empty());
+    }
+
+    #[test]
+    fn clangd_uses_the_locked_official_windows_archive() {
+        let registry = Registry::builtin().unwrap();
+        let clangd = registry.server("clangd").unwrap();
+        let InstallRecipe::GithubZip {
+            version,
+            url,
+            sha256,
+            executable,
+        } = &clangd.install
+        else {
+            panic!("clangd must use the fixed GitHub ZIP recipe");
+        };
+        assert_eq!(version, "22.1.6");
+        assert_eq!(
+            url,
+            "https://github.com/clangd/clangd/releases/download/22.1.6/clangd-windows-22.1.6.zip"
+        );
+        assert_eq!(
+            sha256,
+            "ce54f16e0b4fd76d450eeda9664420b195360b73febcfe40e661108fa57f2ce1"
+        );
+        assert_eq!(executable, "clangd_22.1.6/bin/clangd.exe");
+    }
+
+    #[test]
+    fn unsafe_github_zip_recipes_are_rejected() {
+        let valid_hash = "a".repeat(64);
+        for recipe in [
+            InstallRecipe::GithubZip {
+                version: "22.1.6".into(),
+                url: "http://github.com/clangd/clangd/archive.zip".into(),
+                sha256: valid_hash.clone(),
+                executable: "clangd/bin/clangd.exe".into(),
+            },
+            InstallRecipe::GithubZip {
+                version: "22.1.6".into(),
+                url: "https://github.com/clangd/clangd/archive.zip".into(),
+                sha256: "not-a-hash".into(),
+                executable: "clangd/bin/clangd.exe".into(),
+            },
+            InstallRecipe::GithubZip {
+                version: "22.1.6".into(),
+                url: "https://github.com/clangd/clangd/archive.zip".into(),
+                sha256: valid_hash.clone(),
+                executable: "../clangd.exe".into(),
+            },
+        ] {
+            assert!(validate_recipe(&recipe, "clangd").is_err());
+        }
     }
 
     #[test]

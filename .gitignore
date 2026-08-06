@@ -2,6 +2,7 @@
 /dist/
 /npm/
 /scripts/
+/clsp-design-v3.md
 /vscode/node_modules/
 /vscode/out/
 /vscode/*.vsix
