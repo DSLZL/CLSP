@@ -19,7 +19,47 @@ env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  wait-for-ci:
+    name: Wait for main CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+
+    steps:
+      - name: Wait for matching main CI run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)"
+          run_id=""
+          for _ in {1..12}; do
+            run_id="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow ci.yml \
+              --branch main \
+              --commit "$commit" \
+              --event push \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')"
+            [[ -n "$run_id" ]] && break
+            sleep 5
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "No main CI run found for release commit '$commit'" >&2
+            exit 1
+          fi
+
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --compact --exit-status
+
   build:
+    needs: wait-for-ci
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
