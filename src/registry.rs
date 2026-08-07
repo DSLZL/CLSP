@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 8] = [
+const APPROVED_IDS: [&str; 9] = [
     "astro",
     "bash",
+    "csharp",
     "clangd",
     "gopls",
     "pyright",
@@ -15,10 +16,10 @@ const APPROVED_IDS: [&str; 8] = [
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 29] = [
-    "astro", "bash", "c", "c++", "cc", "cjs", "cpp", "cts", "cxx", "go", "h", "h++", "hh", "hpp",
-    "hxx", "js", "jsx", "ksh", "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "yaml", "yml",
-    "zsh",
+const APPROVED_EXTENSIONS: [&str; 31] = [
+    "astro", "bash", "c", "c++", "cc", "cjs", "cpp", "cs", "csx", "cts", "cxx", "go", "h", "h++",
+    "hh", "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx",
+    "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -292,9 +293,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_eight_server_set() {
+    fn builtin_is_the_closed_nine_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 8);
+        assert_eq!(registry.server.len(), 9);
         assert_eq!(
             registry
                 .server
@@ -373,6 +374,42 @@ mod tests {
         assert_eq!(version, "5.6.0");
         assert_eq!(package, "bash-language-server");
         assert!(companions.is_empty());
+    }
+
+    #[test]
+    fn csharp_uses_the_locked_official_language_server() {
+        let registry = Registry::builtin().unwrap();
+        let csharp = registry.server("csharp").unwrap();
+        assert_eq!(csharp.language_id, "csharp");
+        assert_eq!(csharp.version_req, "=5.9.0-1.26303.1");
+        assert_eq!(csharp.extensions, ["cs", "csx"]);
+        assert_eq!(
+            csharp.markers,
+            ["*.slnx", "*.sln", "*.csproj", "global.json"]
+        );
+        assert_eq!(csharp.command, "roslyn-language-server");
+        assert_eq!(csharp.args, ["--stdio", "--autoLoadProjects"]);
+        let InstallRecipe::Command {
+            version,
+            program,
+            args,
+        } = &csharp.install
+        else {
+            panic!("C# must use the dotnet tool recipe");
+        };
+        assert_eq!(version, "5.9.0-1.26303.1");
+        assert_eq!(program, "dotnet");
+        assert_eq!(
+            args,
+            &[
+                "tool",
+                "install",
+                "--global",
+                "roslyn-language-server",
+                "--version",
+                "5.9.0-1.26303.1",
+            ]
+        );
     }
 
     #[test]

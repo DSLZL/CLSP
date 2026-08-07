@@ -29,6 +29,44 @@ const ARCHIVE_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
 const ARCHIVE_EXTRACT_LIMIT: u64 = 512 * 1024 * 1024;
 const ARCHIVE_ENTRY_LIMIT: usize = 4_096;
 const VSCODE_INSTALL_ENTRY_LIMIT: usize = 32;
+const ROSLYN_LANGUAGE_SERVER_PACKAGE: &str = "roslyn-language-server";
+const PRESERVED_ENV: &[&str] = &[
+    "SystemRoot",
+    "WINDIR",
+    "COMSPEC",
+    "PATH",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "GOBIN",
+    "GOPATH",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "RUSTUP_TOOLCHAIN",
+    "DOTNET_CLI_HOME",
+    "DOTNET_ROOT",
+    "ProgramFiles(x86)",
+    "PNPM_HOME",
+    "NPM_CONFIG_PREFIX",
+    "BUN_INSTALL",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+];
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
@@ -84,6 +122,7 @@ pub struct ServerResolver {
     config: Config,
     paths: StatePaths,
     vscode_app_data: Option<PathBuf>,
+    dotnet_cli_home: Option<PathBuf>,
     install_lock: Mutex<()>,
 }
 
@@ -93,6 +132,7 @@ impl ServerResolver {
             config,
             paths,
             vscode_app_data: std::env::var_os("APPDATA").map(PathBuf::from),
+            dotnet_cli_home: dotnet_cli_home(),
             install_lock: Mutex::new(()),
         }
     }
@@ -123,6 +163,20 @@ impl ServerResolver {
                 .map_err(|error| error.for_server(&server.id))?;
             if let Some(resolution) = self
                 .resolve_npm_global(server, &manager, false)
+                .await
+                .map_err(|error| error.for_server(&server.id))?
+            {
+                return Ok(resolution);
+            }
+        }
+
+        if let InstallRecipe::Command { program, .. } = &server.install {
+            let program = self
+                .require_program(program)
+                .await
+                .map_err(|error| error.for_server(&server.id))?;
+            if let Some(resolution) = self
+                .resolve_toolchain_candidate(server, workspace, &program, false)
                 .await
                 .map_err(|error| error.for_server(&server.id))?
             {
@@ -643,6 +697,7 @@ impl ServerResolver {
         installed: bool,
     ) -> Result<Option<ResolvedExecutable>, ClspError> {
         let candidate = match server.id.as_str() {
+            "csharp" => self.dotnet_tool_candidate(server, program).await?,
             "gopls" => self.gopls_candidate(program).await?,
             "rust" => self.rustup_candidate(program, workspace, installed).await?,
             _ => None,
@@ -650,7 +705,11 @@ impl ServerResolver {
         let Some(candidate) = candidate else {
             return Ok(None);
         };
-        let probe = self.probe_server(server, &candidate, workspace).await?;
+        let probe = match self.probe_server(server, &candidate, workspace).await {
+            Ok(probe) => probe,
+            Err(error) if installed => return Err(error),
+            Err(_) => return Ok(None),
+        };
         Ok(Some(ResolvedExecutable {
             path: candidate,
             version_output: probe.version_output,
@@ -670,6 +729,19 @@ impl ServerResolver {
         program: &Path,
         args: &[String],
     ) -> Result<ResolvedExecutable, ClspError> {
+        let dotnet_version = match (&*server.id, &server.install) {
+            ("csharp", InstallRecipe::Command { version, .. }) => Some(version.as_str()),
+            _ => None,
+        };
+        let command_args = if dotnet_version.is_some() {
+            let installed = self
+                .dotnet_global_tool_version(program, ROSLYN_LANGUAGE_SERVER_PACKAGE)
+                .await?
+                .is_some();
+            dotnet_tool_command_args(args, installed)?
+        } else {
+            args.to_vec()
+        };
         let cwd = if server.id == "rust" {
             workspace
         } else {
@@ -677,12 +749,34 @@ impl ServerResolver {
         };
         run_checked(
             program,
-            args,
+            &command_args,
             cwd,
             Duration::from_secs(self.config.install.command_timeout_seconds),
             &format!("{} install", server.display_name),
         )
         .await?;
+
+        if let Some(expected) = dotnet_version {
+            let actual = self
+                .dotnet_global_tool_version(program, ROSLYN_LANGUAGE_SERVER_PACKAGE)
+                .await?;
+            if actual.as_deref() != Some(expected) {
+                return Err(server_error(format!(
+                    "{} installed dotnet tool version {}, expected {expected}",
+                    server.display_name,
+                    actual.as_deref().unwrap_or("missing")
+                )));
+            }
+            return self
+                .resolve_toolchain_candidate(server, workspace, program, true)
+                .await?
+                .ok_or_else(|| {
+                    server_error(format!(
+                        "{} install command succeeded but no compatible executable was found",
+                        server.display_name
+                    ))
+                });
+        }
 
         if let Some(mut resolution) = self.resolve_local(server, workspace, None).await {
             resolution.source = ExecutableSource::Installed;
@@ -713,6 +807,61 @@ impl ServerResolver {
         Ok(executable_candidates_in(&bin, "gopls")
             .into_iter()
             .find(|path| path.is_file()))
+    }
+
+    async fn dotnet_tool_candidate(
+        &self,
+        server: &ServerDefinition,
+        dotnet: &Path,
+    ) -> Result<Option<PathBuf>, ClspError> {
+        let InstallRecipe::Command { version, .. } = &server.install else {
+            return Ok(None);
+        };
+        if self
+            .dotnet_global_tool_version(dotnet, ROSLYN_LANGUAGE_SERVER_PACKAGE)
+            .await?
+            .as_deref()
+            != Some(version)
+        {
+            return Ok(None);
+        }
+        Ok(self.dotnet_cli_home.as_deref().and_then(|home| {
+            dotnet_tool_candidates(home, &server.command)
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+        }))
+    }
+
+    async fn dotnet_global_tool_version(
+        &self,
+        dotnet: &Path,
+        package: &str,
+    ) -> Result<Option<String>, ClspError> {
+        let output = run_command(
+            dotnet,
+            &[
+                "tool".to_owned(),
+                "list".to_owned(),
+                "--global".to_owned(),
+                package.to_owned(),
+            ],
+            &self.paths.workspace_state,
+            Duration::from_millis(self.config.runtime.probe_timeout_ms),
+        )
+        .await?;
+        let version = parse_dotnet_tool_version(&output.stdout, package)?;
+        if output.status.success()
+            || (output.status.code() == Some(1)
+                && version.is_none()
+                && output.stderr.iter().all(u8::is_ascii_whitespace))
+        {
+            return Ok(version);
+        }
+        Err(server_error(format!(
+            "dotnet tool list exited with {}; {}",
+            output.status,
+            command_output_detail(&output)
+        )))
     }
 
     async fn rustup_candidate(
@@ -1246,6 +1395,47 @@ fn executable_names(command: &str) -> Vec<String> {
     }
 }
 
+fn dotnet_cli_home() -> Option<PathBuf> {
+    ["DOTNET_CLI_HOME", "USERPROFILE", "HOME"]
+        .into_iter()
+        .find_map(std::env::var_os)
+        .map(PathBuf::from)
+}
+
+fn dotnet_tool_candidates(home: &Path, command: &str) -> Vec<PathBuf> {
+    executable_candidates_in(&home.join(".dotnet/tools"), command)
+}
+
+fn dotnet_tool_command_args(args: &[String], installed: bool) -> Result<Vec<String>, ClspError> {
+    let mut args = args.to_vec();
+    if installed {
+        if args.first().map(String::as_str) != Some("tool")
+            || args.get(1).map(String::as_str) != Some("install")
+        {
+            return Err(server_error("invalid dotnet tool install recipe"));
+        }
+        args[1] = "update".to_owned();
+        args.push("--allow-downgrade".to_owned());
+    }
+    Ok(args)
+}
+
+fn parse_dotnet_tool_version(output: &[u8], package: &str) -> Result<Option<String>, ClspError> {
+    let text = std::str::from_utf8(output).map_err(server_error)?;
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some(package) {
+            continue;
+        }
+        let version = fields
+            .next()
+            .ok_or_else(|| server_error("dotnet tool list returned a row without a version"))?;
+        Version::parse(version).map_err(server_error)?;
+        return Ok(Some(version.to_owned()));
+    }
+    Ok(None)
+}
+
 fn npm_install_args(
     manager: NpmManager,
     package: &str,
@@ -1303,6 +1493,19 @@ pub(crate) fn resolution_fingerprint(
             ));
         }
     }
+    if server.id == "csharp" {
+        for name in ["DOTNET_CLI_HOME", "USERPROFILE", "HOME"] {
+            digest.update(
+                std::env::var_os(name)
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+        }
+        if let Some(home) = dotnet_cli_home() {
+            candidates.extend(dotnet_tool_candidates(&home, &server.command));
+        }
+    }
     for candidate in candidates {
         hash_executable_candidate(&mut digest, candidate);
     }
@@ -1323,43 +1526,11 @@ fn hash_executable_candidate(digest: &mut Sha256, candidate: PathBuf) {
 }
 
 pub(crate) fn sanitize_command(command: &mut Command) {
-    let preserved: Vec<_> = [
-        "SystemRoot",
-        "WINDIR",
-        "COMSPEC",
-        "PATH",
-        "PATHEXT",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "USERPROFILE",
-        "LOCALAPPDATA",
-        "APPDATA",
-        "HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_DATA_HOME",
-        "XDG_STATE_HOME",
-        "GOBIN",
-        "GOPATH",
-        "CARGO_HOME",
-        "RUSTUP_HOME",
-        "RUSTUP_TOOLCHAIN",
-        "PNPM_HOME",
-        "NPM_CONFIG_PREFIX",
-        "BUN_INSTALL",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "no_proxy",
-    ]
-    .into_iter()
-    .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
-    .collect();
+    let preserved: Vec<_> = PRESERVED_ENV
+        .iter()
+        .copied()
+        .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
+        .collect();
     command.env_clear();
     command.envs(preserved);
     command
@@ -1564,6 +1735,7 @@ mod tests {
         }
         let mut resolver = ServerResolver::new(Config::default(), paths);
         resolver.vscode_app_data = None;
+        resolver.dotnet_cli_home = None;
         resolver
     }
 
@@ -1645,6 +1817,113 @@ mod tests {
                 "@astrojs/language-server@2.16.13",
                 "typescript@5.9.2"
             ]
+        );
+    }
+
+    #[test]
+    fn dotnet_tool_contract_is_exact() {
+        let registry = Registry::builtin().unwrap();
+        let csharp = registry.server("csharp").unwrap();
+        let InstallRecipe::Command { args, .. } = &csharp.install else {
+            panic!("C# must use a command recipe");
+        };
+        assert_eq!(dotnet_tool_command_args(args, false).unwrap(), *args);
+        let mut update = args.clone();
+        update[1] = "update".to_owned();
+        update.push("--allow-downgrade".to_owned());
+        assert_eq!(dotnet_tool_command_args(args, true).unwrap(), update);
+
+        let list = b"Package Id Version Commands\n--------------------------------\nroslyn-language-server 5.9.0-1.26303.1 roslyn-language-server\n";
+        assert_eq!(
+            parse_dotnet_tool_version(list, ROSLYN_LANGUAGE_SERVER_PACKAGE).unwrap(),
+            Some("5.9.0-1.26303.1".to_owned())
+        );
+        assert_eq!(
+            parse_dotnet_tool_version(list, "other-package").unwrap(),
+            None
+        );
+        assert!(
+            parse_dotnet_tool_version(
+                b"roslyn-language-server invalid",
+                ROSLYN_LANGUAGE_SERVER_PACKAGE
+            )
+            .is_err()
+        );
+        assert!(PRESERVED_ENV.contains(&"DOTNET_CLI_HOME"));
+        assert!(PRESERVED_ENV.contains(&"DOTNET_ROOT"));
+        assert!(PRESERVED_ENV.contains(&"ProgramFiles(x86)"));
+    }
+
+    #[tokio::test]
+    async fn dotnet_global_resolution_requires_manifest_and_compatible_shim() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("dotnet-home");
+        let tools = home.join(".dotnet/tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let dotnet = fake_executable(
+            root.path(),
+            "dotnet",
+            "echo Package Id Version Commands\necho roslyn-language-server 5.9.0-1.26303.1 roslyn-language-server",
+        );
+        let server_executable = fake_executable(
+            &tools,
+            ROSLYN_LANGUAGE_SERVER_PACKAGE,
+            "echo roslyn-language-server 5.9.0-1.26303.1",
+        );
+        let mut resolver = test_resolver(root.path());
+        resolver.dotnet_cli_home = Some(home);
+        let server = Registry::builtin()
+            .unwrap()
+            .server("csharp")
+            .unwrap()
+            .clone();
+
+        let resolution = resolver
+            .resolve_toolchain_candidate(&server, root.path(), &dotnet, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolution.path, server_executable);
+        assert_eq!(resolution.source, ExecutableSource::Path);
+
+        #[cfg(windows)]
+        std::fs::write(
+            &dotnet,
+            "@echo off\r\necho Package Id Version Commands\r\nexit /b 1\r\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::fs::write(
+            &dotnet,
+            "#!/bin/sh\necho Package Id Version Commands\nexit 1\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolver
+                .dotnet_global_tool_version(&dotnet, ROSLYN_LANGUAGE_SERVER_PACKAGE)
+                .await
+                .unwrap(),
+            None
+        );
+
+        #[cfg(windows)]
+        std::fs::write(
+            &dotnet,
+            "@echo off\r\necho roslyn-language-server 5.8.0 roslyn-language-server\r\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::fs::write(
+            &dotnet,
+            "#!/bin/sh\necho roslyn-language-server 5.8.0 roslyn-language-server\n",
+        )
+        .unwrap();
+        assert!(
+            resolver
+                .resolve_toolchain_candidate(&server, root.path(), &dotnet, false)
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 

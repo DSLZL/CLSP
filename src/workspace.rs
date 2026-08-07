@@ -174,8 +174,7 @@ impl Workspace {
 
         for server in &registry.server {
             for marker in &server.markers {
-                let marker_path = self.root.join(marker);
-                if marker_path.exists() {
+                if marker_exists(&self.root, marker) {
                     families
                         .entry(server.id.clone())
                         .or_default()
@@ -266,7 +265,7 @@ fn nearest_root(file: &Path, workspace: &Path, server: &ServerDefinition) -> Pat
         if server
             .markers
             .iter()
-            .any(|marker| candidate.join(marker).exists())
+            .any(|marker| marker_exists(candidate, marker))
         {
             return candidate.to_path_buf();
         }
@@ -276,6 +275,22 @@ fn nearest_root(file: &Path, workspace: &Path, server: &ServerDefinition) -> Pat
         directory = candidate.parent();
     }
     workspace.to_path_buf()
+}
+
+fn marker_exists(directory: &Path, marker: &str) -> bool {
+    let Some(extension) = marker.strip_prefix("*.") else {
+        return directory.join(marker).exists();
+    };
+    fs::read_dir(directory).is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_file())
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+        })
+    })
 }
 
 fn path_is_within(normalized_root: &str, candidate: &Path) -> bool {
@@ -371,6 +386,33 @@ mod tests {
             .find(|item| item.server_id == "rust")
             .unwrap();
         assert_eq!(rust.root, fs::canonicalize(nested).unwrap());
+    }
+
+    #[test]
+    fn wildcard_markers_find_the_nearest_csharp_project() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("src/Demo");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("Demo.csproj"), "<Project />").unwrap();
+        let source = nested.join("Program.cs");
+        fs::write(&source, "class Program {}").unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let registry = Registry::builtin().unwrap();
+
+        assert_eq!(
+            workspace.root_for_file(&source, registry.server("csharp").unwrap()),
+            nested
+        );
+        assert_eq!(
+            workspace.root_for_file(
+                &root.path().join("Loose.cs"),
+                registry.server("csharp").unwrap()
+            ),
+            fs::canonicalize(root.path()).unwrap()
+        );
+        assert!(!marker_exists(root.path(), "global.json"));
+        fs::write(root.path().join("global.json"), "{}").unwrap();
+        assert!(marker_exists(root.path(), "global.json"));
     }
 
     #[test]

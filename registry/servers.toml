@@ -23,6 +23,18 @@ version_args = ["--version"]
 install = { kind = "npm", version = "5.6.0", package = "bash-language-server", companions = [] }
 
 [[server]]
+id = "csharp"
+display_name = "Roslyn Language Server"
+language_id = "csharp"
+version_req = "=5.9.0-1.26303.1"
+extensions = ["cs", "csx"]
+markers = ["*.slnx", "*.sln", "*.csproj", "global.json"]
+command = "roslyn-language-server"
+args = ["--stdio", "--autoLoadProjects"]
+version_args = ["--version"]
+install = { kind = "command", version = "5.9.0-1.26303.1", program = "dotnet", args = ["tool", "install", "--global", "roslyn-language-server", "--version", "5.9.0-1.26303.1"] }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"

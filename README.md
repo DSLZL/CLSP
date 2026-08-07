@@ -20,7 +20,7 @@ clsp setup --workspace .
 
 `setup` 会验证当前 `PATH` 中的 `clsp`、同目录 VSIX 和本机 `Code.exe`，安装/更新扩展，并合并项目级 `.codex/config.toml` 与 `.codex/hooks.json`。它保留无关 MCP 和 hooks；检测到冲突的 `mcp_servers.clsp` 或 TOML 内联 hooks 时会在写入前停止。完成后请在 Codex `/hooks` 中检查并信任项目 hooks，然后 reload VS Code。
 
-npm 包已同时包含 `clsp.exe` 和 `clsp-ide.vsix`，不需要手工下载 ZIP，也不需要从 Marketplace 获取 CLSP Bridge。VS Code 扩展仍然是读取实时编辑器内存状态所必需的部分，但由 `clsp setup` 本地安装。要复用 Astro 或 Bash 的 VS Code Problems，仍需安装对应的 `astro-build.astro-vscode` 或 `mads-hartmann.bash-ide-vscode` 语言扩展。
+npm 包已同时包含 `clsp.exe` 和 `clsp-ide.vsix`，不需要手工下载 ZIP，也不需要从 Marketplace 获取 CLSP Bridge。VS Code 扩展仍然是读取实时编辑器内存状态所必需的部分，但由 `clsp setup` 本地安装。要复用 Astro、Bash 或 C# 的 VS Code Problems，仍需安装对应的 `astro-build.astro-vscode`、`mads-hartmann.bash-ide-vscode` 或 `ms-dotnettools.csharp` 语言扩展。
 
 ## Language Server 安装
 
@@ -29,9 +29,10 @@ CLSP 先复用项目 `node_modules/.bin`、虚拟环境、项目 `bin`、显式�
 - npm 型服务器固定按 `bun` > `pnpm` > `npm` 探测，使用第一个版本探测成功的管理器执行全局、精确版本安装。选中后安装或 root 查询失败不会静默改用下一个管理器。
 - Astro 与 TypeScript Language Server 会在同一命令中安装固定版本 TypeScript；Bash、Pyright 与 YAML Language Server 只安装自身。
 - gopls 使用本地 `go install`，不覆盖 `GOBIN`；rust-analyzer 使用当前 workspace 对应的 `rustup component add rust-analyzer`。
+- C# 需要本机已有 .NET 10 SDK。CLSP 通过 `dotnet tool` 复用或安装固定的 `roslyn-language-server@5.9.0-1.26303.1`，并核对全局工具清单、shim 与服务端版本；它不会安装 .NET SDK，也不会读取 C# 扩展的私有 `.roslyn` 目录。
 - clangd 在上述本地来源之后，优先复用 VS Code Stable/Insiders 的 `llvm-vs-code-extensions.vscode-clangd` 已管理服务器，再复用 CLSP 用户级缓存；仍缺失时固定安装官方 `22.1.6` Windows ZIP。CLSP 不调用 winget、Chocolatey、Scoop 或其他系统包管理器。自定义 VS Code user-data-dir 请通过 `lsp.clangd.executable` 指定。
 
-安装步骤退出成功后，CLSP 仍会重新发现 executable、校验包名/版本并完成 LSP initialize。全局目录或 clangd 归档不完整时不会报告安装成功。npm/工具链网络行为由对应本地工具负责；clangd 下载沿用当前代理环境并强制 HTTPS、大小上限和固定摘要。
+安装步骤退出成功后，CLSP 仍会重新发现 executable、校验包名/版本并完成 LSP initialize。npm 或 dotnet 全局清单、全局目录或 clangd 归档不完整时不会报告安装成功。npm/工具链网络行为由对应本地工具负责；clangd 下载沿用当前代理环境并强制 HTTPS、大小上限和固定摘要。
 
 ## 实时 IDE 能力
 
@@ -40,7 +41,7 @@ CLSP 先复用项目 `node_modules/.bin`、虚拟环境、项目 `bin`、显式�
 - selection 最多 8 KiB，完整 hook 输出最多 12 KiB，并明确标记为不可信工作区数据。
 - `CLSP: Toggle Selection Sharing` 可停止分享选择文本，同时保留允许的活动文件元数据。
 - `ide_diagnostics` 读取 VS Code Problems（`Ctrl+Shift+M`）当前内容，包括未保存文档的诊断；它不会伪装成 CLSP 的磁盘 LSP 诊断。
-- `apply_patch` 前会在内存中记录目标文件的 Problems error 基线；编辑后通过同一 VS Code session 再读一次，只把新增 error 注入 Codex。这条自动路径会复用 rust-analyzer、Astro、Bash 等语言扩展已经发布的诊断，不会再启动同语言的 CLSP LSP。
+- `apply_patch` 前会在内存中记录目标文件的 Problems error 基线；编辑后通过同一 VS Code session 再读一次，只把新增 error 注入 Codex。这条自动路径会复用 rust-analyzer、Astro、Bash、C# 等语言扩展已经发布的诊断，不会再启动同语言的 CLSP LSP。
 - `apply_patch` 前会检查全部目标文档。存在 dirty buffer 时，VS Code 原生确认框只在用户选择 `Save and continue` 后保存这些目标。
 - 编辑成功后最多打开五个 `Before Codex <-> After Codex` 原生 diff。关闭 diff 不会回滚编辑。
 
@@ -83,7 +84,7 @@ server_idle_seconds = 600
 broker_idle_seconds = 900
 ```
 
-`auto_install = false` 只复用已经可发现的兼容服务器，包括 VS Code 扩展已管理的 clangd 和完整的 CLSP clangd 缓存；它不执行安装命令或下载。旧的 `runtime.policy`、per-LSP `policy` 和下载配置已移除，继续配置会返回明确的无效配置错误。
+`auto_install = false` 只复用已经可发现的兼容服务器，包括 dotnet 全局工具、VS Code 扩展已管理的 clangd 和完整的 CLSP clangd 缓存；它不执行安装、更新或下载。旧的 `runtime.policy`、per-LSP `policy` 和下载配置已移除，继续配置会返回明确的无效配置错误。
 
 ## 状态与降级
 
