@@ -33,7 +33,7 @@ jobs:
           bun-version: 1.3.14
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vscode/bun.lock') }}
@@ -42,16 +42,10 @@ jobs:
         working-directory: vscode
         run: bun ci
 
-      - name: Cache Cargo checks
-        uses: actions/cache@v4
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}-
+          shared-key: checks
 
       - name: Check repository
         run: bun run check
