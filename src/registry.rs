@@ -5,21 +5,22 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 9] = [
+const APPROVED_IDS: [&str; 10] = [
     "astro",
     "bash",
     "csharp",
     "clangd",
+    "clojure-lsp",
     "gopls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 31] = [
-    "astro", "bash", "c", "c++", "cc", "cjs", "cpp", "cs", "csx", "cts", "cxx", "go", "h", "h++",
-    "hh", "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx",
-    "yaml", "yml", "zsh",
+const APPROVED_EXTENSIONS: [&str; 35] = [
+    "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
+    "cxx", "edn", "go", "h", "h++", "hh", "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts", "py",
+    "pyi", "rs", "sh", "ts", "tsx", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -293,9 +294,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_nine_server_set() {
+    fn builtin_is_the_closed_ten_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 9);
+        assert_eq!(registry.server.len(), 10);
         assert_eq!(
             registry
                 .server
@@ -326,6 +327,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["bash"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".CLJC")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["clojure-lsp"]
         );
         assert!(registry.matching_extension("java").next().is_none());
     }
@@ -410,6 +418,32 @@ mod tests {
                 "5.9.0-1.26303.1",
             ]
         );
+    }
+
+    #[test]
+    fn clojure_uses_the_opencode_contract_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let clojure = registry.server("clojure-lsp").unwrap();
+        assert_eq!(clojure.language_id, "clojure");
+        assert_eq!(clojure.version_req, ">=2026.7.6, <2027.0.0");
+        assert_eq!(clojure.extensions, ["clj", "cljs", "cljc", "edn"]);
+        assert_eq!(
+            clojure.markers,
+            [
+                "deps.edn",
+                "project.clj",
+                "shadow-cljs.edn",
+                "bb.edn",
+                "build.boot",
+            ]
+        );
+        assert_eq!(clojure.command, "clojure-lsp");
+        assert_eq!(clojure.args, ["listen"]);
+        let InstallRecipe::Manual { version, hint } = &clojure.install else {
+            panic!("Clojure must use a manual recipe");
+        };
+        assert_eq!(version, "2026.07.06-14.34.19");
+        assert!(hint.contains("scoop-clojure"));
     }
 
     #[test]

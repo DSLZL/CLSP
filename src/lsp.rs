@@ -31,7 +31,9 @@ const HEADER_LIMIT: usize = 8 * 1024;
 const MAX_HOVER_CHARS: usize = 64 * 1024;
 const MAX_LOCATIONS: usize = 100;
 const ASTRO_SERVER_ID: &str = "astro";
+const CLOJURE_SERVER_ID: &str = "clojure-lsp";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
+const CLOJURE_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
 type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, ClspError>>>>>;
 
@@ -360,7 +362,13 @@ impl LspClient {
         if let Some(initialization_options) = initialization_options {
             initialize_params["initializationOptions"] = initialization_options;
         }
-        let result = client.request("initialize", initialize_params).await?;
+        let result = client
+            .request_with_timeout(
+                "initialize",
+                initialize_params,
+                initialization_timeout(options.server_id, options.request_timeout),
+            )
+            .await?;
         *client.encoding.write().await = PositionEncoding::from_initialize(&result);
         *client.supports_pull_diagnostics.write().await = result
             .pointer("/capabilities/diagnosticProvider")
@@ -540,6 +548,16 @@ impl LspClient {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, ClspError> {
+        self.request_with_timeout(method, params, self.request_timeout)
+            .await
+    }
+
+    async fn request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        request_timeout: Duration,
+    ) -> Result<Value, ClspError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id, sender);
@@ -550,7 +568,7 @@ impl LspClient {
             self.pending.lock().await.remove(&id);
             return Err(error);
         }
-        match timeout(self.request_timeout, receiver).await {
+        match timeout(request_timeout, receiver).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(server_error("LSP response channel closed")),
             Err(_) => {
@@ -622,6 +640,14 @@ impl LspClient {
             *self.encoding.read().await,
             self.max_diagnostics_per_file,
         )
+    }
+}
+
+fn initialization_timeout(server_id: &str, request_timeout: Duration) -> Duration {
+    if server_id == CLOJURE_SERVER_ID {
+        CLOJURE_INITIALIZE_TIMEOUT
+    } else {
+        request_timeout
     }
 }
 
@@ -1270,5 +1296,15 @@ mod tests {
                 .message
                 .contains("requires typescript/lib/tsserver.js")
         );
+    }
+
+    #[test]
+    fn only_clojure_gets_the_long_initialize_timeout() {
+        let normal = Duration::from_secs(10);
+        assert_eq!(
+            initialization_timeout(CLOJURE_SERVER_ID, normal),
+            Duration::from_secs(300)
+        );
+        assert_eq!(initialization_timeout("rust", normal), normal);
     }
 }

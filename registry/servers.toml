@@ -35,6 +35,18 @@ version_args = ["--version"]
 install = { kind = "command", version = "5.9.0-1.26303.1", program = "dotnet", args = ["tool", "install", "--global", "roslyn-language-server", "--version", "5.9.0-1.26303.1"] }
 
 [[server]]
+id = "clojure-lsp"
+display_name = "clojure-lsp"
+language_id = "clojure"
+version_req = ">=2026.7.6, <2027.0.0"
+extensions = ["clj", "cljs", "cljc", "edn"]
+markers = ["deps.edn", "project.clj", "shadow-cljs.edn", "bb.edn", "build.boot"]
+command = "clojure-lsp"
+args = ["listen"]
+version_args = ["--version"]
+install = { kind = "manual", version = "2026.07.06-14.34.19", hint = "Install clojure-lsp 2026.07.06-14.34.19 and a Clojure build tool, then ensure clojure-lsp is on PATH; on Windows use the official scoop-clojure bucket" }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"

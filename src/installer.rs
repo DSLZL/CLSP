@@ -47,6 +47,7 @@ const PRESERVED_ENV: &[&str] = &[
     "XDG_CACHE_HOME",
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
+    "JAVA_HOME",
     "GOBIN",
     "GOPATH",
     "CARGO_HOME",
@@ -1072,9 +1073,50 @@ fn parse_version(output: &str) -> Option<Version> {
         })
         .filter_map(|candidate| {
             let candidate = candidate.strip_prefix('v').unwrap_or(candidate);
-            Version::parse(candidate).ok()
+            Version::parse(candidate)
+                .ok()
+                .or_else(|| parse_calendar_version(candidate))
         })
         .next()
+}
+
+fn parse_calendar_version(candidate: &str) -> Option<Version> {
+    let (date, time) = candidate.split_once('-')?;
+    let mut date = date.split('.');
+    let year = fixed_width_number(date.next()?, 4)?;
+    let month = fixed_width_number(date.next()?, 2)?;
+    let day = fixed_width_number(date.next()?, 2)?;
+    if date.next().is_some() {
+        return None;
+    }
+
+    let mut time = time.split('.');
+    let hour = fixed_width_number(time.next()?, 2)?;
+    let minute = fixed_width_number(time.next()?, 2)?;
+    let second = fixed_width_number(time.next()?, 2)?;
+    if time.next().is_some() || year == 0 || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if day == 0 || day > days_in_month {
+        return None;
+    }
+
+    // ponytail: compatibility is day-granular; preserve time only if same-day releases diverge.
+    Some(Version::new(year, month, day))
+}
+
+fn fixed_width_number(value: &str, width: usize) -> Option<u64> {
+    (value.len() == width && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| value.parse().ok())
+        .flatten()
 }
 
 async fn probe_npm_package(
@@ -2323,6 +2365,40 @@ mod tests {
         assert!(!called.load(Ordering::Relaxed));
     }
 
+    #[tokio::test]
+    async fn manual_clojure_reuses_an_explicit_compatible_server() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = fake_executable(
+            root.path(),
+            "clojure-lsp",
+            "echo clojure-lsp 2026.07.06-14.34.19",
+        );
+        let mut resolver = test_resolver(root.path());
+        resolver.config.auto_install = false;
+        let server = Registry::builtin()
+            .unwrap()
+            .server("clojure-lsp")
+            .unwrap()
+            .clone();
+        let called = Arc::new(AtomicBool::new(false));
+        let callback = Arc::clone(&called);
+
+        let resolution = resolver
+            .resolve_server(
+                &server,
+                root.path(),
+                Some(&executable),
+                move || async move {
+                    callback.store(true, Ordering::Relaxed);
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(resolution.source, ExecutableSource::Explicit);
+        assert_eq!(resolution.version_output, "clojure-lsp 2026.07.06-14.34.19");
+        assert!(!called.load(Ordering::Relaxed));
+    }
+
     #[test]
     fn parses_bun_and_go_roots() {
         let bun = if cfg!(windows) {
@@ -2374,11 +2450,25 @@ mod tests {
                 "rust-analyzer 1.88.0 (6b00bc388 2025-06-23)",
                 Version::new(1, 88, 0),
             ),
+            ("clojure-lsp 2026.07.06-14.34.19", Version::new(2026, 7, 6)),
         ] {
             assert_eq!(parse_version(output), Some(expected));
         }
         assert!(validate_version_output("tool v1.4.0", ">=1.0.0, <2.0.0").is_ok());
         assert!(validate_version_output("tool v2.0.0", ">=1.0.0, <2.0.0").is_err());
+        assert!(
+            validate_version_output("clojure-lsp 2026.07.06-14.34.19", ">=2026.7.6, <2027.0.0")
+                .is_ok()
+        );
+        for invalid in [
+            "2026.02.29-14.34.19",
+            "2026.13.06-14.34.19",
+            "2026.07.06-24.34.19",
+            "2026.07.06-14.34",
+        ] {
+            assert_eq!(parse_version(invalid), None);
+        }
+        assert!(PRESERVED_ENV.contains(&"JAVA_HOME"));
     }
 
     #[test]
