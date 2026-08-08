@@ -351,6 +351,7 @@ csharp
 clangd
 clojure-lsp
 dart
+deno
 gopls
 pyright
 rust

@@ -63,6 +63,7 @@ clsp setup --workspace .
 | Clojure | clojure-lsp | 手动安装 |
 | C / C++ | clangd | 复用本地 / VS Code 版本，否则由 CLSP 校验后下载 |
 | Dart | Dart Language Server | 手动安装 Dart/Flutter SDK |
+| Deno | Deno Language Server | 手动安装 Deno CLI |
 | Go | gopls | `go install` |
 | Python | Pyright | npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
@@ -74,6 +75,8 @@ CLSP 的基本原则很简单：
 > **能复用就复用，只有确实缺失时才安装。**
 
 Dart 支持复用 PATH 或 `[lsp.dart].executable` 中的 `dart`；CLSP 不会安装 Dart 或 Flutter SDK。
+
+Deno 支持只会在 `deno.json` 或 `deno.jsonc` 所在目录树中启用。CLSP 复用 PATH 或 `[lsp.deno].executable` 中的 `deno`，不会安装 Deno，也不会把官方 VS Code 扩展当作内置服务器来源。
 
 如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
 

@@ -245,6 +245,27 @@ executable = "C:/tools/dart-sdk/bin/dart.exe"
 
 CLSP does not read VS Code's `dart.sdkPath`; Dart Code and CLSP resolve their SDKs independently.
 
+## Deno server cannot be resolved
+
+CLSP does not install Deno. Check that Deno 1.40.0 or newer is available:
+
+```powershell
+where.exe deno
+deno --version
+deno lsp --help
+```
+
+If `deno` is not on `PATH`, configure it directly:
+
+```toml
+[lsp.deno]
+executable = "C:/tools/deno/deno.exe"
+```
+
+Deno selection also requires a `deno.json` or `deno.jsonc` between the file and workspace root. Within that Deno root, CLSP selects Deno instead of the TypeScript Language Server.
+
+The official `denoland.vscode-deno` extension and CLSP resolve the Deno CLI independently. Installing the extension alone does not provide CLSP with a server; configure the extension's `deno.path` and CLSP's `[lsp.deno].executable` separately when `PATH` is insufficient.
+
 ## clangd is not found
 
 CLSP checks:

@@ -1564,8 +1564,9 @@ impl Broker {
                 )
             })?;
         let definitions: Vec<_> = self
-            .registry
-            .matching_extension(extension)
+            .workspace
+            .matching_servers(&path, extension, &self.registry)
+            .into_iter()
             .cloned()
             .collect();
         if definitions.is_empty() {
@@ -1691,8 +1692,9 @@ impl Broker {
                 .and_then(|value| value.to_str())
                 .unwrap_or_default();
             let definitions: Vec<_> = self
-                .registry
-                .matching_extension(extension)
+                .workspace
+                .matching_servers(&path, extension, &self.registry)
+                .into_iter()
                 .cloned()
                 .collect();
             for definition in definitions {

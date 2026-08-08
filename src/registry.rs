@@ -5,13 +5,14 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 11] = [
+const APPROVED_IDS: [&str; 12] = [
     "astro",
     "bash",
     "csharp",
     "clangd",
     "clojure-lsp",
     "dart",
+    "deno",
     "gopls",
     "pyright",
     "rust",
@@ -295,9 +296,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_eleven_server_set() {
+    fn builtin_is_the_closed_twelve_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 11);
+        assert_eq!(registry.server.len(), 12);
         assert_eq!(
             registry
                 .server
@@ -471,6 +472,25 @@ mod tests {
         assert_eq!(version, "Dart SDK 2.12.0+");
         assert!(hint.contains("Dart SDK 2.12.0"));
         assert!(hint.contains("[lsp.dart].executable"));
+    }
+
+    #[test]
+    fn deno_uses_the_cli_language_server_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let deno = registry.server("deno").unwrap();
+        assert_eq!(deno.language_id, "typescript");
+        assert_eq!(deno.version_req, ">=1.40.0");
+        assert_eq!(deno.extensions, ["ts", "tsx", "js", "jsx", "mjs"]);
+        assert_eq!(deno.markers, ["deno.json", "deno.jsonc"]);
+        assert_eq!(deno.command, "deno");
+        assert_eq!(deno.args, ["lsp"]);
+        assert_eq!(deno.version_args, ["--version"]);
+        let InstallRecipe::Manual { version, hint } = &deno.install else {
+            panic!("Deno must use a manual recipe");
+        };
+        assert_eq!(version, "Deno 1.40.0+");
+        assert!(hint.contains("Deno 1.40.0"));
+        assert!(hint.contains("[lsp.deno].executable"));
     }
 
     #[test]

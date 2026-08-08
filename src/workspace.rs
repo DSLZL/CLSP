@@ -14,6 +14,9 @@ use crate::{
     registry::{Registry, ServerDefinition},
 };
 
+const DENO_SERVER_ID: &str = "deno";
+const TYPESCRIPT_SERVER_ID: &str = "typescript";
+
 #[derive(Clone, Debug)]
 pub struct Workspace {
     root: PathBuf,
@@ -172,7 +175,16 @@ impl Workspace {
         let mut visited = 0usize;
         let mut complete = true;
 
+        let deno_at_workspace_root = registry.server(DENO_SERVER_ID).is_some_and(|server| {
+            server
+                .markers
+                .iter()
+                .any(|marker| marker_exists(&self.root, marker))
+        });
         for server in &registry.server {
+            if !script_server_selected(server, deno_at_workspace_root) {
+                continue;
+            }
             for marker in &server.markers {
                 if marker_exists(&self.root, marker) {
                     families
@@ -208,7 +220,7 @@ impl Workspace {
             let Some(extension) = entry.path().extension().and_then(|value| value.to_str()) else {
                 continue;
             };
-            for server in registry.matching_extension(extension) {
+            for server in self.matching_servers(entry.path(), extension, registry) {
                 let root = nearest_root(entry.path(), &self.root, server);
                 families.entry(server.id.clone()).or_default().insert(root);
             }
@@ -232,6 +244,21 @@ impl Workspace {
 
     pub fn root_for_file(&self, file: &Path, server: &ServerDefinition) -> PathBuf {
         nearest_root(file, &self.root, server)
+    }
+
+    pub fn matching_servers<'a>(
+        &self,
+        file: &Path,
+        extension: &str,
+        registry: &'a Registry,
+    ) -> Vec<&'a ServerDefinition> {
+        let deno_root = registry
+            .server(DENO_SERVER_ID)
+            .and_then(|server| nearest_marked_root(file, &self.root, server));
+        registry
+            .matching_extension(extension)
+            .filter(|server| script_server_selected(server, deno_root.is_some()))
+            .collect()
     }
 }
 
@@ -260,6 +287,14 @@ pub struct DiscoveryResult {
 }
 
 fn nearest_root(file: &Path, workspace: &Path, server: &ServerDefinition) -> PathBuf {
+    nearest_marked_root(file, workspace, server).unwrap_or_else(|| workspace.to_path_buf())
+}
+
+fn nearest_marked_root(
+    file: &Path,
+    workspace: &Path,
+    server: &ServerDefinition,
+) -> Option<PathBuf> {
     let mut directory = file.parent();
     while let Some(candidate) = directory {
         if server
@@ -267,14 +302,21 @@ fn nearest_root(file: &Path, workspace: &Path, server: &ServerDefinition) -> Pat
             .iter()
             .any(|marker| marker_exists(candidate, marker))
         {
-            return candidate.to_path_buf();
+            return Some(candidate.to_path_buf());
         }
         if candidate == workspace {
             break;
         }
         directory = candidate.parent();
     }
-    workspace.to_path_buf()
+    None
+}
+
+fn script_server_selected(server: &ServerDefinition, deno_root: bool) -> bool {
+    !matches!(
+        (deno_root, server.id.as_str()),
+        (true, TYPESCRIPT_SERVER_ID) | (false, DENO_SERVER_ID)
+    )
 }
 
 fn marker_exists(directory: &Path, marker: &str) -> bool {
@@ -413,6 +455,55 @@ mod tests {
         assert!(!marker_exists(root.path(), "global.json"));
         fs::write(root.path().join("global.json"), "{}").unwrap();
         assert!(marker_exists(root.path(), "global.json"));
+    }
+
+    #[test]
+    fn deno_markers_select_deno_instead_of_typescript() {
+        let root = tempfile::tempdir().unwrap();
+        let deno_root = root.path().join("deno-app");
+        let node_root = root.path().join("node-app");
+        fs::create_dir_all(&deno_root).unwrap();
+        fs::create_dir_all(&node_root).unwrap();
+        fs::write(deno_root.join("deno.json"), "{}").unwrap();
+        fs::write(deno_root.join("package.json"), "{}").unwrap();
+        fs::write(node_root.join("package.json"), "{}").unwrap();
+        let deno_file = deno_root.join("main.ts");
+        let deno_js_file = deno_root.join("main.js");
+        let node_file = node_root.join("main.ts");
+        fs::write(&deno_file, "export const deno = true;").unwrap();
+        fs::write(&deno_js_file, "export const deno = true;").unwrap();
+        fs::write(&node_file, "export const node = true;").unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let registry = Registry::builtin().unwrap();
+
+        assert_eq!(
+            workspace
+                .matching_servers(&deno_file, "ts", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["deno"]
+        );
+        assert_eq!(
+            workspace
+                .matching_servers(&deno_js_file, "js", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["deno"]
+        );
+        assert_eq!(
+            workspace.root_for_file(&deno_file, registry.server("deno").unwrap()),
+            deno_root
+        );
+        assert_eq!(
+            workspace
+                .matching_servers(&node_file, "ts", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["typescript"]
+        );
     }
 
     #[test]

@@ -2455,6 +2455,10 @@ mod tests {
                 "Dart SDK version: 3.8.1 (stable) on windows_x64",
                 Version::new(3, 8, 1),
             ),
+            (
+                "deno 2.8.1 (stable, release, x86_64-pc-windows-msvc)\nv8 14.2.231.17-rusty\ntypescript 5.9.2",
+                Version::new(2, 8, 1),
+            ),
         ] {
             assert_eq!(parse_version(output), Some(expected));
         }

@@ -32,6 +32,7 @@ const MAX_HOVER_CHARS: usize = 64 * 1024;
 const MAX_LOCATIONS: usize = 100;
 const ASTRO_SERVER_ID: &str = "astro";
 const CLOJURE_SERVER_ID: &str = "clojure-lsp";
+const DENO_SERVER_ID: &str = "deno";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const CLOJURE_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -1052,6 +1053,9 @@ fn server_initialization_options(
     executable: &Path,
     npm_modules_root: Option<&Path>,
 ) -> Result<Option<Value>, ClspError> {
+    if server_id == DENO_SERVER_ID {
+        return Ok(Some(json!({"enable": true})));
+    }
     if !matches!(server_id, ASTRO_SERVER_ID | TYPESCRIPT_SERVER_ID) {
         return Ok(None);
     }
@@ -1296,6 +1300,17 @@ mod tests {
                 .message
                 .contains("requires typescript/lib/tsserver.js")
         );
+    }
+
+    #[test]
+    fn deno_initialization_enables_the_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let options =
+            server_initialization_options(DENO_SERVER_ID, root, root, &root.join("deno.exe"), None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(options, json!({"enable": true}));
     }
 
     #[test]

@@ -65,6 +65,7 @@ After setup:
 | Clojure | clojure-lsp | Manual |
 | C / C++ | clangd | Reuse local/VS Code copy, otherwise verified CLSP download |
 | Dart | Dart Language Server | Manual Dart/Flutter SDK |
+| Deno | Deno Language Server | Manual Deno CLI |
 | Go | gopls | `go install` |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
@@ -76,6 +77,8 @@ CLSP follows a simple rule:
 > **Reuse first. Install only when necessary.**
 
 Dart support reuses `dart` from `PATH` or `[lsp.dart].executable`; CLSP does not install the Dart or Flutter SDK.
+
+Deno support is enabled only below `deno.json` or `deno.jsonc`. It reuses `deno` from `PATH` or `[lsp.deno].executable`; CLSP does not install Deno or scan the official VS Code extension for a bundled server.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

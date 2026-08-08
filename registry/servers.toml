@@ -59,6 +59,18 @@ version_args = ["--version"]
 install = { kind = "manual", version = "Dart SDK 2.12.0+", hint = "Install Dart SDK 2.12.0 or newer (or Flutter with its bundled Dart SDK), then ensure dart is on PATH or set [lsp.dart].executable" }
 
 [[server]]
+id = "deno"
+display_name = "Deno Language Server"
+language_id = "typescript"
+version_req = ">=1.40.0"
+extensions = ["ts", "tsx", "js", "jsx", "mjs"]
+markers = ["deno.json", "deno.jsonc"]
+command = "deno"
+args = ["lsp"]
+version_args = ["--version"]
+install = { kind = "manual", version = "Deno 1.40.0+", hint = "Install Deno 1.40.0 or newer, then ensure deno is on PATH or set [lsp.deno].executable" }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"
