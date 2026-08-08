@@ -12,6 +12,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `bash` | Bash / shell | `bash-language-server` | `>=5.6.0, <6.0.0` | `bash-language-server@5.6.0` |
 | `csharp` | C# | `roslyn-language-server` | `=5.9.0-1.26303.1` | global `dotnet tool` |
 | `clojure-lsp` | Clojure | `clojure-lsp` | `>=2026.7.6, <2027.0.0` | manual |
+| `dart` | Dart | `dart language-server --protocol=lsp` | `>=2.12.0` | manual Dart/Flutter SDK |
 | `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
@@ -109,6 +110,17 @@ Clojure is intentionally manual.
 
 Install a compatible `clojure-lsp` and make it discoverable through the project, explicit configuration, or `PATH`. The registry currently expects a 2026.x compatible version and also assumes your project has the Clojure build tooling it needs.
 
+### Dart
+
+Dart's Language Server ships with the Dart SDK, so its installation is intentionally manual. Install Dart SDK 2.12.0 or newer, or a Flutter SDK that includes it, then expose `dart` through `PATH` or configure it explicitly:
+
+```toml
+[lsp.dart]
+executable = "C:/tools/dart-sdk/bin/dart.exe"
+```
+
+CLSP starts `dart language-server --protocol=lsp`. It does not install an SDK, read VS Code's `dart.sdkPath`, or scan Dart Code/Flutter private directories. The official Dart Code extension can independently publish VS Code Problems through the existing IDE bridge.
+
 ### clangd
 
 clangd is the only built-in server with a direct archive download recipe.
@@ -163,6 +175,7 @@ Examples:
 - Python: `.py`, `.pyi`, `pyproject.toml`, `pyrightconfig.json`
 - TypeScript/JavaScript: JS/TS extensions plus `package.json`, `tsconfig.json`, or `jsconfig.json`
 - C/C++: C-family extensions plus `compile_commands.json`, `CMakeLists.txt`, or `.clangd`
+- Dart: `.dart` plus `pubspec.yaml` or `analysis_options.yaml`
 
 The registry is deliberately bounded rather than accepting arbitrary server recipes from workspace configuration.
 

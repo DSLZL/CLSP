@@ -2451,6 +2451,10 @@ mod tests {
                 Version::new(1, 88, 0),
             ),
             ("clojure-lsp 2026.07.06-14.34.19", Version::new(2026, 7, 6)),
+            (
+                "Dart SDK version: 3.8.1 (stable) on windows_x64",
+                Version::new(3, 8, 1),
+            ),
         ] {
             assert_eq!(parse_version(output), Some(expected));
         }

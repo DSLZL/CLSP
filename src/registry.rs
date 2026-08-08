@@ -5,22 +5,23 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 10] = [
+const APPROVED_IDS: [&str; 11] = [
     "astro",
     "bash",
     "csharp",
     "clangd",
     "clojure-lsp",
+    "dart",
     "gopls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 35] = [
+const APPROVED_EXTENSIONS: [&str; 36] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
-    "cxx", "edn", "go", "h", "h++", "hh", "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts", "py",
-    "pyi", "rs", "sh", "ts", "tsx", "yaml", "yml", "zsh",
+    "cxx", "dart", "edn", "go", "h", "h++", "hh", "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts",
+    "py", "pyi", "rs", "sh", "ts", "tsx", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -294,9 +295,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_ten_server_set() {
+    fn builtin_is_the_closed_eleven_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 10);
+        assert_eq!(registry.server.len(), 11);
         assert_eq!(
             registry
                 .server
@@ -334,6 +335,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["clojure-lsp"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".DART")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dart"]
         );
         assert!(registry.matching_extension("java").next().is_none());
     }
@@ -444,6 +452,25 @@ mod tests {
         };
         assert_eq!(version, "2026.07.06-14.34.19");
         assert!(hint.contains("scoop-clojure"));
+    }
+
+    #[test]
+    fn dart_uses_the_sdk_language_server_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let dart = registry.server("dart").unwrap();
+        assert_eq!(dart.language_id, "dart");
+        assert_eq!(dart.version_req, ">=2.12.0");
+        assert_eq!(dart.extensions, ["dart"]);
+        assert_eq!(dart.markers, ["pubspec.yaml", "analysis_options.yaml"]);
+        assert_eq!(dart.command, "dart");
+        assert_eq!(dart.args, ["language-server", "--protocol=lsp"]);
+        assert_eq!(dart.version_args, ["--version"]);
+        let InstallRecipe::Manual { version, hint } = &dart.install else {
+            panic!("Dart must use a manual recipe");
+        };
+        assert_eq!(version, "Dart SDK 2.12.0+");
+        assert!(hint.contains("Dart SDK 2.12.0"));
+        assert!(hint.contains("[lsp.dart].executable"));
     }
 
     #[test]

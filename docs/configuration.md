@@ -350,6 +350,7 @@ bash
 csharp
 clangd
 clojure-lsp
+dart
 gopls
 pyright
 rust

@@ -226,6 +226,25 @@ CLSP expects the pinned `roslyn-language-server` global tool version defined in 
 
 If your global tool state is broken, repair it with `dotnet tool` and rerun the CLSP operation.
 
+## Dart server cannot be resolved
+
+CLSP does not install the Dart or Flutter SDK. Check that a compatible Dart SDK is available:
+
+```powershell
+where.exe dart
+dart --version
+dart language-server --protocol=lsp --help
+```
+
+CLSP requires Dart SDK 2.12.0 or newer. If `dart` is not on `PATH`, configure the SDK executable directly:
+
+```toml
+[lsp.dart]
+executable = "C:/tools/dart-sdk/bin/dart.exe"
+```
+
+CLSP does not read VS Code's `dart.sdkPath`; Dart Code and CLSP resolve their SDKs independently.
+
 ## clangd is not found
 
 CLSP checks:

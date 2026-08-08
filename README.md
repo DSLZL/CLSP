@@ -64,6 +64,7 @@ After setup:
 | C# | Roslyn Language Server | `dotnet tool` |
 | Clojure | clojure-lsp | Manual |
 | C / C++ | clangd | Reuse local/VS Code copy, otherwise verified CLSP download |
+| Dart | Dart Language Server | Manual Dart/Flutter SDK |
 | Go | gopls | `go install` |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
@@ -73,6 +74,8 @@ After setup:
 CLSP follows a simple rule:
 
 > **Reuse first. Install only when necessary.**
+
+Dart support reuses `dart` from `PATH` or `[lsp.dart].executable`; CLSP does not install the Dart or Flutter SDK.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

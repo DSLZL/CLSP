@@ -47,6 +47,18 @@ version_args = ["--version"]
 install = { kind = "manual", version = "2026.07.06-14.34.19", hint = "Install clojure-lsp 2026.07.06-14.34.19 and a Clojure build tool, then ensure clojure-lsp is on PATH; on Windows use the official scoop-clojure bucket" }
 
 [[server]]
+id = "dart"
+display_name = "Dart Language Server"
+language_id = "dart"
+version_req = ">=2.12.0"
+extensions = ["dart"]
+markers = ["pubspec.yaml", "analysis_options.yaml"]
+command = "dart"
+args = ["language-server", "--protocol=lsp"]
+version_args = ["--version"]
+install = { kind = "manual", version = "Dart SDK 2.12.0+", hint = "Install Dart SDK 2.12.0 or newer (or Flutter with its bundled Dart SDK), then ensure dart is on PATH or set [lsp.dart].executable" }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"
