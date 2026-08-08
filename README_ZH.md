@@ -1,0 +1,205 @@
+# CLSP
+
+**为 Windows 上的 Codex CLI 提供 LSP 与实时 VS Code 诊断能力。**
+
+CLSP 让 Codex CLI 获得接近 IDE 的语言感知能力，包括定义跳转、引用查找、Hover 信息、诊断，以及实时的 VS Code Problems。
+
+它以轻量级的 workspace Broker 运行，优先复用你本机已有且版本兼容的 Language Server；缺失时，也可以按内置规则自动安装支持的服务器。
+
+> 当前正式支持：**Windows x64 + VS Code Desktop**。
+
+[English](README.md) | **简体中文**
+
+## 快速开始
+
+### 环境要求
+
+你需要：
+
+- Windows x64
+- Node.js / npm
+- VS Code Desktop
+- 已加入 `PATH` 的 `code` 命令
+- Codex CLI
+
+### 安装
+
+```powershell
+npm install -g @dslzl/clsp
+```
+
+然后进入需要配合 Codex 使用的项目目录：
+
+```powershell
+clsp setup --workspace .
+```
+
+`setup` 会安装随 CLSP 提供的 VS Code adapter，并把 CLSP 所需的 MCP 与 hooks 配置合并到项目的 `.codex` 目录中。
+
+完成后：
+
+1. 在项目中启动 Codex。
+2. 运行 `/hooks`，检查并信任项目 hooks。
+3. Reload VS Code。
+4. 正常使用 Codex。
+
+## CLSP 能带来什么
+
+- **代码导航** — 通过 LSP 获取 hover、definition 和 references。
+- **语言诊断** — 让 Codex 获取 CLSP 管理的 Language Server 诊断结果。
+- **实时 IDE 诊断** — 直接复用 VS Code 当前的 Problems，包括 VS Code 已发布的未保存文档诊断。
+- **修改后检查** — 对比 Codex 修改前后的诊断，找出本次编辑新增的错误。
+- **修改审阅** — 在 VS Code 中打开原生 `Before Codex ↔ After Codex` Diff。
+- **复用本地环境** — 优先使用项目或系统中已经存在的兼容 Language Server。
+- **状态查看** — 通过 CLI 或 TUI 检查 Broker、Language Server、IDE Bridge 以及降级状态。
+
+## 支持的语言
+
+| 语言 | Language Server | 缺失时的处理方式 |
+| --- | --- | --- |
+| Astro | Astro Language Server | npm 兼容包管理器 |
+| Bash / Shell | Bash Language Server | npm 兼容包管理器 |
+| C# | Roslyn Language Server | `dotnet tool` |
+| Clojure | clojure-lsp | 手动安装 |
+| C / C++ | clangd | 复用本地 / VS Code 版本，否则由 CLSP 校验后下载 |
+| Go | gopls | `go install` |
+| Python | Pyright | npm 兼容包管理器 |
+| Rust | rust-analyzer | `rustup component add` |
+| TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
+| YAML | YAML Language Server | npm 兼容包管理器 |
+
+CLSP 的基本原则很简单：
+
+> **能复用就复用，只有确实缺失时才安装。**
+
+如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
+
+## VS Code 集成
+
+随 CLSP 提供的 **CLSP IDE Bridge** 有意保持得很轻。
+
+它不会重新实现一套 Language Server，而是通过 VS Code 的公开 API，把对 Codex 有用的实时编辑器状态提供给 CLSP，包括：
+
+- 当前活动文件
+- 文档版本和 dirty 状态
+- 当前主 selection（启用 selection sharing 时）
+- 当前 VS Code Problems
+- 修改前对 dirty 文件的确认
+- 修改后的原生 Diff
+
+可以通过 VS Code Command Palette 切换 selection sharing：
+
+```text
+CLSP: Toggle Selection Sharing
+```
+
+关于窗口路由、数据限制、隐私行为以及编辑生命周期，请查看 [IDE Integration](docs/ide-integration.md)。
+
+## MCP 工具
+
+CLSP 提供 4 个只读 MCP 工具：
+
+| Tool | 用途 |
+| --- | --- |
+| `lsp_query` | 查询 Hover、Definition 和 References |
+| `lsp_diagnostics` | 获取 CLSP 管理的 Language Server 诊断 |
+| `lsp_status` | 查看 Broker、Server、Hooks 和集成状态 |
+| `ide_diagnostics` | 获取当前 VS Code Problems |
+
+`lsp_diagnostics` 和 `ide_diagnostics` 是两条不同的数据路径：
+
+- `lsp_diagnostics` 使用 CLSP 自己管理的 Language Server。
+- `ide_diagnostics` 复用 VS Code 中已经发布的诊断。
+
+## CLI
+
+```text
+clsp setup --workspace <path>
+clsp status [--workspace <path>]
+clsp tui [--workspace <path>]
+```
+
+`mcp`、`hook`、`broker` 和 `ide-host` 属于集成与运行时命令。
+
+正常情况下，只需要执行 `clsp setup`，CLSP 就会完成 Codex 和 VS Code 所需的配置。
+
+## 配置
+
+大多数用户都不需要手动创建 `.clsp.toml`。
+
+一个比较常见的用途，是关闭 Language Server 自动安装：
+
+```toml
+auto_install = false
+```
+
+CLSP 也支持用户级配置：
+
+```text
+%APPDATA%\clsp\config.toml
+```
+
+项目级 `.clsp.toml` 的配置优先级高于用户级配置。
+
+完整配置项与默认值请查看 [Configuration](docs/configuration.md)。
+
+## 平台支持
+
+当前正式支持：
+
+- Windows x64
+- `x86_64-pc-windows-msvc`
+- VS Code Desktop
+
+当前 bundled VS Code Bridge 暂不支持：
+
+- VS Code Remote
+- 未信任工作区
+- Virtual Workspaces
+- 非 Desktop VS Code UI
+- Windows GNU 作为发布目标
+
+当 IDE Bridge 不可用时，CLSP 会尽可能保留独立的 LSP / MCP 能力，而不是阻塞 Codex 的普通使用。
+
+## 文档
+
+- [Language Servers](docs/language-servers.md) — Language Server 发现、版本、安装与覆盖配置
+- [IDE Integration](docs/ide-integration.md) — VS Code Problems、Selection Sharing、修改检查与隐私行为
+- [Configuration](docs/configuration.md) — `.clsp.toml`、用户级配置、默认值与限制
+- [Troubleshooting](docs/troubleshooting.md) — 常见 setup、运行时、IDE 与 Language Server 问题
+- [Architecture](docs/architecture.md) — Broker、MCP、Hooks、LSP、IPC 与生命周期
+- [Contributing](CONTRIBUTING.md) — 本地开发、测试、Registry 修改与 Release 流程
+
+## 查看状态
+
+输出当前 Broker 状态：
+
+```powershell
+clsp status --workspace .
+```
+
+打开终端 TUI：
+
+```powershell
+clsp tui --workspace .
+```
+
+如果出现异常，建议先查看 [Troubleshooting](docs/troubleshooting.md)。
+
+## 卸载
+
+卸载 VS Code adapter：
+
+```powershell
+code --uninstall-extension clsp.clsp-ide
+```
+
+如果希望从项目中完全移除 CLSP，还需要删除 `clsp setup` 写入的 CLSP MCP 与 hooks 配置，然后重启 Codex 和 VS Code。
+
+## 参与开发
+
+开发说明请查看 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## License
+
+GNU Affero General Public License v3.0 only (`AGPL-3.0-only`)

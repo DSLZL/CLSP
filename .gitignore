@@ -7,3 +7,5 @@
 /vscode/out/
 /vscode/*.vsix
 /vscode/package-lock.json
+
+1.md
