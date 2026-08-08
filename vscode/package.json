@@ -5,6 +5,10 @@
   "version": "0.2.4",
   "publisher": "clsp",
   "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DSLZL/CLSP.git"
+  },
   "engines": {
     "vscode": "^1.100.0"
   },

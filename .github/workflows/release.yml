@@ -25,16 +25,24 @@ jobs:
     timeout-minutes: 35
     permissions:
       actions: read
-      checks: read
       contents: read
+    outputs:
+      run_id: ${{ steps.ci.outputs.run_id }}
+      commit: ${{ steps.ci.outputs.commit }}
 
     steps:
       - name: Wait for matching main CI run
+        id: ci
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+(-fix)?$ ]]; then
+            echo "Release tag '$RELEASE_TAG' must match vX.Y.Z or vX.Y.Z-fix" >&2
+            exit 1
+          fi
 
           commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)"
           run_id=""
@@ -56,13 +64,31 @@ jobs:
             exit 1
           fi
 
+          run_sha="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)"
+          if [[ "$run_sha" != "$commit" ]]; then
+            echo "Main CI run '$run_id' belongs to '$run_sha', not release commit '$commit'" >&2
+            exit 1
+          fi
+
           gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --compact --exit-status
 
-  build:
+          artifact_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "release-candidate" and .expired == false)][0].id // empty')"
+          if [[ -z "$artifact_id" ]]; then
+            echo "Main CI run '$run_id' has no unexpired 'release-candidate' artifact; rerun that CI or use its historical release workflow" >&2
+            exit 1
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  prepare:
     needs: wait-for-ci
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     permissions:
+      actions: read
       contents: read
     outputs:
       version: ${{ steps.release.outputs.version }}
@@ -76,26 +102,6 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v6
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vscode/bun.lock') }}
-
-      - name: Setup Rust target
-        shell: pwsh
-        run: rustup target add x86_64-pc-windows-msvc
 
       - name: Validate tag, release notes, and versions
         id: release
@@ -162,217 +168,75 @@ jobs:
               Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "npm_tag=$npmTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Restore Cargo check dependencies from main
-        uses: Swatinem/rust-cache@v2
+      - name: Download exact release candidate
+        uses: actions/download-artifact@v8
         with:
-          shared-key: checks
-          save-if: false
+          name: release-candidate
+          path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.wait-for-ci.outputs.run_id }}
 
-      - name: Install VS Code dependencies
-        working-directory: vscode
-        run: bun ci
-
-      - name: Check repository
-        run: bun run check
-
-      - name: Build release artifacts
+      - name: Verify exact release candidate
         shell: pwsh
         env:
+          RELEASE_COMMIT: ${{ needs.wait-for-ci.outputs.commit }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
           $version = $env:RELEASE_VERSION
-          $repo = $PWD.Path
-          $executable = Join-Path $repo "target/x86_64-pc-windows-msvc/release/clsp.exe"
-          $vsix = Join-Path $repo "vscode/clsp-ide.vsix"
-          $outputRoot = Join-Path $repo "dist"
-          $npmBin = Join-Path $outputRoot "npm/bin"
-          $archive = Join-Path $outputRoot "clsp-$version-windows-x64.zip"
-          $stage = Join-Path ([IO.Path]::GetTempPath()) ("clsp-release-" + [guid]::NewGuid().ToString("N"))
+          $expectedCommit = $env:RELEASE_COMMIT
 
-          & cargo build --release --locked --target x86_64-pc-windows-msvc
-          if ($LASTEXITCODE -ne 0) {
-              throw "Rust release build failed"
-          }
-          $binaryVersion = (& $executable --version) -join [Environment]::NewLine
-          if ($LASTEXITCODE -ne 0 -or $binaryVersion.Trim() -ne "clsp $version") {
-              throw "Built CLI version '$($binaryVersion.Trim())' does not match clsp $version"
-          }
-          $executableBytes = (Get-Item -LiteralPath $executable).Length
-          if ($executableBytes -gt 6291456) {
-              throw "Built CLSP executable is $executableBytes bytes; limit is 6291456 bytes"
+          $tagCommit = ((& git rev-parse HEAD) -join [Environment]::NewLine).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $expectedCommit) {
+              throw "Checked out tag commit '$tagCommit' does not match main CI commit '$expectedCommit'"
           }
 
-          & bun run --cwd vscode package
-          if ($LASTEXITCODE -ne 0) {
-              throw "VSIX package failed"
+          $candidatePath = Join-Path $PWD "dist/release-candidate.json"
+          $candidate = Get-Content -LiteralPath $candidatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $candidateProperties = @($candidate.PSObject.Properties.Name) | Sort-Object
+          $propertyDiff = Compare-Object -ReferenceObject @("commit", "version") -DifferenceObject $candidateProperties
+          if ($propertyDiff) {
+              throw "Unexpected release candidate metadata fields: $($propertyDiff | Out-String)"
+          }
+          $candidateCommit = [string]$candidate.commit
+          $candidateVersion = [string]$candidate.version
+          if ($candidateCommit -ne $expectedCommit) {
+              throw "Release candidate commit '$candidateCommit' does not match '$expectedCommit'"
+          }
+          if ($candidateVersion -ne $version) {
+              throw "Release candidate version '$candidateVersion' does not match '$version'"
           }
 
-          New-Item -ItemType Directory -Path $npmBin -Force | Out-Null
-          $launcher = @'
-          #!/usr/bin/env node
-          "use strict";
-
-          const { spawnSync } = require("node:child_process");
-          const path = require("node:path");
-
-          const directory = __dirname;
-          const executable = path.join(directory, "clsp.exe");
-          const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-          const env = {
-            ...process.env,
-            [pathKey]: [directory, process.env[pathKey]].filter(Boolean).join(path.delimiter),
-          };
-          const result = spawnSync(executable, process.argv.slice(2), { env, stdio: "inherit" });
-
-          if (result.error) {
-            console.error("clsp: " + result.error.message);
-            process.exit(1);
+          $expectedFiles = @(
+              "SHA256SUMS.txt"
+              "clsp-$version-windows-x64.zip"
+              "clsp-$version.tgz"
+              "release-candidate.json"
+              "release-notes.md"
+          ) | Sort-Object
+          $actualFiles = @(
+              Get-ChildItem -LiteralPath dist -File | ForEach-Object { $_.Name }
+          ) | Sort-Object
+          $fileDiff = Compare-Object -ReferenceObject $expectedFiles -DifferenceObject $actualFiles
+          if ($fileDiff) {
+              throw "Unexpected verified release file list: $($fileDiff | Out-String)"
           }
-
-          process.exit(result.status ?? 1);
-          '@
-          [IO.File]::WriteAllText(
-              (Join-Path $npmBin "clsp.js"),
-              $launcher + [Environment]::NewLine,
-              [Text.UTF8Encoding]::new($false)
-          )
-          Copy-Item -LiteralPath $executable -Destination (Join-Path $npmBin "clsp.exe") -Force
-          Copy-Item -LiteralPath $vsix -Destination (Join-Path $npmBin "clsp-ide.vsix") -Force
-
-          New-Item -ItemType Directory -Path $stage | Out-Null
-          try {
-              Copy-Item -LiteralPath $executable -Destination (Join-Path $stage "clsp.exe")
-              Copy-Item -LiteralPath $vsix -Destination (Join-Path $stage "clsp-ide.vsix")
-              Copy-Item -LiteralPath (Join-Path $repo "README.md") -Destination $stage
-              Copy-Item -LiteralPath (Join-Path $repo "LICENSE") -Destination $stage
-              Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -Force
-          } finally {
-              $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-              $resolvedStage = [IO.Path]::GetFullPath($stage)
-              if (-not $resolvedStage.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
-                  throw "Refusing to clean a staging path outside the temporary directory"
-              }
-              Remove-Item -LiteralPath $resolvedStage -Recurse -Force
-          }
-
-      - name: Pack and verify artifacts
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $version = $env:RELEASE_VERSION
 
           $zipPath = (Resolve-Path -LiteralPath "dist/clsp-$version-windows-x64.zip").Path
-          $tgzPath = Join-Path $PWD "dist/clsp-$version.tgz"
-          $packOutput = (& bun pm pack --ignore-scripts --destination dist --quiet) -join [Environment]::NewLine
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($packOutput)) {
-              throw "Bun package archive creation failed"
-          }
-          $packedTgzPath = [IO.Path]::GetFullPath($packOutput.Trim())
-          if (-not (Test-Path -LiteralPath $packedTgzPath -PathType Leaf)) {
-              throw "Bun package archive was not written to '$packedTgzPath'"
-          }
-          Move-Item -LiteralPath $packedTgzPath -Destination $tgzPath -Force
-          $tgzPath = (Resolve-Path -LiteralPath $tgzPath).Path
-
-          $expectedNpmFiles = @(
-              "package/LICENSE"
-              "package/README.md"
-              "package/dist/npm/bin/clsp-ide.vsix"
-              "package/dist/npm/bin/clsp.exe"
-              "package/dist/npm/bin/clsp.js"
-              "package/package.json"
-          ) | Sort-Object
-          $inputStream = [IO.File]::OpenRead($tgzPath)
-          $gzipStream = [IO.Compression.GZipStream]::new(
-              $inputStream,
-              [IO.Compression.CompressionMode]::Decompress,
-              $true
-          )
-          $tarReader = [System.Formats.Tar.TarReader]::new($gzipStream, $true)
-          try {
-              $actualNpmFiles = @()
-              while (($entry = $tarReader.GetNextEntry()) -ne $null) {
-                  if ($entry.EntryType -ne [System.Formats.Tar.TarEntryType]::Directory) {
-                      $actualNpmFiles += $entry.Name.Replace("\", "/")
-                  }
-              }
-              $actualNpmFiles = @($actualNpmFiles) | Sort-Object
-          } finally {
-              $tarReader.Dispose()
-              $gzipStream.Dispose()
-              $inputStream.Dispose()
-          }
-          $npmFileDiff = Compare-Object -ReferenceObject $expectedNpmFiles -DifferenceObject $actualNpmFiles
-          if ($npmFileDiff) {
-              throw "Unexpected npm tarball file list: $($npmFileDiff | Out-String)"
-          }
-
-          $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
-          try {
-              $actualZipFiles = @(
-                  $archive.Entries |
-                      Where-Object { -not [string]::IsNullOrEmpty($_.Name) } |
-                      ForEach-Object { $_.FullName.Replace("\", "/") }
-              ) | Sort-Object
-          } finally {
-              $archive.Dispose()
-          }
-          $expectedZipFiles = @("LICENSE", "README.md", "clsp-ide.vsix", "clsp.exe") | Sort-Object
-          $zipFileDiff = Compare-Object -ReferenceObject $expectedZipFiles -DifferenceObject $actualZipFiles
-          if ($zipFileDiff) {
-              throw "Unexpected Windows ZIP file list: $($zipFileDiff | Out-String)"
-          }
-
-          $smokeRoot = Join-Path $env:RUNNER_TEMP ("clsp-bun-smoke-" + [guid]::NewGuid().ToString("N"))
-          New-Item -ItemType Directory -Path $smokeRoot | Out-Null
-          [IO.File]::WriteAllText(
-              (Join-Path $smokeRoot "package.json"),
-              '{"private":true}' + [Environment]::NewLine,
-              [Text.UTF8Encoding]::new($false)
-          )
-          try {
-              Push-Location $smokeRoot
-              try {
-                  & bun add $tgzPath --ignore-scripts
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Clean Bun tarball installation failed"
-                  }
-              } finally {
-                  Pop-Location
-              }
-
-              $installedPackagePath = Join-Path $smokeRoot "node_modules/@dslzl/clsp/package.json"
-              $installedPackage = Get-Content -LiteralPath $installedPackagePath -Raw -Encoding UTF8 | ConvertFrom-Json
-              if ($installedPackage.name -ne "@dslzl/clsp" -or $installedPackage.version -ne $version) {
-                  throw "Installed package identity '$($installedPackage.name)@$($installedPackage.version)' is not @dslzl/clsp@$version"
-              }
-              $installedBin = Join-Path $smokeRoot "node_modules/@dslzl/clsp/dist/npm/bin"
-              $installedVersion = (& node (Join-Path $installedBin "clsp.js") --version) -join [Environment]::NewLine
-              if ($LASTEXITCODE -ne 0 -or $installedVersion.Trim() -ne "clsp $version") {
-                  throw "Installed CLI version '$($installedVersion.Trim())' does not match clsp $version"
-              }
-              foreach ($file in @("clsp.js", "clsp.exe", "clsp-ide.vsix")) {
-                  if (-not (Test-Path -LiteralPath (Join-Path $installedBin $file) -PathType Leaf)) {
-                      throw "Installed package is missing $file"
-                  }
-              }
-          } finally {
-              $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
-              $resolvedSmokeRoot = [IO.Path]::GetFullPath($smokeRoot)
-              if (-not $resolvedSmokeRoot.StartsWith($runnerTemp, [StringComparison]::OrdinalIgnoreCase)) {
-                  throw "Refusing to clean a smoke-test path outside the runner temporary directory"
-              }
-              Remove-Item -LiteralPath $resolvedSmokeRoot -Recurse -Force
-          }
-
-          $checksumPath = Join-Path $PWD "dist/SHA256SUMS.txt"
-          @($zipPath, $tgzPath) | ForEach-Object {
+          $tgzPath = (Resolve-Path -LiteralPath "dist/clsp-$version.tgz").Path
+          $actualChecksums = @($zipPath, $tgzPath) | ForEach-Object {
               $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
               "$hash  $(Split-Path -Leaf $_)"
-          } | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
+          } | Sort-Object
+          $recordedChecksums = @(
+              Get-Content -LiteralPath dist/SHA256SUMS.txt -Encoding UTF8 |
+                  Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          ) | Sort-Object
+          $checksumDiff = Compare-Object -ReferenceObject $actualChecksums -DifferenceObject $recordedChecksums
+          if ($checksumDiff) {
+              throw "Release candidate checksum mismatch: $($checksumDiff | Out-String)"
+          }
 
       - name: Upload verified release bundle
         uses: actions/upload-artifact@v7
@@ -382,12 +246,14 @@ jobs:
             dist/clsp-${{ steps.release.outputs.version }}-windows-x64.zip
             dist/clsp-${{ steps.release.outputs.version }}.tgz
             dist/SHA256SUMS.txt
+            dist/release-candidate.json
             dist/release-notes.md
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   publish:
-    needs: build
+    needs: prepare
     runs-on: windows-latest
     timeout-minutes: 15
     permissions:
@@ -413,15 +279,15 @@ jobs:
       - name: Download verified release bundle
         uses: actions/download-artifact@v8
         with:
-          name: release-${{ needs.build.outputs.version }}
+          name: release-${{ needs.prepare.outputs.version }}
           path: dist
 
       - name: Create draft GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ needs.build.outputs.version }}
-          RELEASE_PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           $arguments = @(
               "release", "create", $env:RELEASE_TAG
@@ -444,15 +310,15 @@ jobs:
       - name: Publish npm package with OIDC
         shell: pwsh
         env:
-          RELEASE_VERSION: ${{ needs.build.outputs.version }}
-          NPM_TAG: ${{ needs.build.outputs.npm_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          NPM_TAG: ${{ needs.prepare.outputs.npm_tag }}
         run: npm publish "./dist/clsp-$($env:RELEASE_VERSION).tgz" --access public --provenance --tag $env:NPM_TAG
 
       - name: Publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           $arguments = @(
               "release", "edit", $env:RELEASE_TAG
