@@ -431,6 +431,41 @@ mod tests {
     }
 
     #[test]
+    fn elixir_files_use_the_nearest_mix_root() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("apps/example");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            nested.join("mix.exs"),
+            "defmodule Example.MixProject do\nend",
+        )
+        .unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+
+        for name in ["example.ex", "example.exs"] {
+            let file = nested.join(name);
+            fs::write(&file, "defmodule Example do\nend").unwrap();
+            assert_eq!(
+                workspace
+                    .matching_servers(
+                        &file,
+                        file.extension().unwrap().to_str().unwrap(),
+                        &registry
+                    )
+                    .into_iter()
+                    .map(|server| server.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["elixir-ls"]
+            );
+            assert_eq!(
+                workspace.root_for_file(&file, registry.server("elixir-ls").unwrap()),
+                nested
+            );
+        }
+    }
+
+    #[test]
     fn wildcard_markers_find_the_nearest_csharp_project() {
         let root = tempfile::tempdir().unwrap();
         let nested = root.path().join("src/Demo");

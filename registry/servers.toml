@@ -71,6 +71,18 @@ version_args = ["--version"]
 install = { kind = "manual", version = "Deno 1.40.0+", hint = "Install Deno 1.40.0 or newer, then ensure deno is on PATH or set [lsp.deno].executable" }
 
 [[server]]
+id = "elixir-ls"
+display_name = "ElixirLS"
+language_id = "elixir"
+version_req = ">=0.31.1, <0.32.0"
+extensions = ["ex", "exs"]
+markers = ["mix.exs", "mix.lock"]
+command = "language_server"
+args = []
+version_args = []
+install = { kind = "manual", version = "0.31.1", hint = "Install Erlang/OTP and Elixir, then install the official JakeBecker.elixir-ls VS Code extension or ElixirLS 0.31.1 release; set [lsp.elixir-ls].executable to its language_server.bat when it is outside the standard VS Code extension directory" }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"

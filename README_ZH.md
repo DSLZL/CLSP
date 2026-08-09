@@ -64,6 +64,7 @@ clsp setup --workspace .
 | C / C++ | clangd | 复用本地 / VS Code 版本，否则由 CLSP 校验后下载 |
 | Dart | Dart Language Server | 手动安装 Dart/Flutter SDK |
 | Deno | Deno Language Server | 手动安装 Deno CLI |
+| Elixir | ElixirLS | 复用官方 VS Code release 或手动安装的 ElixirLS release |
 | Go | gopls | `go install` |
 | Python | Pyright | npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
@@ -77,6 +78,8 @@ CLSP 的基本原则很简单：
 Dart 支持复用 PATH 或 `[lsp.dart].executable` 中的 `dart`；CLSP 不会安装 Dart 或 Flutter SDK。
 
 Deno 支持只会在 `deno.json` 或 `deno.jsonc` 所在目录树中启用。CLSP 复用 PATH 或 `[lsp.deno].executable` 中的 `deno`，不会安装 Deno，也不会把官方 VS Code 扩展当作内置服务器来源。
+
+Elixir 支持 `.ex` 与 `.exs`，根目录取最近的 `mix.exs` 或 `mix.lock`。本机必须已有 Erlang/OTP 和 Elixir；CLSP 会复用官方 `JakeBecker.elixir-ls` VS Code release，或显式配置的 ElixirLS `0.31.x` launcher，但不会安装 runtime 或 server。ElixirLS 会编译项目及依赖代码，因此只应在可信 Mix 项目中启动。
 
 如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
 

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 12] = [
+const APPROVED_IDS: [&str; 13] = [
     "astro",
     "bash",
     "csharp",
@@ -13,16 +13,17 @@ const APPROVED_IDS: [&str; 12] = [
     "clojure-lsp",
     "dart",
     "deno",
+    "elixir-ls",
     "gopls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 36] = [
+const APPROVED_EXTENSIONS: [&str; 38] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
-    "cxx", "dart", "edn", "go", "h", "h++", "hh", "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts",
-    "py", "pyi", "rs", "sh", "ts", "tsx", "yaml", "yml", "zsh",
+    "cxx", "dart", "edn", "ex", "exs", "go", "h", "h++", "hh", "hpp", "hxx", "js", "jsx", "ksh",
+    "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -296,9 +297,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_twelve_server_set() {
+    fn builtin_is_the_closed_thirteen_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 12);
+        assert_eq!(registry.server.len(), 13);
         assert_eq!(
             registry
                 .server
@@ -343,6 +344,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["dart"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".EXS")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["elixir-ls"]
         );
         assert!(registry.matching_extension("java").next().is_none());
     }
@@ -491,6 +499,25 @@ mod tests {
         assert_eq!(version, "Deno 1.40.0+");
         assert!(hint.contains("Deno 1.40.0"));
         assert!(hint.contains("[lsp.deno].executable"));
+    }
+
+    #[test]
+    fn elixir_uses_the_opencode_contract_and_official_manual_release() {
+        let registry = Registry::builtin().unwrap();
+        let elixir = registry.server("elixir-ls").unwrap();
+        assert_eq!(elixir.language_id, "elixir");
+        assert_eq!(elixir.version_req, ">=0.31.1, <0.32.0");
+        assert_eq!(elixir.extensions, ["ex", "exs"]);
+        assert_eq!(elixir.markers, ["mix.exs", "mix.lock"]);
+        assert_eq!(elixir.command, "language_server");
+        assert!(elixir.args.is_empty());
+        assert!(elixir.version_args.is_empty());
+        let InstallRecipe::Manual { version, hint } = &elixir.install else {
+            panic!("ElixirLS must use a manual recipe");
+        };
+        assert_eq!(version, "0.31.1");
+        assert!(hint.contains("JakeBecker.elixir-ls"));
+        assert!(hint.contains("[lsp.elixir-ls].executable"));
     }
 
     #[test]

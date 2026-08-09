@@ -352,6 +352,7 @@ clangd
 clojure-lsp
 dart
 deno
+elixir-ls
 gopls
 pyright
 rust

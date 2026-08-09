@@ -14,6 +14,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `clojure-lsp` | Clojure | `clojure-lsp` | `>=2026.7.6, <2027.0.0` | manual |
 | `dart` | Dart | `dart language-server --protocol=lsp` | `>=2.12.0` | manual Dart/Flutter SDK |
 | `deno` | Deno | `deno lsp` | `>=1.40.0` | manual Deno CLI |
+| `elixir-ls` | Elixir | `language_server.bat` | `>=0.31.1, <0.32.0` | official VS Code or manual ElixirLS release |
 | `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
@@ -37,6 +38,7 @@ Some server types then have an additional reuse path before installation:
 
 - npm-based servers: the selected package manager's global installation
 - command/toolchain servers: toolchain-specific locations such as Go's bin directory or the global .NET tool directory
+- ElixirLS: the official release bundled in standard Stable/Insiders VS Code extension directories
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
 
 Only after those reuse paths fail does automatic installation begin.
@@ -135,6 +137,23 @@ CLSP starts `deno lsp` only for `.ts`, `.tsx`, `.js`, `.jsx`, and `.mjs` files b
 
 The official `denoland.vscode-deno` extension is a separate client of the same external Deno CLI. It can publish VS Code Problems through the existing IDE bridge, but it does not supply a bundled server for CLSP to reuse. CLSP does not install Deno or read the extension's private settings/storage.
 
+### Elixir
+
+ElixirLS requires a working local Erlang/OTP and Elixir installation. CLSP verifies `elixir --version` but does not install either runtime.
+
+CLSP first checks the normal project, explicit, and `PATH` candidates for an official `language_server.bat`. It then checks the public release carried by `JakeBecker.elixir-ls` under the standard Stable and Insiders extension directories. Each candidate must contain a bounded sibling `VERSION` file matching `>=0.31.1, <0.32.0`; CLSP does not start the launcher just to guess its version.
+
+For a manually installed official release or a custom VS Code extensions directory, configure the launcher explicitly:
+
+```toml
+[lsp.elixir-ls]
+executable = "C:/tools/elixir-ls/language_server.bat"
+```
+
+CLSP does not download or compile ElixirLS. On first launch, the official ElixirLS script may use Mix to prepare its normal user-level cache, so initialize can take several minutes. That state remains outside the workspace and is owned by ElixirLS/Mix.
+
+ElixirLS loads and compiles Mix project and dependency code. Run it only in workspaces you trust. CLSP supports `.ex` and `.exs` below the nearest `mix.exs` or `mix.lock`; template/Phoenix extensions are not part of the current OpenCode-aligned contract.
+
 ### clangd
 
 clangd is the only built-in server with a direct archive download recipe.
@@ -191,6 +210,7 @@ Examples:
 - C/C++: C-family extensions plus `compile_commands.json`, `CMakeLists.txt`, or `.clangd`
 - Dart: `.dart` plus `pubspec.yaml` or `analysis_options.yaml`
 - Deno: `.ts`, `.tsx`, `.js`, `.jsx`, or `.mjs` below `deno.json` or `deno.jsonc`; this takes precedence over the TypeScript server within that root
+- Elixir: `.ex` or `.exs` below the nearest `mix.exs` or `mix.lock`
 
 The registry is deliberately bounded rather than accepting arbitrary server recipes from workspace configuration.
 

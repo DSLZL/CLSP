@@ -29,7 +29,10 @@ const ARCHIVE_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
 const ARCHIVE_EXTRACT_LIMIT: u64 = 512 * 1024 * 1024;
 const ARCHIVE_ENTRY_LIMIT: usize = 4_096;
 const VSCODE_INSTALL_ENTRY_LIMIT: usize = 32;
+const VSCODE_EXTENSION_ENTRY_LIMIT: usize = 512;
 const ROSLYN_LANGUAGE_SERVER_PACKAGE: &str = "roslyn-language-server";
+const ELIXIR_LS_SERVER_ID: &str = "elixir-ls";
+const ELIXIR_LS_VERSION_FILE_LIMIT: u64 = 128;
 const PRESERVED_ENV: &[&str] = &[
     "SystemRoot",
     "WINDIR",
@@ -123,6 +126,7 @@ pub struct ServerResolver {
     config: Config,
     paths: StatePaths,
     vscode_app_data: Option<PathBuf>,
+    vscode_user_home: Option<PathBuf>,
     dotnet_cli_home: Option<PathBuf>,
     install_lock: Mutex<()>,
 }
@@ -133,6 +137,7 @@ impl ServerResolver {
             config,
             paths,
             vscode_app_data: std::env::var_os("APPDATA").map(PathBuf::from),
+            vscode_user_home: vscode_user_home(),
             dotnet_cli_home: dotnet_cli_home(),
             install_lock: Mutex::new(()),
         }
@@ -153,7 +158,18 @@ impl ServerResolver {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
+        if server.id == ELIXIR_LS_SERVER_ID {
+            self.require_program("elixir")
+                .await
+                .map_err(|error| error.for_server(&server.id))?;
+        }
         if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
+            return Ok(resolution);
+        }
+
+        if server.id == ELIXIR_LS_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_elixir_ls(server, workspace).await
+        {
             return Ok(resolution);
         }
 
@@ -365,6 +381,28 @@ impl ServerResolver {
             ExecutableSource::Installed,
         )
         .await
+    }
+
+    async fn resolve_vscode_elixir_ls(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_elixir_ls_candidates_from(home) {
+            if let Some(resolution) = self
+                .resolve_candidate(
+                    server,
+                    workspace,
+                    candidate,
+                    ExecutableSource::VsCodeExtension,
+                )
+                .await
+            {
+                return Some(resolution);
+            }
+        }
+        None
     }
 
     async fn resolve_candidate(
@@ -908,6 +946,12 @@ impl ServerResolver {
         executable: &Path,
         working_dir: &Path,
     ) -> Result<ServerProbe, ClspError> {
+        if server.id == ELIXIR_LS_SERVER_ID {
+            return Ok(ServerProbe {
+                version_output: probe_elixir_ls_release(executable, &server.version_req)?,
+                npm_modules_root: None,
+            });
+        }
         match &server.install {
             InstallRecipe::Npm { package, .. } => {
                 let probe = probe_npm_package(executable, package, &server.version_req).await?;
@@ -1325,6 +1369,92 @@ fn github_zip_candidate(
     artifacts.join(server_id).join(version).join(executable)
 }
 
+fn probe_elixir_ls_release(executable: &Path, requirement: &str) -> Result<String, ClspError> {
+    if !executable.is_file() {
+        return Err(server_error("ElixirLS launcher candidate is not a file"));
+    }
+    let launcher = executable
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| {
+            ["language_server.bat", "language_server.sh"]
+                .iter()
+                .any(|expected| name.eq_ignore_ascii_case(expected))
+        });
+    if !launcher {
+        return Err(server_error(
+            "ElixirLS candidate is not an official launcher",
+        ));
+    }
+    let version_file = executable
+        .parent()
+        .ok_or_else(|| server_error("ElixirLS launcher has no release directory"))?
+        .join("VERSION");
+    let metadata = std::fs::metadata(&version_file)
+        .map_err(|error| server_error(format!("cannot inspect ElixirLS VERSION: {error}")))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > ELIXIR_LS_VERSION_FILE_LIMIT {
+        return Err(server_error(
+            "ElixirLS VERSION is not a bounded regular file",
+        ));
+    }
+    let version = std::fs::read_to_string(&version_file)
+        .map_err(|error| server_error(format!("cannot read ElixirLS VERSION: {error}")))?;
+    let version = version.trim();
+    validate_version_output(version, requirement)?;
+    Ok(version.to_owned())
+}
+
+fn vscode_elixir_ls_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    const EXTENSION_PREFIX: &str = "jakebecker.elixir-ls-";
+
+    let launcher = if cfg!(windows) {
+        "language_server.bat"
+    } else {
+        "language_server.sh"
+    };
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    for root in [
+        user_home.join(".vscode/extensions"),
+        user_home.join(".vscode-insiders/extensions"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries
+            .filter_map(Result::ok)
+            .take(VSCODE_EXTENSION_ENTRY_LIMIT)
+        {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+                continue;
+            };
+            let Some(prefix) = name.get(..EXTENSION_PREFIX.len()) else {
+                continue;
+            };
+            if !prefix.eq_ignore_ascii_case(EXTENSION_PREFIX) {
+                continue;
+            }
+            let Some(version) = name
+                .get(EXTENSION_PREFIX.len()..)
+                .and_then(|version| Version::parse(version).ok())
+            else {
+                continue;
+            };
+            let executable = path.join("elixir-ls-release").join(launcher);
+            if executable.is_file() && seen.insert(executable.clone()) {
+                candidates.push((version, executable));
+            }
+        }
+    }
+    candidates.sort_by(|(left_version, left_path), (right_version, right_path)| {
+        right_version
+            .cmp(left_version)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    candidates.into_iter().map(|(_, path)| path).collect()
+}
+
 fn vscode_clangd_candidates_from(app_data: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut seen = BTreeSet::new();
@@ -1430,11 +1560,19 @@ fn executable_names(command: &str) -> Vec<String> {
         vec![
             format!("{command}.exe"),
             format!("{command}.cmd"),
+            format!("{command}.bat"),
             command.to_owned(),
         ]
     } else {
         vec![command.to_owned()]
     }
+}
+
+fn vscode_user_home() -> Option<PathBuf> {
+    ["USERPROFILE", "HOME"]
+        .into_iter()
+        .find_map(std::env::var_os)
+        .map(PathBuf::from)
 }
 
 fn dotnet_cli_home() -> Option<PathBuf> {
@@ -1548,8 +1686,27 @@ pub(crate) fn resolution_fingerprint(
             candidates.extend(dotnet_tool_candidates(&home, &server.command));
         }
     }
+    if server.id == ELIXIR_LS_SERVER_ID {
+        for name in ["USERPROFILE", "HOME"] {
+            digest.update(
+                std::env::var_os(name)
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+        }
+        if let Some(home) = vscode_user_home() {
+            candidates.extend(vscode_elixir_ls_candidates_from(&home));
+        }
+    }
     for candidate in candidates {
+        let version_file = (server.id == ELIXIR_LS_SERVER_ID)
+            .then(|| candidate.parent().map(|parent| parent.join("VERSION")))
+            .flatten();
         hash_executable_candidate(&mut digest, candidate);
+        if let Some(version_file) = version_file {
+            hash_executable_candidate(&mut digest, version_file);
+        }
     }
     hex::encode(digest.finalize())
 }
@@ -1777,6 +1934,7 @@ mod tests {
         }
         let mut resolver = ServerResolver::new(Config::default(), paths);
         resolver.vscode_app_data = None;
+        resolver.vscode_user_home = None;
         resolver.dotnet_cli_home = None;
         resolver
     }
@@ -1819,6 +1977,22 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    fn write_elixir_ls_release(extension_root: &Path, version: &str) -> PathBuf {
+        let launcher = if cfg!(windows) {
+            "language_server.bat"
+        } else {
+            "language_server.sh"
+        };
+        let release = extension_root
+            .join(format!("jakebecker.elixir-ls-{version}"))
+            .join("elixir-ls-release");
+        std::fs::create_dir_all(&release).unwrap();
+        let executable = release.join(launcher);
+        std::fs::write(&executable, b"launcher").unwrap();
+        std::fs::write(release.join("VERSION"), version).unwrap();
+        executable
     }
 
     #[test]
@@ -2087,6 +2261,87 @@ mod tests {
         }
 
         assert_eq!(vscode_clangd_candidates_from(root.path()), [newer, older]);
+    }
+
+    #[test]
+    fn elixir_ls_release_probe_requires_official_bounded_version() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = write_elixir_ls_release(root.path(), "0.31.1");
+        let version_file = executable.parent().unwrap().join("VERSION");
+
+        assert_eq!(
+            probe_elixir_ls_release(&executable, ">=0.31.1, <0.32.0").unwrap(),
+            "0.31.1"
+        );
+
+        let wrong_launcher = executable.parent().unwrap().join("debug_adapter.bat");
+        std::fs::write(&wrong_launcher, b"launcher").unwrap();
+        assert!(probe_elixir_ls_release(&wrong_launcher, ">=0.31.1").is_err());
+
+        std::fs::remove_file(&version_file).unwrap();
+        assert!(probe_elixir_ls_release(&executable, ">=0.31.1").is_err());
+
+        std::fs::write(
+            &version_file,
+            vec![b'1'; ELIXIR_LS_VERSION_FILE_LIMIT as usize + 1],
+        )
+        .unwrap();
+        assert!(probe_elixir_ls_release(&executable, ">=0.31.1").is_err());
+
+        std::fs::write(&version_file, b"not-a-version").unwrap();
+        assert!(probe_elixir_ls_release(&executable, ">=0.31.1").is_err());
+
+        std::fs::write(&version_file, b"0.30.0").unwrap();
+        assert!(probe_elixir_ls_release(&executable, ">=0.31.1, <0.32.0").is_err());
+    }
+
+    #[test]
+    fn vscode_elixir_ls_candidates_are_newest_first_and_official() {
+        let root = tempfile::tempdir().unwrap();
+        let older = write_elixir_ls_release(&root.path().join(".vscode/extensions"), "0.30.0");
+        let newer =
+            write_elixir_ls_release(&root.path().join(".vscode-insiders/extensions"), "0.31.1");
+        let fake = root
+            .path()
+            .join(".vscode/extensions/not-official.elixir-ls-9.9.9/elixir-ls-release");
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(
+            fake.join(if cfg!(windows) {
+                "language_server.bat"
+            } else {
+                "language_server.sh"
+            }),
+            b"launcher",
+        )
+        .unwrap();
+
+        assert_eq!(
+            vscode_elixir_ls_candidates_from(root.path()),
+            [newer, older]
+        );
+    }
+
+    #[tokio::test]
+    async fn elixir_ls_reuses_the_official_vscode_release() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let executable = write_elixir_ls_release(&root.path().join(".vscode/extensions"), "0.31.1");
+        let mut resolver = test_resolver(root.path());
+        resolver.vscode_user_home = Some(root.path().to_path_buf());
+        let server = Registry::builtin()
+            .unwrap()
+            .server(ELIXIR_LS_SERVER_ID)
+            .unwrap()
+            .clone();
+
+        let resolution = resolver
+            .resolve_vscode_elixir_ls(&server, &workspace)
+            .await
+            .unwrap();
+        assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+        assert_eq!(resolution.path, executable);
+        assert_eq!(resolution.version_output, "0.31.1");
     }
 
     #[tokio::test]
@@ -2491,6 +2746,32 @@ mod tests {
         let first = resolution_fingerprint(server, directory.path(), None);
         std::fs::write(executable, b"different-size").unwrap();
         let second = resolution_fingerprint(server, directory.path(), None);
+        assert_ne!(first, second);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_executable_candidates_include_batch_launchers() {
+        assert_eq!(
+            executable_names("language_server"),
+            [
+                "language_server.exe",
+                "language_server.cmd",
+                "language_server.bat",
+                "language_server",
+            ]
+        );
+    }
+
+    #[test]
+    fn elixir_ls_version_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = write_elixir_ls_release(directory.path(), "0.31.1");
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(ELIXIR_LS_SERVER_ID).unwrap();
+        let first = resolution_fingerprint(server, directory.path(), Some(&executable));
+        std::fs::write(executable.parent().unwrap().join("VERSION"), b"0.31.2").unwrap();
+        let second = resolution_fingerprint(server, directory.path(), Some(&executable));
         assert_ne!(first, second);
     }
 }

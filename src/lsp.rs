@@ -32,9 +32,10 @@ const MAX_HOVER_CHARS: usize = 64 * 1024;
 const MAX_LOCATIONS: usize = 100;
 const ASTRO_SERVER_ID: &str = "astro";
 const CLOJURE_SERVER_ID: &str = "clojure-lsp";
+const ELIXIR_LS_SERVER_ID: &str = "elixir-ls";
 const DENO_SERVER_ID: &str = "deno";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
-const CLOJURE_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
+const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
 type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, ClspError>>>>>;
 
@@ -645,8 +646,8 @@ impl LspClient {
 }
 
 fn initialization_timeout(server_id: &str, request_timeout: Duration) -> Duration {
-    if server_id == CLOJURE_SERVER_ID {
-        CLOJURE_INITIALIZE_TIMEOUT
+    if matches!(server_id, CLOJURE_SERVER_ID | ELIXIR_LS_SERVER_ID) {
+        SLOW_INITIALIZE_TIMEOUT
     } else {
         request_timeout
     }
@@ -1314,12 +1315,14 @@ mod tests {
     }
 
     #[test]
-    fn only_clojure_gets_the_long_initialize_timeout() {
+    fn only_slow_starting_servers_get_the_long_initialize_timeout() {
         let normal = Duration::from_secs(10);
-        assert_eq!(
-            initialization_timeout(CLOJURE_SERVER_ID, normal),
-            Duration::from_secs(300)
-        );
+        for server_id in [CLOJURE_SERVER_ID, ELIXIR_LS_SERVER_ID] {
+            assert_eq!(
+                initialization_timeout(server_id, normal),
+                Duration::from_secs(300)
+            );
+        }
         assert_eq!(initialization_timeout("rust", normal), normal);
     }
 }

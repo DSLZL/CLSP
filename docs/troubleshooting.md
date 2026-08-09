@@ -266,6 +266,28 @@ Deno selection also requires a `deno.json` or `deno.jsonc` between the file and 
 
 The official `denoland.vscode-deno` extension and CLSP resolve the Deno CLI independently. Installing the extension alone does not provide CLSP with a server; configure the extension's `deno.path` and CLSP's `[lsp.deno].executable` separately when `PATH` is insufficient.
 
+## ElixirLS cannot be resolved or takes a long time to start
+
+CLSP does not install Erlang/OTP, Elixir, or ElixirLS. Check the local runtime first:
+
+```powershell
+where.exe erl
+where.exe elixir
+where.exe mix
+elixir --version
+```
+
+Install the official `JakeBecker.elixir-ls` extension in a standard VS Code Stable/Insiders extension directory, or point CLSP at an official ElixirLS `0.31.x` release launcher:
+
+```toml
+[lsp.elixir-ls]
+executable = "C:/tools/elixir-ls/language_server.bat"
+```
+
+The launcher must have its official sibling `VERSION` file. A custom VS Code `--extensions-dir`, missing/incompatible `VERSION`, or absent `elixir` runtime is intentionally not guessed.
+
+The first launch can take several minutes while the official script prepares its Mix cache. Later requests retain the normal timeout. ElixirLS compiles Mix project and dependency code, so do not start it in an untrusted workspace.
+
 ## clangd is not found
 
 CLSP checks:
