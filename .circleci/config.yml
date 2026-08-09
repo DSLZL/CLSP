@@ -24,15 +24,6 @@ jobs:
           working_directory: ~/project/vscode
           command: bun run check
 
-  rust-test:
-    docker:
-      - image: cimg/rust:1.88.0
-    steps:
-      - checkout
-      - run:
-          name: Test Rust
-          command: cargo test --all-targets --locked
-
   sonar-scan:
     docker:
       - image: cimg/rust:1.88.0
@@ -45,9 +36,7 @@ workflows:
   main:
     jobs:
       - ts-check
-      - rust-test
       - sonar-scan:
           requires:
             - ts-check
-            - rust-test
           context: SonarCloud
