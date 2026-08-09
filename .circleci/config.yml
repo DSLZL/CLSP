@@ -4,41 +4,50 @@ orbs:
   sonarcloud: sonarsource/sonarcloud@4.0.0
 
 jobs:
-  # TypeScript 检查任务（使用 Node 镜像）
   ts-check:
     docker:
-      - image: cimg/node:18.20
+      - image: cimg/node:24.19.0
     steps:
       - checkout
-      - run: npm install
-      - run: npx tsc --noEmit
+      - run:
+          name: Install Bun
+          command: |
+            curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14"
+            echo 'export BUN_INSTALL="$HOME/.bun"' >> "$BASH_ENV"
+            echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Install VS Code dependencies
+          working_directory: ~/project/vscode
+          command: bun install --frozen-lockfile
+      - run:
+          name: Check VS Code extension
+          working_directory: ~/project/vscode
+          command: bun run check
 
-  # Rust 构建与测试任务（使用 Rust 镜像）
   rust-test:
     docker:
-      - image: cimg/rust:1.73.0 [[Automating tests](https://circleci.com/blog/rust-ci/#automating-tests-for-the-rust-application)]
+      - image: cimg/rust:1.88.0
     steps:
       - checkout
-      - run: cargo test [[Automating tests](https://circleci.com/blog/rust-ci/#automating-tests-for-the-rust-application)]
+      - run:
+          name: Test Rust
+          command: cargo test --all-targets --locked
 
-  # 统一的 SonarCloud 扫描任务
   sonar-scan:
     docker:
-      - image: cimg/rust:1.73.0 [[Automating tests](https://circleci.com/blog/rust-ci/#automating-tests-for-the-rust-application)]
+      - image: cimg/rust:1.88.0
     steps:
-      - checkout
-      - sonarcloud/scan [[scan-docker](https://circleci.com/developer/orbs/orb/sonarsource/sonarcloud)]
+      - checkout:
+          method: full
+      - sonarcloud/scan
 
 workflows:
   main:
     jobs:
-      # 这两个任务没有相互依赖，会并行启动运行以节省时间
       - ts-check
       - rust-test
-      
-      # 扫描任务在上述两个检查和测试通过后再执行
       - sonar-scan:
           requires:
             - ts-check
             - rust-test
-          context: sonarcloud [[scan-docker](https://circleci.com/developer/orbs/orb/sonarsource/sonarcloud)]
+          context: SonarCloud
