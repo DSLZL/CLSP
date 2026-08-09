@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 13] = [
+const APPROVED_IDS: [&str; 14] = [
     "astro",
     "bash",
     "csharp",
@@ -14,16 +14,17 @@ const APPROVED_IDS: [&str; 13] = [
     "dart",
     "deno",
     "elixir-ls",
+    "eslint",
     "gopls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 38] = [
+const APPROVED_EXTENSIONS: [&str; 39] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "go", "h", "h++", "hh", "hpp", "hxx", "js", "jsx", "ksh",
-    "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "yaml", "yml", "zsh",
+    "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -297,9 +298,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_thirteen_server_set() {
+    fn builtin_is_the_closed_fourteen_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 13);
+        assert_eq!(registry.server.len(), 14);
         assert_eq!(
             registry
                 .server
@@ -351,6 +352,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["elixir-ls"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".VUE")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["eslint"]
         );
         assert!(registry.matching_extension("java").next().is_none());
     }
@@ -518,6 +526,37 @@ mod tests {
         assert_eq!(version, "0.31.1");
         assert!(hint.contains("JakeBecker.elixir-ls"));
         assert!(hint.contains("[lsp.elixir-ls].executable"));
+    }
+
+    #[test]
+    fn eslint_uses_the_opencode_contract_and_official_manual_server() {
+        let registry = Registry::builtin().unwrap();
+        let eslint = registry.server("eslint").unwrap();
+        assert_eq!(eslint.language_id, "javascript");
+        assert_eq!(eslint.version_req, ">=3.0.34, <3.1.0");
+        assert_eq!(
+            eslint.extensions,
+            ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue"]
+        );
+        assert_eq!(
+            eslint.markers,
+            [
+                "package-lock.json",
+                "bun.lockb",
+                "bun.lock",
+                "pnpm-lock.yaml",
+                "yarn.lock",
+            ]
+        );
+        assert_eq!(eslint.command, "eslintServer");
+        assert_eq!(eslint.args, ["--stdio"]);
+        assert!(eslint.version_args.is_empty());
+        let InstallRecipe::Manual { version, hint } = &eslint.install else {
+            panic!("ESLint must use a manual recipe");
+        };
+        assert_eq!(version, "3.0.34");
+        assert!(hint.contains("dbaeumer.vscode-eslint"));
+        assert!(hint.contains("[lsp.eslint].executable"));
     }
 
     #[test]

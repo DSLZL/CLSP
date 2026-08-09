@@ -83,6 +83,18 @@ version_args = []
 install = { kind = "manual", version = "0.31.1", hint = "Install Erlang/OTP and Elixir, then install the official JakeBecker.elixir-ls VS Code extension or ElixirLS 0.31.1 release; set [lsp.elixir-ls].executable to its language_server.bat when it is outside the standard VS Code extension directory" }
 
 [[server]]
+id = "eslint"
+display_name = "ESLint Language Server"
+language_id = "javascript"
+version_req = ">=3.0.34, <3.1.0"
+extensions = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue"]
+markers = ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]
+command = "eslintServer"
+args = ["--stdio"]
+version_args = []
+install = { kind = "manual", version = "3.0.34", hint = "Install Node.js and the official dbaeumer.vscode-eslint 3.0.34 VS Code extension, and add eslint to this project; otherwise set [lsp.eslint].executable to the extension's server/out/eslintServer.js" }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"

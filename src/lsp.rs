@@ -34,6 +34,7 @@ const ASTRO_SERVER_ID: &str = "astro";
 const CLOJURE_SERVER_ID: &str = "clojure-lsp";
 const ELIXIR_LS_SERVER_ID: &str = "elixir-ls";
 const DENO_SERVER_ID: &str = "deno";
+const ESLINT_SERVER_ID: &str = "eslint";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -276,7 +277,15 @@ impl LspClient {
             options.executable,
             options.npm_modules_root,
         )?;
-        let mut command = Command::new(options.executable);
+        let mut command = if options.server_id == ESLINT_SERVER_ID {
+            let node = which::which("node")
+                .map_err(|_| runtime_error("ESLint Language Server requires Node.js"))?;
+            let mut command = Command::new(node);
+            command.arg(options.executable);
+            command
+        } else {
+            Command::new(options.executable)
+        };
         command.args(options.args).current_dir(options.root);
         sanitize_command(&mut command);
         command
@@ -699,8 +708,13 @@ async fn reader_loop(
             continue;
         };
         if let Some(id) = message.get("id").cloned() {
-            let response =
-                server_request_response(method, message.get("params"), &root_uri, &root_name);
+            let response = server_request_response(
+                &server_id,
+                method,
+                message.get("params"),
+                &root_uri,
+                &root_name,
+            );
             let value = match response {
                 Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
                 Err((code, text)) => {
@@ -781,6 +795,7 @@ async fn fail_pending(pending: &PendingRequests, error: ClspError) {
 }
 
 fn server_request_response(
+    server_id: &str,
     method: &str,
     params: Option<&Value>,
     root_uri: &str,
@@ -793,7 +808,22 @@ fn server_request_response(
                 .and_then(Value::as_array)
                 .map(Vec::len)
                 .unwrap_or(0);
-            Ok(Value::Array(vec![Value::Null; count]))
+            if server_id == ESLINT_SERVER_ID {
+                Ok(Value::Array(vec![
+                    json!({
+                        "validate": "on",
+                        "workspaceFolder": {"uri": root_uri, "name": root_name}
+                    });
+                    count
+                ]))
+            } else {
+                Ok(Value::Array(vec![Value::Null; count]))
+            }
+        }
+        "eslint/noConfig" | "eslint/noLibrary" | "eslint/openDoc" | "eslint/probeFailed"
+            if server_id == ESLINT_SERVER_ID =>
+        {
+            Ok(Value::Null)
         }
         "client/registerCapability"
         | "client/unregisterCapability"
@@ -1312,6 +1342,61 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(options, json!({"enable": true}));
+    }
+
+    #[test]
+    fn eslint_configuration_enables_validation_without_changing_other_servers() {
+        let params = json!({"items": [{}, {}]});
+        let eslint = server_request_response(
+            ESLINT_SERVER_ID,
+            "workspace/configuration",
+            Some(&params),
+            "file:///workspace",
+            "workspace",
+        )
+        .unwrap();
+        assert_eq!(
+            eslint,
+            json!([
+                {
+                    "validate": "on",
+                    "workspaceFolder": {"uri": "file:///workspace", "name": "workspace"}
+                },
+                {
+                    "validate": "on",
+                    "workspaceFolder": {"uri": "file:///workspace", "name": "workspace"}
+                }
+            ])
+        );
+        assert_eq!(
+            server_request_response(
+                "rust",
+                "workspace/configuration",
+                Some(&params),
+                "file:///workspace",
+                "workspace",
+            )
+            .unwrap(),
+            json!([null, null])
+        );
+        for method in [
+            "eslint/noConfig",
+            "eslint/noLibrary",
+            "eslint/openDoc",
+            "eslint/probeFailed",
+        ] {
+            assert_eq!(
+                server_request_response(
+                    ESLINT_SERVER_ID,
+                    method,
+                    None,
+                    "file:///workspace",
+                    "workspace",
+                )
+                .unwrap(),
+                Value::Null
+            );
+        }
     }
 
     #[test]

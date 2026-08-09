@@ -33,6 +33,7 @@ const VSCODE_EXTENSION_ENTRY_LIMIT: usize = 512;
 const ROSLYN_LANGUAGE_SERVER_PACKAGE: &str = "roslyn-language-server";
 const ELIXIR_LS_SERVER_ID: &str = "elixir-ls";
 const ELIXIR_LS_VERSION_FILE_LIMIT: u64 = 128;
+const ESLINT_SERVER_ID: &str = "eslint";
 const PRESERVED_ENV: &[&str] = &[
     "SystemRoot",
     "WINDIR",
@@ -163,12 +164,22 @@ impl ServerResolver {
                 .await
                 .map_err(|error| error.for_server(&server.id))?;
         }
+        if server.id == ESLINT_SERVER_ID {
+            self.require_program("node")
+                .await
+                .map_err(|error| error.for_server(&server.id))?;
+        }
         if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
             return Ok(resolution);
         }
 
         if server.id == ELIXIR_LS_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_elixir_ls(server, workspace).await
+        {
+            return Ok(resolution);
+        }
+        if server.id == ESLINT_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_eslint(server, workspace).await
         {
             return Ok(resolution);
         }
@@ -390,6 +401,28 @@ impl ServerResolver {
     ) -> Option<ResolvedExecutable> {
         let home = self.vscode_user_home.as_deref()?;
         for candidate in vscode_elixir_ls_candidates_from(home) {
+            if let Some(resolution) = self
+                .resolve_candidate(
+                    server,
+                    workspace,
+                    candidate,
+                    ExecutableSource::VsCodeExtension,
+                )
+                .await
+            {
+                return Some(resolution);
+            }
+        }
+        None
+    }
+
+    async fn resolve_vscode_eslint(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_eslint_candidates_from(home) {
             if let Some(resolution) = self
                 .resolve_candidate(
                     server,
@@ -952,6 +985,9 @@ impl ServerResolver {
                 npm_modules_root: None,
             });
         }
+        if server.id == ESLINT_SERVER_ID {
+            return probe_vscode_eslint_server(executable, working_dir, &server.version_req).await;
+        }
         match &server.install {
             InstallRecipe::Npm { package, .. } => {
                 let probe = probe_npm_package(executable, package, &server.version_req).await?;
@@ -1405,13 +1441,31 @@ fn probe_elixir_ls_release(executable: &Path, requirement: &str) -> Result<Strin
 }
 
 fn vscode_elixir_ls_candidates_from(user_home: &Path) -> Vec<PathBuf> {
-    const EXTENSION_PREFIX: &str = "jakebecker.elixir-ls-";
-
     let launcher = if cfg!(windows) {
         "language_server.bat"
     } else {
         "language_server.sh"
     };
+    vscode_extension_candidates_from(
+        user_home,
+        "jakebecker.elixir-ls-",
+        Path::new("elixir-ls-release").join(launcher).as_path(),
+    )
+}
+
+fn vscode_eslint_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    vscode_extension_candidates_from(
+        user_home,
+        "dbaeumer.vscode-eslint-",
+        Path::new("server/out/eslintServer.js"),
+    )
+}
+
+fn vscode_extension_candidates_from(
+    user_home: &Path,
+    extension_prefix: &str,
+    relative_executable: &Path,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut seen = BTreeSet::new();
     for root in [
@@ -1429,19 +1483,19 @@ fn vscode_elixir_ls_candidates_from(user_home: &Path) -> Vec<PathBuf> {
             let Some(name) = path.file_name().and_then(OsStr::to_str) else {
                 continue;
             };
-            let Some(prefix) = name.get(..EXTENSION_PREFIX.len()) else {
+            let Some(prefix) = name.get(..extension_prefix.len()) else {
                 continue;
             };
-            if !prefix.eq_ignore_ascii_case(EXTENSION_PREFIX) {
+            if !prefix.eq_ignore_ascii_case(extension_prefix) {
                 continue;
             }
             let Some(version) = name
-                .get(EXTENSION_PREFIX.len()..)
+                .get(extension_prefix.len()..)
                 .and_then(|version| Version::parse(version).ok())
             else {
                 continue;
             };
-            let executable = path.join("elixir-ls-release").join(launcher);
+            let executable = path.join(relative_executable);
             if executable.is_file() && seen.insert(executable.clone()) {
                 candidates.push((version, executable));
             }
@@ -1453,6 +1507,69 @@ fn vscode_elixir_ls_candidates_from(user_home: &Path) -> Vec<PathBuf> {
             .then_with(|| left_path.cmp(right_path))
     });
     candidates.into_iter().map(|(_, path)| path).collect()
+}
+
+fn vscode_eslint_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let name_is = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    if !executable.is_file() || !name_is(executable, "eslintServer.js") {
+        return Err(server_error(
+            "ESLint candidate is not the official eslintServer.js entry",
+        ));
+    }
+    let out = executable
+        .parent()
+        .filter(|path| name_is(path, "out"))
+        .ok_or_else(|| server_error("ESLint server entry is outside server/out"))?;
+    let server = out
+        .parent()
+        .filter(|path| name_is(path, "server"))
+        .ok_or_else(|| server_error("ESLint server entry is outside server/out"))?;
+    server
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| server_error("ESLint server entry has no extension root"))
+}
+
+async fn probe_vscode_eslint_server(
+    executable: &Path,
+    working_dir: &Path,
+    requirement: &str,
+) -> Result<ServerProbe, ClspError> {
+    let extension_root = vscode_eslint_extension_root(executable)?;
+    let manifest = extension_root.join("package.json");
+    let bytes = tokio::fs::read(&manifest).await.map_err(|error| {
+        server_error(format!(
+            "cannot read VS Code ESLint manifest {}: {error}",
+            manifest.display()
+        ))
+    })?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(server_error("VS Code ESLint manifest exceeds limit"));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some("vscode-eslint")
+        || value.get("publisher").and_then(serde_json::Value::as_str) != Some("dbaeumer")
+    {
+        return Err(server_error(
+            "ESLint server is not from the official dbaeumer.vscode-eslint extension",
+        ));
+    }
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| server_error("VS Code ESLint manifest has no version"))?;
+    validate_version_output(version, requirement)?;
+
+    let modules_root = working_dir.join("node_modules");
+    probe_npm_manifest_in_root(&modules_root, "eslint", ">=1.0.0").await?;
+    Ok(ServerProbe {
+        version_output: format!("vscode-eslint {version}"),
+        npm_modules_root: Some(modules_root),
+    })
 }
 
 fn vscode_clangd_candidates_from(app_data: &Path) -> Vec<PathBuf> {
@@ -1686,7 +1803,7 @@ pub(crate) fn resolution_fingerprint(
             candidates.extend(dotnet_tool_candidates(&home, &server.command));
         }
     }
-    if server.id == ELIXIR_LS_SERVER_ID {
+    if matches!(server.id.as_str(), ELIXIR_LS_SERVER_ID | ESLINT_SERVER_ID) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
                 std::env::var_os(name)
@@ -1696,16 +1813,31 @@ pub(crate) fn resolution_fingerprint(
             );
         }
         if let Some(home) = vscode_user_home() {
-            candidates.extend(vscode_elixir_ls_candidates_from(&home));
+            if server.id == ELIXIR_LS_SERVER_ID {
+                candidates.extend(vscode_elixir_ls_candidates_from(&home));
+            } else {
+                candidates.extend(vscode_eslint_candidates_from(&home));
+            }
         }
+    }
+    if server.id == ESLINT_SERVER_ID {
+        hash_executable_candidate(
+            &mut digest,
+            workspace.join("node_modules/eslint/package.json"),
+        );
     }
     for candidate in candidates {
         let version_file = (server.id == ELIXIR_LS_SERVER_ID)
             .then(|| candidate.parent().map(|parent| parent.join("VERSION")))
             .flatten();
-        hash_executable_candidate(&mut digest, candidate);
+        hash_executable_candidate(&mut digest, candidate.clone());
         if let Some(version_file) = version_file {
             hash_executable_candidate(&mut digest, version_file);
+        }
+        if server.id == ESLINT_SERVER_ID
+            && let Ok(extension_root) = vscode_eslint_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
         }
     }
     hex::encode(digest.finalize())
@@ -1993,6 +2125,34 @@ mod tests {
         std::fs::write(&executable, b"launcher").unwrap();
         std::fs::write(release.join("VERSION"), version).unwrap();
         executable
+    }
+
+    fn write_eslint_extension(extension_root: &Path, version: &str) -> PathBuf {
+        let root = extension_root.join(format!("dbaeumer.vscode-eslint-{version}"));
+        let server = root.join("server/out/eslintServer.js");
+        std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+        std::fs::write(&server, b"server").unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "vscode-eslint",
+                "publisher": "dbaeumer",
+                "version": version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        server
+    }
+
+    fn write_eslint_dependency(workspace: &Path, version: &str) {
+        let package = workspace.join("node_modules/eslint");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({"name": "eslint", "version": version})).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2342,6 +2502,80 @@ mod tests {
         assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
         assert_eq!(resolution.path, executable);
         assert_eq!(resolution.version_output, "0.31.1");
+    }
+
+    #[test]
+    fn vscode_eslint_candidates_are_newest_first_and_official() {
+        let root = tempfile::tempdir().unwrap();
+        let older = write_eslint_extension(&root.path().join(".vscode/extensions"), "3.0.33");
+        let newer =
+            write_eslint_extension(&root.path().join(".vscode-insiders/extensions"), "3.0.34");
+        let fake = root
+            .path()
+            .join(".vscode/extensions/not-official.vscode-eslint-9.9.9/server/out/eslintServer.js");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(fake, b"server").unwrap();
+
+        assert_eq!(vscode_eslint_candidates_from(root.path()), [newer, older]);
+    }
+
+    #[tokio::test]
+    async fn eslint_probe_requires_the_official_extension_and_project_dependency() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        write_eslint_dependency(&workspace, "9.32.0");
+        let executable = write_eslint_extension(root.path(), "3.0.34");
+
+        let probe = probe_vscode_eslint_server(&executable, &workspace, ">=3.0.34, <3.1.0")
+            .await
+            .unwrap();
+        assert_eq!(probe.version_output, "vscode-eslint 3.0.34");
+        assert_eq!(probe.npm_modules_root, Some(workspace.join("node_modules")));
+
+        let extension_root = vscode_eslint_extension_root(&executable).unwrap();
+        std::fs::write(
+            extension_root.join("package.json"),
+            br#"{"name":"vscode-eslint","publisher":"other","version":"3.0.34"}"#,
+        )
+        .unwrap();
+        assert!(
+            probe_vscode_eslint_server(&executable, &workspace, ">=3.0.34, <3.1.0")
+                .await
+                .is_err()
+        );
+
+        write_eslint_extension(root.path(), "3.0.34");
+        std::fs::remove_file(workspace.join("node_modules/eslint/package.json")).unwrap();
+        assert!(
+            probe_vscode_eslint_server(&executable, &workspace, ">=3.0.34, <3.1.0")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn eslint_reuses_the_official_vscode_server() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        write_eslint_dependency(&workspace, "9.32.0");
+        let executable = write_eslint_extension(&root.path().join(".vscode/extensions"), "3.0.34");
+        let mut resolver = test_resolver(root.path());
+        resolver.vscode_user_home = Some(root.path().to_path_buf());
+        let server = Registry::builtin()
+            .unwrap()
+            .server(ESLINT_SERVER_ID)
+            .unwrap()
+            .clone();
+
+        let resolution = resolver
+            .resolve_vscode_eslint(&server, &workspace)
+            .await
+            .unwrap();
+        assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+        assert_eq!(resolution.path, executable);
+        assert_eq!(resolution.version_output, "vscode-eslint 3.0.34");
     }
 
     #[tokio::test]
@@ -2772,6 +3006,21 @@ mod tests {
         let first = resolution_fingerprint(server, directory.path(), Some(&executable));
         std::fs::write(executable.parent().unwrap().join("VERSION"), b"0.31.2").unwrap();
         let second = resolution_fingerprint(server, directory.path(), Some(&executable));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn eslint_manifest_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        write_eslint_dependency(&workspace, "9.32.0");
+        let executable = write_eslint_extension(directory.path(), "3.0.34");
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(ESLINT_SERVER_ID).unwrap();
+        let first = resolution_fingerprint(server, &workspace, Some(&executable));
+        write_eslint_dependency(&workspace, "9.33.0");
+        let second = resolution_fingerprint(server, &workspace, Some(&executable));
         assert_ne!(first, second);
     }
 }
