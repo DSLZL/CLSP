@@ -1,0 +1,44 @@
+version: 2.1
+
+orbs:
+  sonarcloud: sonarsource/sonarcloud@4.0.0
+
+jobs:
+  # TypeScript 检查任务（使用 Node 镜像）
+  ts-check:
+    docker:
+      - image: cimg/node:18.20
+    steps:
+      - checkout
+      - run: npm install
+      - run: npx tsc --noEmit
+
+  # Rust 构建与测试任务（使用 Rust 镜像）
+  rust-test:
+    docker:
+      - image: cimg/rust:1.73.0 [[Automating tests](https://circleci.com/blog/rust-ci/#automating-tests-for-the-rust-application)]
+    steps:
+      - checkout
+      - run: cargo test [[Automating tests](https://circleci.com/blog/rust-ci/#automating-tests-for-the-rust-application)]
+
+  # 统一的 SonarCloud 扫描任务
+  sonar-scan:
+    docker:
+      - image: cimg/rust:1.73.0 [[Automating tests](https://circleci.com/blog/rust-ci/#automating-tests-for-the-rust-application)]
+    steps:
+      - checkout
+      - sonarcloud/scan [[scan-docker](https://circleci.com/developer/orbs/orb/sonarsource/sonarcloud)]
+
+workflows:
+  main:
+    jobs:
+      # 这两个任务没有相互依赖，会并行启动运行以节省时间
+      - ts-check
+      - rust-test
+      
+      # 扫描任务在上述两个检查和测试通过后再执行
+      - sonar-scan:
+          requires:
+            - ts-check
+            - rust-test
+          context: sonarcloud [[scan-docker](https://circleci.com/developer/orbs/orb/sonarsource/sonarcloud)]
