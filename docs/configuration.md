@@ -355,6 +355,7 @@ deno
 elixir-ls
 eslint
 fsharp
+gleam
 gopls
 pyright
 rust

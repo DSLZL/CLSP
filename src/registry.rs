@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 15] = [
+const APPROVED_IDS: [&str; 16] = [
     "astro",
     "bash",
     "csharp",
@@ -16,17 +16,18 @@ const APPROVED_IDS: [&str; 15] = [
     "elixir-ls",
     "eslint",
     "fsharp",
+    "gleam",
     "gopls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 43] = [
+const APPROVED_EXTENSIONS: [&str; 44] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
-    "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "go", "h", "h++", "hh",
-    "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "vue",
-    "yaml", "yml", "zsh",
+    "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
+    "hh", "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx",
+    "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -300,9 +301,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_fifteen_server_set() {
+    fn builtin_is_the_closed_sixteen_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 15);
+        assert_eq!(registry.server.len(), 16);
         assert_eq!(
             registry
                 .server
@@ -368,6 +369,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["fsharp"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".GLEAM")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gleam"]
         );
         assert!(registry.matching_extension("java").next().is_none());
     }
@@ -489,6 +497,26 @@ mod tests {
                 "0.83.0",
             ]
         );
+    }
+
+    #[test]
+    fn gleam_uses_the_compiler_lsp_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let gleam = registry.server("gleam").unwrap();
+        assert_eq!(gleam.language_id, "gleam");
+        assert_eq!(gleam.version_req, ">=1.0.0, <2.0.0");
+        assert_eq!(gleam.extensions, ["gleam"]);
+        assert_eq!(gleam.markers, ["gleam.toml"]);
+        assert_eq!(gleam.command, "gleam");
+        assert_eq!(gleam.args, ["lsp"]);
+        assert_eq!(gleam.version_args, ["--version"]);
+        let InstallRecipe::Manual { version, hint } = &gleam.install else {
+            panic!("Gleam must use a manual recipe");
+        };
+        assert_eq!(version, "Gleam 1.18.1");
+        assert!(hint.contains("Gleam 1.x"));
+        assert!(hint.contains("[lsp.gleam].executable"));
+        assert!(hint.contains("Gleam.gleam"));
     }
 
     #[test]

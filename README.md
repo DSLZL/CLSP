@@ -69,6 +69,7 @@ After setup:
 | Elixir | ElixirLS | Reuse official VS Code release or manual ElixirLS release |
 | ESLint | ESLint Language Server | Reuse official VS Code extension; project-local ESLint required |
 | F# | FsAutoComplete | Reuse official Ionide VS Code extension, otherwise `dotnet tool` |
+| Gleam | Gleam Language Server | Manual Gleam compiler |
 | Go | gopls | `go install` |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
@@ -88,6 +89,8 @@ Elixir support covers `.ex` and `.exs` below the nearest `mix.exs` or `mix.lock`
 ESLint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, and `.vue`. It requires Node.js, project-local `eslint`, and the official `dbaeumer.vscode-eslint` `3.0.x` server from a standard VS Code extension directory or an explicit path. CLSP installs none of them; use ESLint only in trusted projects because configurations and plugins execute project code.
 
 F# support covers `.fs`, `.fsi`, `.fsx`, and `.fsscript` below the nearest solution, F# project, or `global.json`. CLSP reuses the official `Ionide.Ionide-fsharp` extension before an exact global FsAutoComplete tool and can install/update that tool through an existing .NET SDK. Use it only in trusted projects because MSBuild targets can execute project code.
+
+Gleam support covers `.gleam` files below the nearest `gleam.toml`, with the workspace root as the fallback. CLSP reuses a compatible Gleam `1.x` compiler from `PATH` or `[lsp.gleam].executable` and starts its built-in `gleam lsp`; it does not install Gleam, Erlang/OTP, or scan the official `Gleam.gleam` extension for a bundled server. The extension uses the same external compiler and can independently publish VS Code Problems through the IDE bridge.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

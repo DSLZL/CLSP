@@ -107,6 +107,18 @@ version_args = ["--version"]
 install = { kind = "command", version = "0.83.0", program = "dotnet", args = ["tool", "install", "--global", "fsautocomplete", "--version", "0.83.0"] }
 
 [[server]]
+id = "gleam"
+display_name = "Gleam Language Server"
+language_id = "gleam"
+version_req = ">=1.0.0, <2.0.0"
+extensions = ["gleam"]
+markers = ["gleam.toml"]
+command = "gleam"
+args = ["lsp"]
+version_args = ["--version"]
+install = { kind = "manual", version = "Gleam 1.18.1", hint = "Install Gleam 1.x (validated with 1.18.1), then ensure gleam is on PATH or set [lsp.gleam].executable; the official Gleam.gleam VS Code extension uses the same external compiler" }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"

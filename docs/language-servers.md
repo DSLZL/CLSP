@@ -17,6 +17,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `elixir-ls` | Elixir | `language_server.bat` | `>=0.31.1, <0.32.0` | official VS Code or manual ElixirLS release |
 | `eslint` | JavaScript / TypeScript / Vue | `node eslintServer.js --stdio` | `>=3.0.34, <3.1.0` | official VS Code extension; manual |
 | `fsharp` | F# | `fsautocomplete` | `=0.83.0` | official Ionide VS Code extension or global `dotnet tool` |
+| `gleam` | Gleam | `gleam lsp` | `>=1.0.0, <2.0.0` | manual Gleam compiler |
 | `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
@@ -129,6 +130,19 @@ executable = "C:/tools/ionide/bin/net8.0/fsautocomplete.dll"
 ```
 
 CLSP sends `AutomaticWorkspaceInit = true` and passes a root-specific `--state-directory` below `%LOCALAPPDATA%\clsp\state\workspaces`, so FsAutoComplete state is not written into the project. `.fs`, `.fsi`, `.fsx`, and `.fsscript` files use the nearest `*.slnx`, `*.sln`, `*.fsproj`, or `global.json` root. Start FsAutoComplete only in trusted projects because MSBuild targets can execute project code.
+
+### Gleam
+
+Gleam's Language Server ships in the Gleam compiler. Install a compatible Gleam `1.x` compiler and expose `gleam` through `PATH`, or configure it explicitly:
+
+```toml
+[lsp.gleam]
+executable = "C:/tools/gleam/gleam.exe"
+```
+
+The current validation baseline is Gleam `1.18.1`. The official Windows installer can be invoked manually with `winget install --id Gleam.Gleam`; CLSP never invokes winget or installs Gleam, Erlang/OTP, or editor extensions.
+
+CLSP starts `gleam lsp` for `.gleam` files using the nearest `gleam.toml` directory, with the workspace root as the fallback. The official `Gleam.gleam` VS Code extension is a separate client of the same external compiler: it resolves `gleam` through `gleam.path` or `PATH` and does not carry a server binary for CLSP to reuse. Its Problems remain available through the existing IDE bridge.
 
 ### Clojure
 
@@ -252,6 +266,7 @@ Examples:
 - Deno: `.ts`, `.tsx`, `.js`, `.jsx`, or `.mjs` below `deno.json` or `deno.jsonc`; this takes precedence over the TypeScript server within that root
 - Elixir: `.ex` or `.exs` below the nearest `mix.exs` or `mix.lock`
 - F#: `.fs`, `.fsi`, `.fsx`, or `.fsscript` below the nearest solution, `*.fsproj`, or `global.json`
+- Gleam: `.gleam` below the nearest `gleam.toml`, with workspace-root fallback
 
 The registry is deliberately bounded rather than accepting arbitrary server recipes from workspace configuration.
 

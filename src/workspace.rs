@@ -524,6 +524,36 @@ mod tests {
     }
 
     #[test]
+    fn gleam_files_use_the_nearest_project_root_or_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("apps/example");
+        let source_dir = nested.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(nested.join("gleam.toml"), "name = \"example\"").unwrap();
+        let file = source_dir.join("main.gleam");
+        fs::write(&file, "pub fn main() { Nil }").unwrap();
+        let loose = root.path().join("loose.gleam");
+        fs::write(&loose, "pub fn loose() { Nil }").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+
+        assert_eq!(
+            workspace
+                .matching_servers(&file, "gleam", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gleam"]
+        );
+        let gleam = registry.server("gleam").unwrap();
+        assert_eq!(workspace.root_for_file(&file, gleam), nested);
+        assert_eq!(
+            workspace.root_for_file(&loose, gleam),
+            fs::canonicalize(root.path()).unwrap()
+        );
+    }
+
+    #[test]
     fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
         let root = tempfile::tempdir().unwrap();
         let deno_root = root.path().join("deno-app");

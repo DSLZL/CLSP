@@ -286,6 +286,26 @@ Deno selection also requires a `deno.json` or `deno.jsonc` between the file and 
 
 The official `denoland.vscode-deno` extension and CLSP resolve the Deno CLI independently. Installing the extension alone does not provide CLSP with a server; configure the extension's `deno.path` and CLSP's `[lsp.deno].executable` separately when `PATH` is insufficient.
 
+## Gleam server cannot be resolved
+
+CLSP does not install Gleam or Erlang/OTP. Check that a compatible Gleam `1.x` compiler is available:
+
+```powershell
+where.exe gleam
+gleam --version
+gleam lsp --help
+code --list-extensions --show-versions | Select-String Gleam.gleam
+```
+
+If `gleam` is not on `PATH`, configure it directly:
+
+```toml
+[lsp.gleam]
+executable = "C:/tools/gleam/gleam.exe"
+```
+
+The official `Gleam.gleam` extension and CLSP resolve the compiler independently. Installing the extension alone does not provide a bundled server; configure the extension's `gleam.path` and CLSP's `[lsp.gleam].executable` separately when `PATH` is insufficient. A nearby `gleam.toml` selects the project root; otherwise CLSP uses the workspace root and the language server may provide only degraded features.
+
 ## ElixirLS cannot be resolved or takes a long time to start
 
 CLSP does not install Erlang/OTP, Elixir, or ElixirLS. Check the local runtime first:
