@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn deno_markers_select_deno_instead_of_typescript() {
+    fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
         let root = tempfile::tempdir().unwrap();
         let deno_root = root.path().join("deno-app");
         let node_root = root.path().join("node-app");
@@ -501,7 +501,9 @@ mod tests {
         fs::create_dir_all(&node_root).unwrap();
         fs::write(deno_root.join("deno.json"), "{}").unwrap();
         fs::write(deno_root.join("package.json"), "{}").unwrap();
+        fs::write(deno_root.join("bun.lock"), "").unwrap();
         fs::write(node_root.join("package.json"), "{}").unwrap();
+        fs::write(node_root.join("bun.lock"), "").unwrap();
         let deno_file = deno_root.join("main.ts");
         let deno_js_file = deno_root.join("main.js");
         let node_file = node_root.join("main.ts");
@@ -517,7 +519,7 @@ mod tests {
                 .into_iter()
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["deno"]
+            vec!["deno", "eslint"]
         );
         assert_eq!(
             workspace
@@ -525,10 +527,14 @@ mod tests {
                 .into_iter()
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["deno"]
+            vec!["deno", "eslint"]
         );
         assert_eq!(
             workspace.root_for_file(&deno_file, registry.server("deno").unwrap()),
+            deno_root
+        );
+        assert_eq!(
+            workspace.root_for_file(&deno_file, registry.server("eslint").unwrap()),
             deno_root
         );
         assert_eq!(
@@ -537,7 +543,11 @@ mod tests {
                 .into_iter()
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["typescript"]
+            vec!["eslint", "typescript"]
+        );
+        assert_eq!(
+            workspace.root_for_file(&node_file, registry.server("eslint").unwrap()),
+            node_root
         );
     }
 

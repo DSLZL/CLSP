@@ -67,6 +67,7 @@ After setup:
 | Dart | Dart Language Server | Manual Dart/Flutter SDK |
 | Deno | Deno Language Server | Manual Deno CLI |
 | Elixir | ElixirLS | Reuse official VS Code release or manual ElixirLS release |
+| ESLint | ESLint Language Server | Reuse official VS Code extension; project-local ESLint required |
 | Go | gopls | `go install` |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
@@ -82,6 +83,8 @@ Dart support reuses `dart` from `PATH` or `[lsp.dart].executable`; CLSP does not
 Deno support is enabled only below `deno.json` or `deno.jsonc`. It reuses `deno` from `PATH` or `[lsp.deno].executable`; CLSP does not install Deno or scan the official VS Code extension for a bundled server.
 
 Elixir support covers `.ex` and `.exs` below the nearest `mix.exs` or `mix.lock`. It requires local Erlang/OTP and Elixir, then reuses an official `JakeBecker.elixir-ls` VS Code release or an explicitly configured ElixirLS `0.31.x` launcher. CLSP does not install the runtime or server; start ElixirLS only in trusted Mix projects because it compiles project and dependency code.
+
+ESLint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, and `.vue`. It requires Node.js, project-local `eslint`, and the official `dbaeumer.vscode-eslint` `3.0.x` server from a standard VS Code extension directory or an explicit path. CLSP installs none of them; use ESLint only in trusted projects because configurations and plugins execute project code.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

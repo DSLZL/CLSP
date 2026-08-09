@@ -15,6 +15,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `dart` | Dart | `dart language-server --protocol=lsp` | `>=2.12.0` | manual Dart/Flutter SDK |
 | `deno` | Deno | `deno lsp` | `>=1.40.0` | manual Deno CLI |
 | `elixir-ls` | Elixir | `language_server.bat` | `>=0.31.1, <0.32.0` | official VS Code or manual ElixirLS release |
+| `eslint` | JavaScript / TypeScript / Vue | `node eslintServer.js --stdio` | `>=3.0.34, <3.1.0` | official VS Code extension; manual |
 | `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
@@ -39,6 +40,7 @@ Some server types then have an additional reuse path before installation:
 - npm-based servers: the selected package manager's global installation
 - command/toolchain servers: toolchain-specific locations such as Go's bin directory or the global .NET tool directory
 - ElixirLS: the official release bundled in standard Stable/Insiders VS Code extension directories
+- ESLint: `server/out/eslintServer.js` from the official `dbaeumer.vscode-eslint` Stable/Insiders extension
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
 
 Only after those reuse paths fail does automatic installation begin.
@@ -153,6 +155,23 @@ executable = "C:/tools/elixir-ls/language_server.bat"
 CLSP does not download or compile ElixirLS. On first launch, the official ElixirLS script may use Mix to prepare its normal user-level cache, so initialize can take several minutes. That state remains outside the workspace and is owned by ElixirLS/Mix.
 
 ElixirLS loads and compiles Mix project and dependency code. Run it only in workspaces you trust. CLSP supports `.ex` and `.exs` below the nearest `mix.exs` or `mix.lock`; template/Phoenix extensions are not part of the current OpenCode-aligned contract.
+
+### ESLint
+
+ESLint requires a working local Node.js runtime, the official `dbaeumer.vscode-eslint` extension server `3.0.x`, and an `eslint` package in the selected root's `node_modules`. CLSP intentionally does not fall back to a global ESLint package.
+
+After checking the normal project, explicit, and `PATH` candidates, CLSP scans only the standard Stable and Insiders extension directories for `server/out/eslintServer.js`. It verifies the extension manifest name, publisher, and version, then verifies the project ESLint manifest before starting the server with Node and `--stdio`.
+
+For a custom VS Code extensions directory, configure the official server entry explicitly:
+
+```toml
+[lsp.eslint]
+executable = "C:/tools/vscode-eslint/server/out/eslintServer.js"
+```
+
+CLSP does not download or build `vscode-eslint`, install Node.js, or modify the project's package files. It supports `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, and `.vue`; the nearest `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, or `yarn.lock` selects the server root, with the normal workspace-root fallback when no marker exists.
+
+ESLint configurations and plugins execute project code. Start the server only in workspaces you trust.
 
 ### clangd
 

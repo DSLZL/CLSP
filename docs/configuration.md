@@ -353,6 +353,7 @@ clojure-lsp
 dart
 deno
 elixir-ls
+eslint
 gopls
 pyright
 rust

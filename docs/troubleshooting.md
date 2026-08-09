@@ -288,6 +288,27 @@ The launcher must have its official sibling `VERSION` file. A custom VS Code `--
 
 The first launch can take several minutes while the official script prepares its Mix cache. Later requests retain the normal timeout. ElixirLS compiles Mix project and dependency code, so do not start it in an untrusted workspace.
 
+## ESLint cannot be resolved or returns no diagnostics
+
+CLSP does not install Node.js, the ESLint server, or the project's ESLint package. Check the prerequisites from the project root:
+
+```powershell
+node --version
+Test-Path node_modules/eslint/package.json
+code --list-extensions --show-versions | Select-String dbaeumer.vscode-eslint
+```
+
+The standard Stable/Insiders extension must contain `server/out/eslintServer.js`, and its official manifest version must satisfy `>=3.0.34, <3.1.0`. For a custom extensions directory, configure that server file explicitly:
+
+```toml
+[lsp.eslint]
+executable = "C:/tools/vscode-eslint/server/out/eslintServer.js"
+```
+
+The selected project root must contain its own compatible `node_modules/eslint/package.json`; a global ESLint installation is intentionally ignored. If the server starts but reports no issues, confirm that the file is covered by the project's ESLint configuration and that a rule is enabled.
+
+Only run ESLint in a trusted project. Configurations and plugins may execute project code.
+
 ## clangd is not found
 
 CLSP checks:
