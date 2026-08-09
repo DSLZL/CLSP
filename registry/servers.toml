@@ -179,6 +179,18 @@ version_args = ["--numeric-version"]
 install = { kind = "manual", version = "2.14.0.0", hint = "Install a supported GHC toolchain and Haskell Language Server 2.x with GHCup (validated with 2.14.0.0), then ensure haskell-language-server-wrapper is on PATH or set [lsp.hls].executable; the official haskell.haskell VS Code extension uses an external HLS" }
 
 [[server]]
+id = "jdtls"
+display_name = "Eclipse JDT Language Server"
+language_id = "java"
+version_req = ">=1.30.0, <2.0.0"
+extensions = ["java"]
+markers = ["settings.gradle", "settings.gradle.kts", "gradlew", "gradlew.bat", "build.gradle", "build.gradle.kts", "pom.xml", ".project", ".classpath"]
+command = "jdtls"
+args = []
+version_args = []
+install = { kind = "manual", version = "1.61.0-202608051627", hint = "Install Eclipse JDT Language Server 1.x and Java 21+ (validated with 1.61.0-202608051627), then ensure jdtls is on PATH or set [lsp.jdtls].executable; CLSP also supports the official redhat.java VS Code extension" }
+
+[[server]]
 id = "clangd"
 display_name = "clangd"
 language_id = "cpp"

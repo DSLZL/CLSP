@@ -50,6 +50,7 @@ const IDE_DIAGNOSTIC_BASELINE_CAPACITY: usize = 64;
 const IDE_REVIEW_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const IDE_REVIEW_SCHEMA: u8 = 1;
 const FSHARP_SERVER_ID: &str = "fsharp";
+const JDTLS_SERVER_ID: &str = "jdtls";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -2272,6 +2273,22 @@ fn lsp_start_args(
         args.push("--state-directory".into());
         args.push(state_directory.to_string_lossy().into_owned());
     }
+    if server_id == JDTLS_SERVER_ID {
+        let data_directory = workspace_state
+            .join("lsp/jdtls")
+            .join(hash_bytes(root.to_string_lossy().as_bytes()))
+            .join("data");
+        fs::create_dir_all(&data_directory).map_err(|error| {
+            ClspError::new(
+                ErrorCode::ServerUnavailable,
+                format!("cannot create JDTLS data directory: {error}"),
+            )
+            .for_server(server_id)
+            .retryable()
+        })?;
+        args.push("-data".into());
+        args.push(data_directory.to_string_lossy().into_owned());
+    }
     Ok(args)
 }
 
@@ -2682,6 +2699,28 @@ mod tests {
         assert_eq!(
             lsp_start_args("rust", &["--stdio".into()], &root, &state).unwrap(),
             ["--stdio"]
+        );
+    }
+
+    #[test]
+    fn jdtls_start_args_use_a_root_specific_data_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("state");
+        let root = directory.path().join("workspace/project");
+        let args = lsp_start_args(JDTLS_SERVER_ID, &[], &root, &state).unwrap();
+        assert_eq!(args[0], "-data");
+        let data = PathBuf::from(&args[1]);
+        assert!(data.is_dir());
+        assert!(data.starts_with(state.join("lsp/jdtls")));
+        assert_ne!(
+            args,
+            lsp_start_args(
+                JDTLS_SERVER_ID,
+                &[],
+                &directory.path().join("workspace/other"),
+                &state,
+            )
+            .unwrap()
         );
     }
 

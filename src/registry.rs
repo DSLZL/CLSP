@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 17] = [
+const APPROVED_IDS: [&str; 18] = [
     "astro",
     "bash",
     "csharp",
@@ -19,16 +19,17 @@ const APPROVED_IDS: [&str; 17] = [
     "gleam",
     "gopls",
     "hls",
+    "jdtls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 46] = [
+const APPROVED_EXTENSIONS: [&str; 47] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
-    "hh", "hpp", "hs", "hxx", "js", "jsx", "ksh", "lhs", "mjs", "mts", "py", "pyi", "rs", "sh",
-    "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "hh", "hpp", "hs", "hxx", "java", "js", "jsx", "ksh", "lhs", "mjs", "mts", "py", "pyi", "rs",
+    "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -302,9 +303,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_seventeen_server_set() {
+    fn builtin_is_the_closed_eighteen_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 17);
+        assert_eq!(registry.server.len(), 18);
         assert_eq!(
             registry
                 .server
@@ -385,7 +386,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["hls"]
         );
-        assert!(registry.matching_extension("java").next().is_none());
+        assert_eq!(
+            registry
+                .matching_extension(".JAVA")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["jdtls"]
+        );
     }
 
     #[test]
@@ -479,6 +486,39 @@ mod tests {
         assert!(hint.contains("GHCup"));
         assert!(hint.contains("[lsp.hls].executable"));
         assert!(hint.contains("haskell.haskell"));
+    }
+
+    #[test]
+    fn jdtls_uses_the_opencode_contract_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let jdtls = registry.server("jdtls").unwrap();
+        assert_eq!(jdtls.language_id, "java");
+        assert_eq!(jdtls.version_req, ">=1.30.0, <2.0.0");
+        assert_eq!(jdtls.extensions, ["java"]);
+        assert_eq!(
+            jdtls.markers,
+            [
+                "settings.gradle",
+                "settings.gradle.kts",
+                "gradlew",
+                "gradlew.bat",
+                "build.gradle",
+                "build.gradle.kts",
+                "pom.xml",
+                ".project",
+                ".classpath",
+            ]
+        );
+        assert_eq!(jdtls.command, "jdtls");
+        assert!(jdtls.args.is_empty());
+        assert!(jdtls.version_args.is_empty());
+        let InstallRecipe::Manual { version, hint } = &jdtls.install else {
+            panic!("JDTLS must use a manual recipe");
+        };
+        assert_eq!(version, "1.61.0-202608051627");
+        assert!(hint.contains("Java 21+"));
+        assert!(hint.contains("[lsp.jdtls].executable"));
+        assert!(hint.contains("redhat.java"));
     }
 
     #[test]

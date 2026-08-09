@@ -19,7 +19,7 @@ use tokio::{
 use url::Url;
 
 use crate::{
-    installer::sanitize_command,
+    installer::{jdtls_extension_layout, jdtls_java_for_launcher, sanitize_command},
     protocol::{
         ClspError, Diagnostic, DiagnosticSeverity, DiagnosticsReport, ErrorCode, Location,
         Position, QueryOperation, QueryRequest, QueryResult, SourceFreshness, TextRange,
@@ -36,7 +36,9 @@ const ELIXIR_LS_SERVER_ID: &str = "elixir-ls";
 const DENO_SERVER_ID: &str = "deno";
 const ESLINT_SERVER_ID: &str = "eslint";
 const FSHARP_SERVER_ID: &str = "fsharp";
+const JDTLS_SERVER_ID: &str = "jdtls";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
+const JDTLS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
 type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, ClspError>>>>>;
@@ -278,7 +280,9 @@ impl LspClient {
             options.executable,
             options.npm_modules_root,
         )?;
-        let mut command = if options.server_id == ESLINT_SERVER_ID {
+        let mut command = if uses_jdtls_java_host(options.server_id, options.executable) {
+            jdtls_java_command(options.executable, options.root, options.request_timeout).await?
+        } else if options.server_id == ESLINT_SERVER_ID {
             let node = which::which("node")
                 .map_err(|_| runtime_error("ESLint Language Server requires Node.js"))?;
             let mut command = Command::new(node);
@@ -568,8 +572,12 @@ impl LspClient {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, ClspError> {
-        self.request_with_timeout(method, params, self.request_timeout)
-            .await
+        self.request_with_timeout(
+            method,
+            params,
+            server_request_timeout(&self.server_id, self.request_timeout),
+        )
+        .await
     }
 
     async fn request_with_timeout(
@@ -666,6 +674,14 @@ impl LspClient {
 fn initialization_timeout(server_id: &str, request_timeout: Duration) -> Duration {
     if matches!(server_id, CLOJURE_SERVER_ID | ELIXIR_LS_SERVER_ID) {
         SLOW_INITIALIZE_TIMEOUT
+    } else {
+        request_timeout
+    }
+}
+
+fn server_request_timeout(server_id: &str, request_timeout: Duration) -> Duration {
+    if server_id == JDTLS_SERVER_ID {
+        request_timeout.max(JDTLS_REQUEST_TIMEOUT)
     } else {
         request_timeout
     }
@@ -1101,6 +1117,12 @@ fn server_initialization_options(
     if server_id == FSHARP_SERVER_ID {
         return Ok(Some(json!({"AutomaticWorkspaceInit": true})));
     }
+    if server_id == JDTLS_SERVER_ID {
+        return Ok(Some(json!({
+            "workspaceFolders": [path_to_uri(server_root)?],
+            "settings": {}
+        })));
+    }
     if !matches!(server_id, ASTRO_SERVER_ID | TYPESCRIPT_SERVER_ID) {
         return Ok(None);
     }
@@ -1123,6 +1145,57 @@ fn uses_dotnet_host(server_id: &str, executable: &Path) -> bool {
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+}
+
+fn uses_jdtls_java_host(server_id: &str, executable: &Path) -> bool {
+    server_id == JDTLS_SERVER_ID
+        && executable
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
+}
+
+async fn jdtls_java_command(
+    launcher: &Path,
+    root: &Path,
+    probe_timeout: Duration,
+) -> Result<Command, ClspError> {
+    let layout = jdtls_extension_layout(launcher)?;
+    let (java, major) = jdtls_java_for_launcher(launcher, root, probe_timeout).await?;
+    let mut command = Command::new(java);
+    command.args(jdtls_vm_args(&layout.configuration, launcher, major));
+    Ok(command)
+}
+
+fn jdtls_vm_args(configuration: &Path, launcher: &Path, java_major: u64) -> Vec<String> {
+    let mut args = Vec::new();
+    if java_major >= 24 {
+        args.extend([
+            "-Djdk.xml.maxGeneralEntitySizeLimit=0".into(),
+            "-Djdk.xml.totalEntitySizeLimit=0".into(),
+        ]);
+    }
+    args.extend([
+        "-Declipse.application=org.eclipse.jdt.ls.core.id1".into(),
+        "-Dosgi.bundles.defaultStartLevel=4".into(),
+        "-Declipse.product=org.eclipse.jdt.ls.core.product".into(),
+        "-Dosgi.checkConfiguration=true".into(),
+        format!(
+            "-Dosgi.sharedConfiguration.area={}",
+            configuration.to_string_lossy()
+        ),
+        "-Dosgi.sharedConfiguration.area.readOnly=true".into(),
+        "-Dosgi.configuration.cascaded=true".into(),
+        "-Xms1G".into(),
+        "--add-modules=ALL-SYSTEM".into(),
+        "--add-opens".into(),
+        "java.base/java.util=ALL-UNNAMED".into(),
+        "--add-opens".into(),
+        "java.base/java.lang=ALL-UNNAMED".into(),
+        "-jar".into(),
+        launcher.to_string_lossy().into_owned(),
+    ]);
+    args
 }
 
 fn strip_utf8_bom(text: &str) -> &str {
@@ -1405,6 +1478,67 @@ mod tests {
             diagnostic_version(FSHARP_SERVER_ID, Some(1), Some(2)),
             Some(1)
         );
+    }
+
+    #[test]
+    fn jdtls_initialization_names_the_server_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("java-project");
+        std::fs::create_dir(&root).unwrap();
+        let options = server_initialization_options(
+            JDTLS_SERVER_ID,
+            &root,
+            directory.path(),
+            &root.join("jdtls.cmd"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            options,
+            json!({"workspaceFolders": [path_to_uri(&root).unwrap()], "settings": {}})
+        );
+        assert_eq!(
+            server_request_timeout(JDTLS_SERVER_ID, Duration::from_secs(10)),
+            JDTLS_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            server_request_timeout("rust", Duration::from_secs(10)),
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn jdtls_extension_uses_the_official_java_launcher_arguments() {
+        let root = Path::new("C:/extension/server");
+        let configuration = root.join("config_win");
+        let launcher = root
+            .join("plugins")
+            .join("org.eclipse.equinox.launcher_1.7.0.jar");
+        assert!(uses_jdtls_java_host(JDTLS_SERVER_ID, &launcher));
+        assert!(!uses_jdtls_java_host(
+            JDTLS_SERVER_ID,
+            Path::new("C:/bin/jdtls.cmd")
+        ));
+        assert!(!uses_jdtls_java_host("rust", &launcher));
+
+        let args = jdtls_vm_args(&configuration, &launcher, 21);
+        assert_eq!(args[0], "-Declipse.application=org.eclipse.jdt.ls.core.id1");
+        assert!(args.contains(&"-Dosgi.sharedConfiguration.area.readOnly=true".into()));
+        assert!(args.contains(&"-Dosgi.configuration.cascaded=true".into()));
+        assert!(args.contains(&"-Xms1G".into()));
+        assert_eq!(args[args.len() - 2], "-jar");
+        assert_eq!(args.last().unwrap(), &launcher.to_string_lossy());
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.starts_with("-Djdk.xml.maxGeneralEntitySizeLimit"))
+        );
+
+        let java_24_args = jdtls_vm_args(&configuration, &launcher, 24);
+        assert_eq!(java_24_args[0], "-Djdk.xml.maxGeneralEntitySizeLimit=0");
+        assert_eq!(java_24_args[1], "-Djdk.xml.totalEntitySizeLimit=0");
     }
 
     #[cfg(windows)]

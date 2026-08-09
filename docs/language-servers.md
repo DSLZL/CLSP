@@ -23,6 +23,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
+| `jdtls` | Java | `jdtls` or Java + Equinox launcher | `>=1.30.0, <2.0.0` | official `redhat.java` extension or manual JDTLS |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
 
@@ -45,6 +46,7 @@ Some server types then have an additional reuse path before installation:
 - ElixirLS: the official release bundled in standard Stable/Insiders VS Code extension directories
 - ESLint: `server/out/eslintServer.js` from the official `dbaeumer.vscode-eslint` Stable/Insiders extension
 - F#: `bin/net*/fsautocomplete.dll` from the official `Ionide.Ionide-fsharp` Stable/Insiders extension, then the exact global .NET tool
+- JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
 
 Only after those reuse paths fail does automatic installation begin.
@@ -121,6 +123,21 @@ executable = "C:/tools/ghcup/bin/haskell-language-server-wrapper.exe"
 ```
 
 The official `haskell.haskell` VS Code extension resolves an external HLS through its own explicit path, `PATH`, or GHCup workflow. CLSP does not scan its configurable globalStorage or reproduce its project-GHC version selection; set the extension to use `PATH` when both clients should share the same toolchain. Its Problems remain available through the existing IDE bridge. Start HLS only in trusted projects because Cabal, Stack, and cradle configuration may execute project code.
+
+### Java
+
+JDTLS requires Java 21+. CLSP first checks project-local, explicit, and `PATH` launchers, then the standard Stable/Insiders directories for the official `redhat.java` extension. It validates the extension manifest, the unique Equinox launcher and JDTLS core JAR, the current platform configuration, and an embedded or system Java 21+ runtime. CLSP does not download Java, JDTLS, or the extension.
+
+The current validation baselines are `redhat.java` `1.55.0` and Eclipse JDT Language Server `1.61.0-202608051627`. A standalone launcher outside `PATH` can be configured directly:
+
+```toml
+[lsp.jdtls]
+executable = "C:/tools/jdtls/bin/jdtls.bat"
+```
+
+Root selection follows OpenCode: Gradle settings files take priority over a wrapper and build files; Maven roots climb only through parent POMs that explicitly declare the child module; `.project` and `.classpath` provide the Eclipse fallback. A loose `.java` file with none of these markers does not start CLSP JDTLS. Each selected root gets a separate CLSP-owned `-data` directory.
+
+JDTLS may import Maven or Gradle projects and execute build logic. Use it only with trusted projects.
 
 ### C#
 

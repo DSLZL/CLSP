@@ -37,6 +37,9 @@ const ESLINT_SERVER_ID: &str = "eslint";
 const FSHARP_SERVER_ID: &str = "fsharp";
 const FSHARP_LANGUAGE_SERVER_PACKAGE: &str = "fsautocomplete";
 const IONIDE_FSHARP_VERSION_REQ: &str = ">=7.31.1, <7.32.0";
+const JDTLS_SERVER_ID: &str = "jdtls";
+const JDTLS_EXTENSION_PREFIX: &str = "redhat.java-";
+const JDTLS_PLUGIN_ENTRY_LIMIT: usize = 512;
 const PRESERVED_ENV: &[&str] = &[
     "SystemRoot",
     "WINDIR",
@@ -188,6 +191,11 @@ impl ServerResolver {
         }
         if server.id == FSHARP_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_fsharp(server, workspace).await
+        {
+            return Ok(resolution);
+        }
+        if server.id == JDTLS_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_jdtls(server, workspace).await
         {
             return Ok(resolution);
         }
@@ -461,6 +469,28 @@ impl ServerResolver {
             if validate_vscode_fsharp_extension(&candidate).is_err() {
                 continue;
             }
+            if let Some(resolution) = self
+                .resolve_candidate(
+                    server,
+                    workspace,
+                    candidate,
+                    ExecutableSource::VsCodeExtension,
+                )
+                .await
+            {
+                return Some(resolution);
+            }
+        }
+        None
+    }
+
+    async fn resolve_vscode_jdtls(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_jdtls_candidates_from(home) {
             if let Some(resolution) = self
                 .resolve_candidate(
                     server,
@@ -1029,6 +1059,32 @@ impl ServerResolver {
         if server.id == ESLINT_SERVER_ID {
             return probe_vscode_eslint_server(executable, working_dir, &server.version_req).await;
         }
+        if server.id == JDTLS_SERVER_ID {
+            let version_output = if executable
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
+            {
+                probe_vscode_jdtls(
+                    executable,
+                    working_dir,
+                    &server.version_req,
+                    Duration::from_millis(self.config.runtime.probe_timeout_ms),
+                )
+                .await?
+            } else {
+                probe_jdtls_launcher(
+                    executable,
+                    working_dir,
+                    Duration::from_millis(self.config.runtime.probe_timeout_ms),
+                )
+                .await?
+            };
+            return Ok(ServerProbe {
+                version_output,
+                npm_modules_root: None,
+            });
+        }
         if server.id == FSHARP_SERVER_ID
             && executable
                 .extension()
@@ -1569,6 +1625,268 @@ fn vscode_fsharp_candidates_from(user_home: &Path) -> Vec<PathBuf> {
     candidates
 }
 
+fn vscode_jdtls_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    vscode_extension_roots_from(user_home, JDTLS_EXTENSION_PREFIX)
+        .into_iter()
+        .filter_map(|(_, root)| jdtls_launcher_in_extension(&root).ok())
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct JdtlsExtensionLayout {
+    pub extension_root: PathBuf,
+    pub configuration: PathBuf,
+    pub core: PathBuf,
+}
+
+pub(crate) fn jdtls_extension_layout(launcher: &Path) -> Result<JdtlsExtensionLayout, ClspError> {
+    if !launcher.is_file() {
+        return Err(server_error("JDTLS launcher candidate is not a file"));
+    }
+    let plugins = launcher
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("plugins")))
+        .ok_or_else(|| server_error("JDTLS launcher is not inside server/plugins"))?;
+    let server_root = plugins
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("server")))
+        .ok_or_else(|| server_error("JDTLS launcher has no server root"))?
+        .to_path_buf();
+    let extension_root = server_root
+        .parent()
+        .ok_or_else(|| server_error("JDTLS launcher has no extension root"))?
+        .to_path_buf();
+    let expected_launcher = single_jdtls_plugin(plugins, "org.eclipse.equinox.launcher_")?;
+    let expected_launcher = std::fs::canonicalize(expected_launcher).map_err(server_error)?;
+    let launcher = std::fs::canonicalize(launcher).map_err(server_error)?;
+    if expected_launcher != launcher {
+        return Err(server_error(
+            "JDTLS launcher does not match the extension entry",
+        ));
+    }
+    let core = single_jdtls_plugin(plugins, "org.eclipse.jdt.ls.core_")?;
+    let configuration = server_root.join(if cfg!(windows) {
+        "config_win"
+    } else if cfg!(target_os = "macos") {
+        "config_mac"
+    } else {
+        "config_linux"
+    });
+    if !configuration.is_dir() {
+        return Err(server_error("JDTLS platform configuration is missing"));
+    }
+    Ok(JdtlsExtensionLayout {
+        extension_root,
+        configuration,
+        core,
+    })
+}
+
+fn jdtls_launcher_in_extension(extension_root: &Path) -> Result<PathBuf, ClspError> {
+    single_jdtls_plugin(
+        &extension_root.join("server/plugins"),
+        "org.eclipse.equinox.launcher_",
+    )
+}
+
+fn single_jdtls_plugin(directory: &Path, prefix: &str) -> Result<PathBuf, ClspError> {
+    let entries = std::fs::read_dir(directory).map_err(server_error)?;
+    let mut matches = entries
+        .filter_map(Result::ok)
+        .take(JDTLS_PLUGIN_ENTRY_LIMIT)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| name.starts_with(prefix) && name.ends_with(".jar"))
+        });
+    let plugin = matches
+        .next()
+        .ok_or_else(|| server_error(format!("JDTLS plugin {prefix}*.jar is missing")))?;
+    if matches.next().is_some() {
+        return Err(server_error(format!(
+            "JDTLS plugin {prefix}*.jar is ambiguous"
+        )));
+    }
+    Ok(plugin)
+}
+
+fn validate_vscode_jdtls_extension(
+    launcher: &Path,
+    requirement: &str,
+) -> Result<(JdtlsExtensionLayout, Version), ClspError> {
+    let layout = jdtls_extension_layout(launcher)?;
+    let manifest = layout.extension_root.join("package.json");
+    let metadata = std::fs::metadata(&manifest).map_err(server_error)?;
+    if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+        return Err(server_error(
+            "redhat.java manifest is not a bounded regular file",
+        ));
+    }
+    let bytes = std::fs::read(&manifest).map_err(server_error)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some("java")
+        || value.get("publisher").and_then(serde_json::Value::as_str) != Some("redhat")
+    {
+        return Err(server_error(
+            "JDTLS candidate is not the official redhat.java extension",
+        ));
+    }
+    value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .filter(|version| version.major == 1)
+        .ok_or_else(|| server_error("redhat.java extension version is invalid"))?;
+    let version = jdtls_core_version(&layout.core)?;
+    let requirement = VersionReq::parse(requirement).map_err(server_error)?;
+    if !requirement.matches(&version) {
+        return Err(server_error(format!(
+            "JDTLS core version {version} does not satisfy {requirement}"
+        )));
+    }
+    Ok((layout, version))
+}
+
+fn jdtls_core_version(core: &Path) -> Result<Version, ClspError> {
+    let name = core
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|name| name.strip_prefix("org.eclipse.jdt.ls.core_"))
+        .and_then(|name| name.strip_suffix(".jar"))
+        .ok_or_else(|| server_error("JDTLS core plugin name is invalid"))?;
+    parse_version(name).ok_or_else(|| server_error("JDTLS core plugin version is invalid"))
+}
+
+fn jdtls_java_candidates(extension_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push_directory = |directory: &Path| {
+        for candidate in executable_candidates_in(directory, "java") {
+            if candidate.is_file() && seen.insert(candidate.clone()) {
+                candidates.push(candidate);
+            }
+        }
+    };
+    if let Some(extension_root) = extension_root {
+        let jre = extension_root.join("jre");
+        push_directory(&jre.join("bin"));
+        let mut embedded = std::fs::read_dir(&jre)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .take(VSCODE_INSTALL_ENTRY_LIMIT)
+            .map(|entry| entry.path().join("bin"))
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        embedded.sort();
+        for directory in embedded {
+            push_directory(&directory);
+        }
+    }
+    if let Some(java_home) = std::env::var_os("JAVA_HOME") {
+        push_directory(&PathBuf::from(java_home).join("bin"));
+    }
+    for name in executable_names("java") {
+        if let Ok(candidate) = which::which(name)
+            && seen.insert(candidate.clone())
+        {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
+async fn resolve_java_21(
+    extension_root: Option<&Path>,
+    working_dir: &Path,
+    probe_timeout: Duration,
+) -> Result<(PathBuf, u64, String), ClspError> {
+    for candidate in jdtls_java_candidates(extension_root) {
+        let args = vec!["-version".to_owned()];
+        let Ok(output) = run_checked(
+            &candidate,
+            &args,
+            working_dir,
+            probe_timeout,
+            "Java runtime probe",
+        )
+        .await
+        else {
+            continue;
+        };
+        let text = format!(
+            "{} {}",
+            bounded_text(&output.stdout),
+            bounded_text(&output.stderr)
+        );
+        if let Some(major) = java_major_version(&text).filter(|major| *major >= 21) {
+            return Ok((candidate, major, text.trim().chars().take(512).collect()));
+        }
+    }
+    Err(runtime_error(
+        "Eclipse JDT Language Server requires Java 21+",
+    ))
+}
+
+fn java_major_version(output: &str) -> Option<u64> {
+    parse_version(output).map(|version| version.major)
+}
+
+pub(crate) async fn jdtls_java_for_launcher(
+    launcher: &Path,
+    working_dir: &Path,
+    probe_timeout: Duration,
+) -> Result<(PathBuf, u64), ClspError> {
+    let layout = jdtls_extension_layout(launcher)?;
+    resolve_java_21(Some(&layout.extension_root), working_dir, probe_timeout)
+        .await
+        .map(|(java, major, _)| (java, major))
+}
+
+async fn probe_vscode_jdtls(
+    launcher: &Path,
+    working_dir: &Path,
+    requirement: &str,
+    probe_timeout: Duration,
+) -> Result<String, ClspError> {
+    let (layout, version) = validate_vscode_jdtls_extension(launcher, requirement)?;
+    let (_, _, java) =
+        resolve_java_21(Some(&layout.extension_root), working_dir, probe_timeout).await?;
+    Ok(format!("Eclipse JDT LS {version}; {java}"))
+}
+
+async fn probe_jdtls_launcher(
+    executable: &Path,
+    working_dir: &Path,
+    probe_timeout: Duration,
+) -> Result<String, ClspError> {
+    if !executable.is_file() {
+        return Err(server_error("JDTLS launcher candidate is not a file"));
+    }
+    let output = run_checked(
+        executable,
+        &["--help".to_owned()],
+        working_dir,
+        probe_timeout,
+        "JDTLS launcher probe",
+    )
+    .await?;
+    let help = format!(
+        "{} {}",
+        bounded_text(&output.stdout),
+        bounded_text(&output.stderr)
+    );
+    let normalized = help.to_ascii_lowercase();
+    if !normalized.contains("usage:") || !normalized.contains("jdtls") {
+        return Err(server_error("JDTLS launcher help output is invalid"));
+    }
+    let (_, _, java) = resolve_java_21(None, working_dir, probe_timeout).await?;
+    Ok(format!("jdtls launcher; {java}"))
+}
+
 fn vscode_extension_candidates_from(
     user_home: &Path,
     extension_prefix: &str,
@@ -2023,7 +2341,7 @@ pub(crate) fn resolution_fingerprint(
     }
     if matches!(
         server.id.as_str(),
-        ELIXIR_LS_SERVER_ID | ESLINT_SERVER_ID | FSHARP_SERVER_ID
+        ELIXIR_LS_SERVER_ID | ESLINT_SERVER_ID | FSHARP_SERVER_ID | JDTLS_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -2038,9 +2356,18 @@ pub(crate) fn resolution_fingerprint(
                 ELIXIR_LS_SERVER_ID => candidates.extend(vscode_elixir_ls_candidates_from(&home)),
                 ESLINT_SERVER_ID => candidates.extend(vscode_eslint_candidates_from(&home)),
                 FSHARP_SERVER_ID => candidates.extend(vscode_fsharp_candidates_from(&home)),
+                JDTLS_SERVER_ID => candidates.extend(vscode_jdtls_candidates_from(&home)),
                 _ => {}
             }
         }
+    }
+    if server.id == JDTLS_SERVER_ID {
+        digest.update(
+            std::env::var_os("JAVA_HOME")
+                .unwrap_or_default()
+                .to_string_lossy()
+                .as_bytes(),
+        );
     }
     if server.id == ESLINT_SERVER_ID {
         hash_executable_candidate(
@@ -2073,6 +2400,16 @@ pub(crate) fn resolution_fingerprint(
                 &mut digest,
                 candidate.with_file_name("fsautocomplete.runtimeconfig.json"),
             );
+        }
+        if server.id == JDTLS_SERVER_ID
+            && let Ok(layout) = jdtls_extension_layout(&candidate)
+        {
+            hash_executable_candidate(&mut digest, layout.extension_root.join("package.json"));
+            hash_executable_candidate(&mut digest, layout.core);
+            hash_executable_candidate(&mut digest, layout.configuration.join("config.ini"));
+            for java in jdtls_java_candidates(Some(&layout.extension_root)) {
+                hash_executable_candidate(&mut digest, java);
+            }
         }
     }
     hex::encode(digest.finalize())
@@ -2416,6 +2753,52 @@ mod tests {
         )
         .unwrap();
         server
+    }
+
+    fn write_jdtls_extension(
+        extension_root: &Path,
+        directory_version: &str,
+        manifest_version: &str,
+        core_version: &str,
+        java_version: &str,
+    ) -> (PathBuf, PathBuf) {
+        let root = extension_root.join(format!("redhat.java-{directory_version}"));
+        let plugins = root.join("server/plugins");
+        let configuration = root.join("server").join(if cfg!(windows) {
+            "config_win"
+        } else if cfg!(target_os = "macos") {
+            "config_mac"
+        } else {
+            "config_linux"
+        });
+        let java_bin = root.join("jre/bin");
+        for directory in [&plugins, &configuration, &java_bin] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let launcher = plugins.join("org.eclipse.equinox.launcher_1.7.0.jar");
+        std::fs::write(&launcher, b"launcher").unwrap();
+        std::fs::write(
+            plugins.join(format!("org.eclipse.jdt.ls.core_{core_version}.jar")),
+            b"core",
+        )
+        .unwrap();
+        std::fs::write(configuration.join("config.ini"), b"config").unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "java",
+                "publisher": "redhat",
+                "version": manifest_version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let java = fake_executable(
+            &java_bin,
+            "java",
+            &format!("echo openjdk version \"{java_version}\" 1>&2"),
+        );
+        (launcher, java)
     }
 
     #[test]
@@ -2827,6 +3210,76 @@ mod tests {
         )
         .unwrap();
         assert!(validate_vscode_fsharp_extension(&newer_net8).is_err());
+    }
+
+    #[tokio::test]
+    async fn vscode_jdtls_candidates_validate_layout_java_and_platform_suffixes() {
+        let root = tempfile::tempdir().unwrap();
+        let extensions = root.path().join(".vscode/extensions");
+        let (older, _) = write_jdtls_extension(
+            &extensions,
+            "1.54.0-win32-x64",
+            "1.54.0",
+            "1.59.0.202606010000",
+            "21.0.3",
+        );
+        let (newer, java) = write_jdtls_extension(
+            &extensions,
+            "1.55.0-win32-x64",
+            "1.55.0",
+            "1.60.0.202607010000",
+            "21.0.3",
+        );
+
+        assert_eq!(
+            vscode_jdtls_candidates_from(root.path()),
+            [newer.clone(), older.clone()]
+        );
+        let (layout, version) =
+            validate_vscode_jdtls_extension(&newer, ">=1.30.0, <2.0.0").unwrap();
+        assert_eq!(version, Version::new(1, 60, 0));
+        assert_eq!(
+            jdtls_java_for_launcher(&newer, root.path(), Duration::from_secs(5))
+                .await
+                .unwrap(),
+            (java, 21)
+        );
+        assert_eq!(java_major_version("openjdk version \"21.0.3\""), Some(21));
+        assert_eq!(java_major_version("openjdk version \"20.0.2\""), Some(20));
+
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let mut resolver = test_resolver(root.path());
+        resolver.vscode_user_home = Some(root.path().to_path_buf());
+        let server = Registry::builtin()
+            .unwrap()
+            .server(JDTLS_SERVER_ID)
+            .unwrap()
+            .clone();
+        let resolution = resolver
+            .resolve_vscode_jdtls(&server, &workspace)
+            .await
+            .unwrap();
+        assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+        assert_eq!(resolution.path, newer);
+        assert!(resolution.version_output.contains("Eclipse JDT LS 1.60.0"));
+
+        std::fs::write(
+            layout.extension_root.join("package.json"),
+            br#"{"name":"java","publisher":"other","version":"1.55.0"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_jdtls_extension(&resolution.path, ">=1.30.0").is_err());
+
+        std::fs::write(
+            jdtls_extension_layout(&older)
+                .unwrap()
+                .core
+                .with_file_name("org.eclipse.jdt.ls.core_1.59.1.jar"),
+            b"duplicate",
+        )
+        .unwrap();
+        assert!(jdtls_extension_layout(&older).is_err());
     }
 
     #[tokio::test]
@@ -3336,6 +3789,27 @@ mod tests {
         let first = resolution_fingerprint(server, &workspace, Some(&executable));
         write_eslint_dependency(&workspace, "9.33.0");
         let second = resolution_fingerprint(server, &workspace, Some(&executable));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn jdtls_core_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let (launcher, _) = write_jdtls_extension(
+            directory.path(),
+            "1.55.0-win32-x64",
+            "1.55.0",
+            "1.60.0.202607010000",
+            "21.0.3",
+        );
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(JDTLS_SERVER_ID).unwrap();
+        let core = jdtls_extension_layout(&launcher).unwrap().core;
+        let first = resolution_fingerprint(server, &workspace, Some(&launcher));
+        std::fs::write(core, b"different-core").unwrap();
+        let second = resolution_fingerprint(server, &workspace, Some(&launcher));
         assert_ne!(first, second);
     }
 }

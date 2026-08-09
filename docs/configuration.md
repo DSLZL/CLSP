@@ -358,6 +358,7 @@ fsharp
 gleam
 gopls
 hls
+jdtls
 pyright
 rust
 typescript

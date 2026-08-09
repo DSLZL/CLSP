@@ -70,6 +70,7 @@ clsp setup --workspace .
 | Gleam | Gleam Language Server | 手动安装 Gleam 编译器 |
 | Go | gopls | `go install` |
 | Haskell | Haskell Language Server | 手动安装 GHCup/HLS 工具链 |
+| Java | Eclipse JDT Language Server | 复用本地 JDTLS 或官方 `redhat.java` 扩展 |
 | Python | Pyright | npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
@@ -94,6 +95,8 @@ Gleam 支持 `.gleam` 文件，根目录取最近的 `gleam.toml`，找不到时
 Go 支持 `.go` 文件。文件与 workspace 根之间只要存在 `go.work`，它就优先于最近的 `go.mod` 或 `go.sum`；CLSP 会复用兼容的 `gopls`，否则通过本机已有的 Go 工具链安装固定版本。官方 `golang.Go` VS Code 扩展是同一外部服务器的独立客户端，可通过现有 IDE Bridge 独立提供 Problems。
 
 Haskell 支持 `.hs` 与 `.lhs` 文件，根目录取最近的 `stack.yaml`、`cabal.project`、`hie.yaml` 或 `*.cabal`，找不到时回退到 workspace 根。CLSP 复用 `PATH` 或 `[lsp.hls].executable` 中兼容的 HLS `2.x` wrapper，并启动 `haskell-language-server-wrapper --lsp`；不会安装或替用户选择 GHC/HLS 版本。官方 `haskell.haskell` 扩展是外部 HLS 的独立客户端，可通过现有 IDE Bridge 提供 Problems。项目 cradle/构建配置可能执行代码，因此只应在可信项目中启动 HLS。
+
+Java 支持位于 Gradle、Maven 或 Eclipse 项目中的 `.java` 文件。CLSP 复用本地 `jdtls` launcher 或官方 `redhat.java` Stable/Insiders 扩展内的服务器，要求 Java 21+，并按项目根隔离 JDTLS data。没有项目标记的松散 Java 文件不会启动 CLSP JDTLS 客户端。CLSP 不安装这些组件；Maven/Gradle 导入可能执行构建逻辑，因此只应打开可信项目。
 
 如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
 

@@ -16,7 +16,9 @@ use crate::{
 
 const DENO_SERVER_ID: &str = "deno";
 const GOPLS_SERVER_ID: &str = "gopls";
+const JDTLS_SERVER_ID: &str = "jdtls";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
+const JDTLS_POM_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Workspace {
@@ -258,7 +260,11 @@ impl Workspace {
             .and_then(|server| nearest_marked_root(file, &self.root, server));
         registry
             .matching_extension(extension)
-            .filter(|server| script_server_selected(server, deno_root.is_some()))
+            .filter(|server| {
+                script_server_selected(server, deno_root.is_some())
+                    && (server.id != JDTLS_SERVER_ID
+                        || nearest_jdtls_root(file, &self.root).is_some())
+            })
             .collect()
     }
 }
@@ -296,13 +302,16 @@ fn nearest_marked_root(
     workspace: &Path,
     server: &ServerDefinition,
 ) -> Option<PathBuf> {
+    if server.id == JDTLS_SERVER_ID {
+        return nearest_jdtls_root(file, workspace);
+    }
     if server.id == GOPLS_SERVER_ID {
         let mut directory = file.parent();
         while let Some(candidate) = directory {
             if marker_exists(candidate, "go.work") {
                 return Some(candidate.to_path_buf());
             }
-            if candidate == workspace {
+            if is_workspace_root(candidate, workspace) {
                 break;
             }
             directory = candidate.parent();
@@ -318,12 +327,141 @@ fn nearest_marked_root(
         {
             return Some(candidate.to_path_buf());
         }
-        if candidate == workspace {
+        if is_workspace_root(candidate, workspace) {
             break;
         }
         directory = candidate.parent();
     }
     None
+}
+
+fn nearest_jdtls_root(file: &Path, workspace: &Path) -> Option<PathBuf> {
+    for markers in [
+        &["settings.gradle", "settings.gradle.kts"][..],
+        &["gradlew", "gradlew.bat"],
+        &["build.gradle", "build.gradle.kts"],
+    ] {
+        if let Some(root) = nearest_root_with_markers(file, workspace, markers) {
+            return Some(root);
+        }
+    }
+    nearest_maven_root(file, workspace)
+        .or_else(|| nearest_root_with_markers(file, workspace, &[".project", ".classpath"]))
+}
+
+fn nearest_root_with_markers(file: &Path, workspace: &Path, markers: &[&str]) -> Option<PathBuf> {
+    let mut directory = file.parent();
+    while let Some(candidate) = directory {
+        if markers
+            .iter()
+            .any(|marker| marker_exists(candidate, marker))
+        {
+            return Some(candidate.to_path_buf());
+        }
+        if is_workspace_root(candidate, workspace) {
+            break;
+        }
+        directory = candidate.parent();
+    }
+    None
+}
+
+fn nearest_maven_root(file: &Path, workspace: &Path) -> Option<PathBuf> {
+    let mut root = nearest_root_with_markers(file, workspace, &["pom.xml"])?;
+    while let Some(parent) = next_pom_ancestor(&root, workspace) {
+        if !pom_declares_module(&parent.join("pom.xml"), &root) {
+            break;
+        }
+        root = parent;
+    }
+    Some(root)
+}
+
+fn next_pom_ancestor(directory: &Path, workspace: &Path) -> Option<PathBuf> {
+    if is_workspace_root(directory, workspace) {
+        return None;
+    }
+    let mut ancestor = directory.parent();
+    while let Some(candidate) = ancestor {
+        if candidate.join("pom.xml").is_file() {
+            return Some(candidate.to_path_buf());
+        }
+        if is_workspace_root(candidate, workspace) {
+            break;
+        }
+        ancestor = candidate.parent();
+    }
+    None
+}
+
+fn pom_declares_module(pom: &Path, child: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(pom) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() > JDTLS_POM_LIMIT {
+        return false;
+    }
+    let Ok(text) = fs::read_to_string(pom) else {
+        return false;
+    };
+    let Some(parent) = pom.parent() else {
+        return false;
+    };
+    let Ok(child) = fs::canonicalize(child) else {
+        return false;
+    };
+    let text = strip_xml_comments(&text);
+    xml_element_bodies(&text, "modules")
+        .into_iter()
+        .flat_map(|modules| xml_element_bodies(modules, "module"))
+        .map(str::trim)
+        .filter(|module| !module.is_empty())
+        .any(|module| {
+            fs::canonicalize(parent.join(module.replace('\\', "/")))
+                .is_ok_and(|candidate| candidate == child)
+        })
+}
+
+fn strip_xml_comments(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<!--") {
+        output.push_str(&rest[..start]);
+        let Some(end) = rest[start + 4..].find("-->") else {
+            return output;
+        };
+        rest = &rest[start + 4 + end + 3..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn xml_element_bodies<'a>(text: &'a str, tag: &str) -> Vec<&'a str> {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut bodies = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(&open) {
+        let after_name = &rest[start + open.len()..];
+        if !after_name
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| *byte == b'>' || byte.is_ascii_whitespace())
+        {
+            rest = &after_name[after_name.len().min(1)..];
+            continue;
+        }
+        let Some(open_end) = after_name.find('>') else {
+            break;
+        };
+        let body = &after_name[open_end + 1..];
+        let Some(close_start) = body.find(&close) else {
+            break;
+        };
+        bodies.push(&body[..close_start]);
+        rest = &body[close_start + close.len()..];
+    }
+    bodies
 }
 
 fn script_server_selected(server: &ServerDefinition, deno_root: bool) -> bool {
@@ -347,6 +485,11 @@ fn marker_exists(directory: &Path, marker: &str) -> bool {
                     .is_some_and(|value| value.eq_ignore_ascii_case(extension))
         })
     })
+}
+
+fn is_workspace_root(candidate: &Path, workspace: &Path) -> bool {
+    candidate == workspace
+        || fs::canonicalize(candidate).is_ok_and(|candidate| candidate == workspace)
 }
 
 fn path_is_within(normalized_root: &str, candidate: &Path) -> bool {
@@ -589,6 +732,110 @@ mod tests {
         assert_eq!(selected_root(), fs::canonicalize(&module).unwrap());
         fs::remove_file(module.join("go.sum")).unwrap();
         assert_eq!(selected_root(), fs::canonicalize(root.path()).unwrap());
+    }
+
+    #[test]
+    fn jdtls_uses_opencode_gradle_precedence() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app");
+        let module = app.join("module");
+        let source_dir = module.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            root.path().join("settings.gradle"),
+            "rootProject.name = 'demo'",
+        )
+        .unwrap();
+        fs::write(app.join("gradlew"), "").unwrap();
+        fs::write(module.join("build.gradle"), "").unwrap();
+        let source = source_dir.join("Main.java");
+        fs::write(&source, "class Main {}").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let jdtls = registry.server(JDTLS_SERVER_ID).unwrap();
+
+        assert_eq!(workspace.root_for_file(&source, jdtls), root.path());
+        fs::remove_file(root.path().join("settings.gradle")).unwrap();
+        assert_eq!(workspace.root_for_file(&source, jdtls), app);
+        fs::remove_file(app.join("gradlew")).unwrap();
+        assert_eq!(workspace.root_for_file(&source, jdtls), module);
+    }
+
+    #[test]
+    fn jdtls_climbs_only_declared_maven_modules() {
+        let root = tempfile::tempdir().unwrap();
+        let module = root.path().join("apps/demo");
+        let source_dir = module.join("src/main/java");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(module.join("pom.xml"), "<project />").unwrap();
+        fs::write(
+            root.path().join("pom.xml"),
+            "<project><modules><!-- <module>apps/demo</module> --><module>apps/sibling</module></modules></project>",
+        )
+        .unwrap();
+        let source = source_dir.join("Main.java");
+        fs::write(&source, "class Main {}").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let jdtls = registry.server(JDTLS_SERVER_ID).unwrap();
+
+        assert_eq!(workspace.root_for_file(&source, jdtls), module);
+        fs::write(
+            root.path().join("pom.xml"),
+            "<project><modules><module>apps/demo</module></modules></project>",
+        )
+        .unwrap();
+        assert_eq!(workspace.root_for_file(&source, jdtls), root.path());
+    }
+
+    #[test]
+    fn jdtls_uses_eclipse_markers_but_skips_loose_java_files() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("eclipse-project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join(".classpath"), "<classpath />").unwrap();
+        let source = project.join("Main.java");
+        let loose = root.path().join("Loose.java");
+        fs::write(&source, "class Main {}").unwrap();
+        fs::write(&loose, "class Loose {}").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+
+        assert_eq!(
+            workspace
+                .matching_servers(&source, "java", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            [JDTLS_SERVER_ID]
+        );
+        assert_eq!(
+            workspace.root_for_file(&source, registry.server(JDTLS_SERVER_ID).unwrap()),
+            project
+        );
+        assert!(
+            workspace
+                .matching_servers(&loose, "java", &registry)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn jdtls_never_uses_markers_above_the_workspace() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        fs::write(parent.path().join("settings.gradle"), "").unwrap();
+        let source = root.join("Loose.java");
+        fs::write(&source, "class Loose {}").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&root).unwrap();
+
+        assert!(
+            workspace
+                .matching_servers(&source, "java", &registry)
+                .is_empty()
+        );
     }
 
     #[test]

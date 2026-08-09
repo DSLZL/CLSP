@@ -251,6 +251,29 @@ executable = "C:/tools/ghcup/bin/haskell-language-server-wrapper.exe"
 
 The nearest `stack.yaml`, `cabal.project`, `hie.yaml`, or `*.cabal` selects the root; otherwise CLSP uses the workspace root. The official `haskell.haskell` extension resolves external HLS versions independently and may place them in configurable globalStorage that CLSP does not scan. Configure the extension for `PATH` or give both clients explicit paths when they must share the same toolchain. Run probes and HLS only in trusted projects because cradle/build configuration may execute code.
 
+## JDTLS cannot be resolved or Java files have no CLSP client
+
+JDTLS requires Java 21+. Check the runtime, standalone launcher, and official VS Code extension visible to the current process:
+
+```powershell
+where.exe java
+java -version
+where.exe jdtls
+jdtls --help
+code --list-extensions --show-versions | Select-String redhat.java
+```
+
+CLSP checks compatible project, explicit, and `PATH` launchers first. It then scans only the standard Stable/Insiders extension directories for official `redhat.java` installs and validates their manifest, launcher/core JARs, platform configuration, and embedded or system Java runtime. It never downloads Java or JDTLS.
+
+Configure a custom standalone launcher explicitly when needed:
+
+```toml
+[lsp.jdtls]
+executable = "C:/tools/jdtls/bin/jdtls.bat"
+```
+
+CLSP deliberately skips loose `.java` files. Add a recognized Gradle marker (`settings.gradle[.kts]`, `gradlew[.bat]`, or `build.gradle[.kts]`), Maven `pom.xml`, or Eclipse `.project` / `.classpath`. Maven parent roots are selected only when `<modules>` declares the child. Use only trusted Maven/Gradle projects because imports may execute build logic.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.
