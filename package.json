@@ -1,6 +1,6 @@
 {
   "name": "@dslzl/clsp",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "A Windows-first LSP companion for Codex CLI",
   "license": "AGPL-3.0-only",
   "repository": {
