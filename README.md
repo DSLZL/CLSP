@@ -92,6 +92,8 @@ F# support covers `.fs`, `.fsi`, `.fsx`, and `.fsscript` below the nearest solut
 
 Gleam support covers `.gleam` files below the nearest `gleam.toml`, with the workspace root as the fallback. CLSP reuses a compatible Gleam `1.x` compiler from `PATH` or `[lsp.gleam].executable` and starts its built-in `gleam lsp`; it does not install Gleam, Erlang/OTP, or scan the official `Gleam.gleam` extension for a bundled server. The extension uses the same external compiler and can independently publish VS Code Problems through the IDE bridge.
 
+Go support covers `.go` files. A `go.work` anywhere between the file and workspace root takes priority over the nearest `go.mod` or `go.sum`; CLSP reuses a compatible `gopls` or installs the pinned version through the existing Go toolchain. The official `golang.Go` VS Code extension is a separate client of the same external server and can independently publish Problems through the IDE bridge.
+
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 
 ## VS Code Integration

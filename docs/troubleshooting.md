@@ -210,6 +210,22 @@ If the selected manager later fails during its global-root query or installation
 
 Fix the selected manager or temporarily remove it from the environment so the next probe chooses another one.
 
+## gopls cannot be resolved or uses the wrong root
+
+Check the Go toolchain and server that CLSP can see:
+
+```powershell
+where.exe go
+go version
+go env GOBIN GOPATH GOTOOLCHAIN
+where.exe gopls
+gopls version
+```
+
+CLSP reuses any compatible `gopls` and otherwise runs `go install golang.org/x/tools/gopls@v0.23.0` without overriding `GOBIN`. The pinned server declares Go 1.26; update Go or allow Go's own toolchain selection if installation reports an older toolchain.
+
+For root selection, any `go.work` between the file and workspace root wins over a nested `go.mod` or `go.sum`. If no marker exists, CLSP uses the workspace root. The official `golang.Go` extension resolves the same external server independently; installing the extension alone does not provide CLSP with a bundled copy.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.

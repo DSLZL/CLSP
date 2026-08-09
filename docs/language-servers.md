@@ -21,7 +21,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
-| `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.19.1` |
+| `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
 
@@ -93,10 +93,14 @@ If a compatible project-local or `PATH` rust-analyzer is already available, no i
 CLSP uses the existing Go toolchain:
 
 ```powershell
-go install golang.org/x/tools/gopls@v0.19.1
+go install golang.org/x/tools/gopls@v0.23.0
 ```
 
 CLSP does not override `GOBIN`. It asks Go for `GOBIN` / `GOPATH` and reuses the resulting tool location when possible.
+
+For `.go` files, CLSP first searches up to the workspace boundary for `go.work`. If none exists, the nearest `go.mod` or `go.sum` is used; otherwise the workspace root is the fallback.
+
+The official `golang.Go` VS Code extension uses the same external `gopls` and may install or update it independently. It does not carry a server binary for CLSP to scan, but its Problems remain available through the existing IDE bridge.
 
 ### C#
 
@@ -258,7 +262,7 @@ The built-in registry uses file extensions and project markers to decide which s
 Examples:
 
 - Rust: `.rs`, `Cargo.toml`, `rust-project.json`
-- Go: `.go`, `go.mod`, `go.work`
+- Go: `.go`; any ancestor `go.work` takes priority over the nearest `go.mod` or `go.sum`
 - Python: `.py`, `.pyi`, `pyproject.toml`, `pyrightconfig.json`
 - TypeScript/JavaScript: JS/TS extensions plus `package.json`, `tsconfig.json`, or `jsconfig.json`
 - C/C++: C-family extensions plus `compile_commands.json`, `CMakeLists.txt`, or `.clangd`

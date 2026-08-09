@@ -3223,7 +3223,7 @@ mod tests {
     fn parses_common_language_server_versions_and_enforces_ranges() {
         for (output, expected) in [
             ("v26.5.0", Version::new(26, 5, 0)),
-            ("golang.org/x/tools/gopls v0.21.1", Version::new(0, 21, 1)),
+            ("golang.org/x/tools/gopls v0.23.0", Version::new(0, 23, 0)),
             ("clangd version 18.1.8", Version::new(18, 1, 8)),
             (
                 "rust-analyzer 1.88.0 (6b00bc388 2025-06-23)",

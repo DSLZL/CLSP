@@ -90,6 +90,8 @@ F# 支持 `.fs`、`.fsi`、`.fsx` 与 `.fsscript`，根目录取最近的解决�
 
 Gleam 支持 `.gleam` 文件，根目录取最近的 `gleam.toml`，找不到时回退到 workspace 根。CLSP 复用 `PATH` 或 `[lsp.gleam].executable` 中兼容的 Gleam `1.x` 编译器并启动其内置 `gleam lsp`；不会安装 Gleam、Erlang/OTP，也不会扫描官方 `Gleam.gleam` 扩展来寻找内置服务器。该扩展使用同一个外部编译器，可通过现有 IDE Bridge 独立提供 VS Code Problems。
 
+Go 支持 `.go` 文件。文件与 workspace 根之间只要存在 `go.work`，它就优先于最近的 `go.mod` 或 `go.sum`；CLSP 会复用兼容的 `gopls`，否则通过本机已有的 Go 工具链安装固定版本。官方 `golang.Go` VS Code 扩展是同一外部服务器的独立客户端，可通过现有 IDE Bridge 独立提供 Problems。
+
 如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
 
 ## VS Code 集成

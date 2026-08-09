@@ -427,6 +427,30 @@ mod tests {
     }
 
     #[test]
+    fn gopls_uses_the_locked_official_language_server() {
+        let registry = Registry::builtin().unwrap();
+        let gopls = registry.server("gopls").unwrap();
+        assert_eq!(gopls.language_id, "go");
+        assert_eq!(gopls.version_req, ">=0.15.0, <1.0.0");
+        assert_eq!(gopls.extensions, ["go"]);
+        assert_eq!(gopls.markers, ["go.work", "go.mod", "go.sum"]);
+        assert_eq!(gopls.command, "gopls");
+        assert!(gopls.args.is_empty());
+        assert_eq!(gopls.version_args, ["version"]);
+        let InstallRecipe::Command {
+            version,
+            program,
+            args,
+        } = &gopls.install
+        else {
+            panic!("gopls must use the go install recipe");
+        };
+        assert_eq!(version, "v0.23.0");
+        assert_eq!(program, "go");
+        assert_eq!(args, &["install", "golang.org/x/tools/gopls@v0.23.0"]);
+    }
+
+    #[test]
     fn csharp_uses_the_locked_official_language_server() {
         let registry = Registry::builtin().unwrap();
         let csharp = registry.server("csharp").unwrap();

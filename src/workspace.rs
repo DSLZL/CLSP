@@ -15,6 +15,7 @@ use crate::{
 };
 
 const DENO_SERVER_ID: &str = "deno";
+const GOPLS_SERVER_ID: &str = "gopls";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 
 #[derive(Clone, Debug)]
@@ -295,6 +296,19 @@ fn nearest_marked_root(
     workspace: &Path,
     server: &ServerDefinition,
 ) -> Option<PathBuf> {
+    if server.id == GOPLS_SERVER_ID {
+        let mut directory = file.parent();
+        while let Some(candidate) = directory {
+            if marker_exists(candidate, "go.work") {
+                return Some(candidate.to_path_buf());
+            }
+            if candidate == workspace {
+                break;
+            }
+            directory = candidate.parent();
+        }
+    }
+
     let mut directory = file.parent();
     while let Some(candidate) = directory {
         if server
@@ -551,6 +565,30 @@ mod tests {
             workspace.root_for_file(&loose, gleam),
             fs::canonicalize(root.path()).unwrap()
         );
+    }
+
+    #[test]
+    fn gopls_prefers_go_work_then_the_nearest_module_marker_or_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let module = root.path().join("nested/module");
+        fs::create_dir_all(&module).unwrap();
+        let source = module.join("main.go");
+        fs::write(&source, "package main").unwrap();
+        fs::write(root.path().join("go.work"), "go 1.26\nuse ./nested/module").unwrap();
+        fs::write(module.join("go.mod"), "module example.com/demo\ngo 1.26").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let gopls = registry.server(GOPLS_SERVER_ID).unwrap();
+        let selected_root = || fs::canonicalize(workspace.root_for_file(&source, gopls)).unwrap();
+
+        assert_eq!(selected_root(), fs::canonicalize(root.path()).unwrap());
+        fs::remove_file(root.path().join("go.work")).unwrap();
+        assert_eq!(selected_root(), fs::canonicalize(&module).unwrap());
+        fs::remove_file(module.join("go.mod")).unwrap();
+        fs::write(module.join("go.sum"), "").unwrap();
+        assert_eq!(selected_root(), fs::canonicalize(&module).unwrap());
+        fs::remove_file(module.join("go.sum")).unwrap();
+        assert_eq!(selected_root(), fs::canonicalize(root.path()).unwrap());
     }
 
     #[test]

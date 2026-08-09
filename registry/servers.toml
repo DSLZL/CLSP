@@ -160,11 +160,11 @@ display_name = "gopls"
 language_id = "go"
 version_req = ">=0.15.0, <1.0.0"
 extensions = ["go"]
-markers = ["go.work", "go.mod"]
+markers = ["go.work", "go.mod", "go.sum"]
 command = "gopls"
 args = []
 version_args = ["version"]
-install = { kind = "command", version = "v0.19.1", program = "go", args = ["install", "golang.org/x/tools/gopls@v0.19.1"] }
+install = { kind = "command", version = "v0.23.0", program = "go", args = ["install", "golang.org/x/tools/gopls@v0.23.0"] }
 
 [[server]]
 id = "clangd"
