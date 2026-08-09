@@ -354,6 +354,7 @@ dart
 deno
 elixir-ls
 eslint
+fsharp
 gopls
 pyright
 rust

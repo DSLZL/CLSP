@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 14] = [
+const APPROVED_IDS: [&str; 15] = [
     "astro",
     "bash",
     "csharp",
@@ -15,16 +15,18 @@ const APPROVED_IDS: [&str; 14] = [
     "deno",
     "elixir-ls",
     "eslint",
+    "fsharp",
     "gopls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 39] = [
+const APPROVED_EXTENSIONS: [&str; 43] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
-    "cxx", "dart", "edn", "ex", "exs", "go", "h", "h++", "hh", "hpp", "hxx", "js", "jsx", "ksh",
-    "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "go", "h", "h++", "hh",
+    "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "vue",
+    "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -298,9 +300,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_fourteen_server_set() {
+    fn builtin_is_the_closed_fifteen_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 14);
+        assert_eq!(registry.server.len(), 15);
         assert_eq!(
             registry
                 .server
@@ -359,6 +361,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["eslint"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".FSX")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fsharp"]
         );
         assert!(registry.matching_extension("java").next().is_none());
     }
@@ -441,6 +450,43 @@ mod tests {
                 "roslyn-language-server",
                 "--version",
                 "5.9.0-1.26303.1",
+            ]
+        );
+    }
+
+    #[test]
+    fn fsharp_uses_the_locked_official_language_server() {
+        let registry = Registry::builtin().unwrap();
+        let fsharp = registry.server("fsharp").unwrap();
+        assert_eq!(fsharp.language_id, "fsharp");
+        assert_eq!(fsharp.version_req, "=0.83.0");
+        assert_eq!(fsharp.extensions, ["fs", "fsi", "fsx", "fsscript"]);
+        assert_eq!(
+            fsharp.markers,
+            ["*.slnx", "*.sln", "*.fsproj", "global.json"]
+        );
+        assert_eq!(fsharp.command, "fsautocomplete");
+        assert!(fsharp.args.is_empty());
+        assert_eq!(fsharp.version_args, ["--version"]);
+        let InstallRecipe::Command {
+            version,
+            program,
+            args,
+        } = &fsharp.install
+        else {
+            panic!("F# must use the dotnet tool recipe");
+        };
+        assert_eq!(version, "0.83.0");
+        assert_eq!(program, "dotnet");
+        assert_eq!(
+            args,
+            &[
+                "tool",
+                "install",
+                "--global",
+                "fsautocomplete",
+                "--version",
+                "0.83.0",
             ]
         );
     }

@@ -68,6 +68,7 @@ After setup:
 | Deno | Deno Language Server | Manual Deno CLI |
 | Elixir | ElixirLS | Reuse official VS Code release or manual ElixirLS release |
 | ESLint | ESLint Language Server | Reuse official VS Code extension; project-local ESLint required |
+| F# | FsAutoComplete | Reuse official Ionide VS Code extension, otherwise `dotnet tool` |
 | Go | gopls | `go install` |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
@@ -85,6 +86,8 @@ Deno support is enabled only below `deno.json` or `deno.jsonc`. It reuses `deno`
 Elixir support covers `.ex` and `.exs` below the nearest `mix.exs` or `mix.lock`. It requires local Erlang/OTP and Elixir, then reuses an official `JakeBecker.elixir-ls` VS Code release or an explicitly configured ElixirLS `0.31.x` launcher. CLSP does not install the runtime or server; start ElixirLS only in trusted Mix projects because it compiles project and dependency code.
 
 ESLint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, and `.vue`. It requires Node.js, project-local `eslint`, and the official `dbaeumer.vscode-eslint` `3.0.x` server from a standard VS Code extension directory or an explicit path. CLSP installs none of them; use ESLint only in trusted projects because configurations and plugins execute project code.
+
+F# support covers `.fs`, `.fsi`, `.fsx`, and `.fsscript` below the nearest solution, F# project, or `global.json`. CLSP reuses the official `Ionide.Ionide-fsharp` extension before an exact global FsAutoComplete tool and can install/update that tool through an existing .NET SDK. Use it only in trusted projects because MSBuild targets can execute project code.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

@@ -66,6 +66,7 @@ clsp setup --workspace .
 | Deno | Deno Language Server | 手动安装 Deno CLI |
 | Elixir | ElixirLS | 复用官方 VS Code release 或手动安装的 ElixirLS release |
 | ESLint | ESLint Language Server | 复用官方 VS Code 扩展；项目需本地安装 ESLint |
+| F# | FsAutoComplete | 优先复用官方 Ionide VS Code 扩展，否则使用 `dotnet tool` |
 | Go | gopls | `go install` |
 | Python | Pyright | npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
@@ -83,6 +84,8 @@ Deno 支持只会在 `deno.json` 或 `deno.jsonc` 所在目录树中启用。CLS
 Elixir 支持 `.ex` 与 `.exs`，根目录取最近的 `mix.exs` 或 `mix.lock`。本机必须已有 Erlang/OTP 和 Elixir；CLSP 会复用官方 `JakeBecker.elixir-ls` VS Code release，或显式配置的 ElixirLS `0.31.x` launcher，但不会安装 runtime 或 server。ElixirLS 会编译项目及依赖代码，因此只应在可信 Mix 项目中启动。
 
 ESLint 支持 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.mts`、`.cts` 与 `.vue`。本机必须已有 Node.js，项目根必须本地安装 `eslint`，并复用标准 VS Code 扩展目录中的官方 `dbaeumer.vscode-eslint` `3.0.x` server 或显式路径；CLSP 不安装这些组件。ESLint 配置和插件会执行项目代码，因此只应在可信项目中启动。
+
+F# 支持 `.fs`、`.fsi`、`.fsx` 与 `.fsscript`，根目录取最近的解决方案、F# 项目或 `global.json`。CLSP 会先复用官方 `Ionide.Ionide-fsharp` 扩展，再检查精确版本的全局 FsAutoComplete，并可通过已有的 .NET SDK 安装或更新该工具。MSBuild target 可能执行项目代码，因此只应在可信项目中启动。
 
 如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
 

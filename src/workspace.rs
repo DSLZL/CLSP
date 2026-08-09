@@ -493,6 +493,37 @@ mod tests {
     }
 
     #[test]
+    fn fsharp_files_use_the_nearest_project_root() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("src/Demo");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("Demo.fsproj"), "<Project />").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+
+        for name in ["Demo.fs", "Types.fsi", "Script.fsx", "Build.fsscript"] {
+            let file = nested.join(name);
+            fs::write(&file, "module Demo").unwrap();
+            assert_eq!(
+                workspace
+                    .matching_servers(
+                        &file,
+                        file.extension().unwrap().to_str().unwrap(),
+                        &registry
+                    )
+                    .into_iter()
+                    .map(|server| server.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["fsharp"]
+            );
+            assert_eq!(
+                workspace.root_for_file(&file, registry.server("fsharp").unwrap()),
+                nested
+            );
+        }
+    }
+
+    #[test]
     fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
         let root = tempfile::tempdir().unwrap();
         let deno_root = root.path().join("deno-app");
