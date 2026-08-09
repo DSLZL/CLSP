@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 16] = [
+const APPROVED_IDS: [&str; 17] = [
     "astro",
     "bash",
     "csharp",
@@ -18,16 +18,17 @@ const APPROVED_IDS: [&str; 16] = [
     "fsharp",
     "gleam",
     "gopls",
+    "hls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 44] = [
+const APPROVED_EXTENSIONS: [&str; 46] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
-    "hh", "hpp", "hxx", "js", "jsx", "ksh", "mjs", "mts", "py", "pyi", "rs", "sh", "ts", "tsx",
-    "vue", "yaml", "yml", "zsh",
+    "hh", "hpp", "hs", "hxx", "js", "jsx", "ksh", "lhs", "mjs", "mts", "py", "pyi", "rs", "sh",
+    "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -301,9 +302,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_sixteen_server_set() {
+    fn builtin_is_the_closed_seventeen_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 16);
+        assert_eq!(registry.server.len(), 17);
         assert_eq!(
             registry
                 .server
@@ -377,6 +378,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["gleam"]
         );
+        assert_eq!(
+            registry
+                .matching_extension(".LHS")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hls"]
+        );
         assert!(registry.matching_extension("java").next().is_none());
     }
 
@@ -448,6 +456,29 @@ mod tests {
         assert_eq!(version, "v0.23.0");
         assert_eq!(program, "go");
         assert_eq!(args, &["install", "golang.org/x/tools/gopls@v0.23.0"]);
+    }
+
+    #[test]
+    fn hls_uses_the_opencode_contract_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let hls = registry.server("hls").unwrap();
+        assert_eq!(hls.language_id, "haskell");
+        assert_eq!(hls.version_req, ">=2.0.0, <3.0.0");
+        assert_eq!(hls.extensions, ["hs", "lhs"]);
+        assert_eq!(
+            hls.markers,
+            ["stack.yaml", "cabal.project", "hie.yaml", "*.cabal"]
+        );
+        assert_eq!(hls.command, "haskell-language-server-wrapper");
+        assert_eq!(hls.args, ["--lsp"]);
+        assert_eq!(hls.version_args, ["--numeric-version"]);
+        let InstallRecipe::Manual { version, hint } = &hls.install else {
+            panic!("HLS must use a manual recipe");
+        };
+        assert_eq!(version, "2.14.0.0");
+        assert!(hint.contains("GHCup"));
+        assert!(hint.contains("[lsp.hls].executable"));
+        assert!(hint.contains("haskell.haskell"));
     }
 
     #[test]

@@ -167,6 +167,18 @@ version_args = ["version"]
 install = { kind = "command", version = "v0.23.0", program = "go", args = ["install", "golang.org/x/tools/gopls@v0.23.0"] }
 
 [[server]]
+id = "hls"
+display_name = "Haskell Language Server"
+language_id = "haskell"
+version_req = ">=2.0.0, <3.0.0"
+extensions = ["hs", "lhs"]
+markers = ["stack.yaml", "cabal.project", "hie.yaml", "*.cabal"]
+command = "haskell-language-server-wrapper"
+args = ["--lsp"]
+version_args = ["--numeric-version"]
+install = { kind = "manual", version = "2.14.0.0", hint = "Install a supported GHC toolchain and Haskell Language Server 2.x with GHCup (validated with 2.14.0.0), then ensure haskell-language-server-wrapper is on PATH or set [lsp.hls].executable; the official haskell.haskell VS Code extension uses an external HLS" }
+
+[[server]]
 id = "clangd"
 display_name = "clangd"
 language_id = "cpp"

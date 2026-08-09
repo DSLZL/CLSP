@@ -71,6 +71,7 @@ After setup:
 | F# | FsAutoComplete | Reuse official Ionide VS Code extension, otherwise `dotnet tool` |
 | Gleam | Gleam Language Server | Manual Gleam compiler |
 | Go | gopls | `go install` |
+| Haskell | Haskell Language Server | Manual GHCup/HLS toolchain |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
@@ -93,6 +94,8 @@ F# support covers `.fs`, `.fsi`, `.fsx`, and `.fsscript` below the nearest solut
 Gleam support covers `.gleam` files below the nearest `gleam.toml`, with the workspace root as the fallback. CLSP reuses a compatible Gleam `1.x` compiler from `PATH` or `[lsp.gleam].executable` and starts its built-in `gleam lsp`; it does not install Gleam, Erlang/OTP, or scan the official `Gleam.gleam` extension for a bundled server. The extension uses the same external compiler and can independently publish VS Code Problems through the IDE bridge.
 
 Go support covers `.go` files. A `go.work` anywhere between the file and workspace root takes priority over the nearest `go.mod` or `go.sum`; CLSP reuses a compatible `gopls` or installs the pinned version through the existing Go toolchain. The official `golang.Go` VS Code extension is a separate client of the same external server and can independently publish Problems through the IDE bridge.
+
+Haskell support covers `.hs` and `.lhs` files below the nearest `stack.yaml`, `cabal.project`, `hie.yaml`, or `*.cabal`, with the workspace root as the fallback. CLSP reuses a compatible HLS `2.x` wrapper from `PATH` or `[lsp.hls].executable` and starts `haskell-language-server-wrapper --lsp`; it does not install or select GHC/HLS versions. The official `haskell.haskell` extension is an independent client of an external HLS and can publish Problems through the IDE bridge. Start HLS only in trusted projects because project cradle/build configuration may execute code.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

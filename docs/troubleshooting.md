@@ -226,6 +226,31 @@ CLSP reuses any compatible `gopls` and otherwise runs `go install golang.org/x/t
 
 For root selection, any `go.work` between the file and workspace root wins over a nested `go.mod` or `go.sum`. If no marker exists, CLSP uses the workspace root. The official `golang.Go` extension resolves the same external server independently; installing the extension alone does not provide CLSP with a bundled copy.
 
+## Haskell Language Server cannot be resolved
+
+CLSP does not install GHCup, GHC, Cabal, Stack, or HLS. Check the toolchain and wrapper visible to the current process:
+
+```powershell
+where.exe ghcup
+where.exe ghc
+where.exe cabal
+where.exe stack
+where.exe haskell-language-server-wrapper
+ghc --numeric-version
+haskell-language-server-wrapper --numeric-version
+haskell-language-server-wrapper --probe-tools
+code --list-extensions --show-versions | Select-String haskell.haskell
+```
+
+HLS must include a binary compatible with the project's GHC. The registry accepts HLS `2.x` and the current validation baseline is HLS `2.14.0.0` with GHC `9.12.4`. If the wrapper is outside `PATH`, configure it directly:
+
+```toml
+[lsp.hls]
+executable = "C:/tools/ghcup/bin/haskell-language-server-wrapper.exe"
+```
+
+The nearest `stack.yaml`, `cabal.project`, `hie.yaml`, or `*.cabal` selects the root; otherwise CLSP uses the workspace root. The official `haskell.haskell` extension resolves external HLS versions independently and may place them in configurable globalStorage that CLSP does not scan. Configure the extension for `PATH` or give both clients explicit paths when they must share the same toolchain. Run probes and HLS only in trusted projects because cradle/build configuration may execute code.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.

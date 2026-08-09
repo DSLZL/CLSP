@@ -357,6 +357,7 @@ eslint
 fsharp
 gleam
 gopls
+hls
 pyright
 rust
 typescript

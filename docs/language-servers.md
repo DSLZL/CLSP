@@ -22,6 +22,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
+| `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
 
@@ -101,6 +102,25 @@ CLSP does not override `GOBIN`. It asks Go for `GOBIN` / `GOPATH` and reuses the
 For `.go` files, CLSP first searches up to the workspace boundary for `go.work`. If none exists, the nearest `go.mod` or `go.sum` is used; otherwise the workspace root is the fallback.
 
 The official `golang.Go` VS Code extension uses the same external `gopls` and may install or update it independently. It does not carry a server binary for CLSP to scan, but its Problems remain available through the existing IDE bridge.
+
+### Haskell
+
+Haskell Language Server must match the GHC used by the project. Install a supported GHC and the Cabal or Stack tooling required by the project, then install HLS through GHCup:
+
+```powershell
+ghcup install hls 2.14.0.0
+```
+
+The current validation baseline is HLS `2.14.0.0` with GHC `9.12.4`. CLSP accepts compatible HLS `2.x` wrappers, recognizes HLS's four-component PVP version output, and does not install GHCup, GHC, Cabal, Stack, HLS, or editor extensions.
+
+CLSP starts `haskell-language-server-wrapper --lsp` for `.hs` and `.lhs` files. It uses the nearest `stack.yaml`, `cabal.project`, `hie.yaml`, or `*.cabal` directory, falling back to the workspace root. Configure a wrapper outside `PATH` explicitly:
+
+```toml
+[lsp.hls]
+executable = "C:/tools/ghcup/bin/haskell-language-server-wrapper.exe"
+```
+
+The official `haskell.haskell` VS Code extension resolves an external HLS through its own explicit path, `PATH`, or GHCup workflow. CLSP does not scan its configurable globalStorage or reproduce its project-GHC version selection; set the extension to use `PATH` when both clients should share the same toolchain. Its Problems remain available through the existing IDE bridge. Start HLS only in trusted projects because Cabal, Stack, and cradle configuration may execute project code.
 
 ### C#
 

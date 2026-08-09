@@ -1216,9 +1216,29 @@ fn parse_version(output: &str) -> Option<Version> {
             let candidate = candidate.strip_prefix('v').unwrap_or(candidate);
             Version::parse(candidate)
                 .ok()
+                .or_else(|| parse_pvp_version(candidate))
                 .or_else(|| parse_calendar_version(candidate))
         })
         .next()
+}
+
+fn parse_pvp_version(candidate: &str) -> Option<Version> {
+    let parse_component = |value: &str| {
+        (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| value.parse().ok())
+            .flatten()
+    };
+    let mut components = candidate.split('.');
+    let major = parse_component(components.next()?)?;
+    let minor = parse_component(components.next()?)?;
+    let patch = parse_component(components.next()?)?;
+    let _revision: u64 = parse_component(components.next()?)?;
+    if components.next().is_some() {
+        return None;
+    }
+
+    // ponytail: SemVer has three numeric components; keep the PVP revision in the raw probe output.
+    Some(Version::new(major, minor, patch))
 }
 
 fn parse_calendar_version(candidate: &str) -> Option<Version> {
@@ -3239,6 +3259,7 @@ mod tests {
                 Version::new(2, 8, 1),
             ),
             ("gleam 1.18.1", Version::new(1, 18, 1)),
+            ("2.14.0.0", Version::new(2, 14, 0)),
         ] {
             assert_eq!(parse_version(output), Some(expected));
         }
@@ -3248,6 +3269,9 @@ mod tests {
             validate_version_output("clojure-lsp 2026.07.06-14.34.19", ">=2026.7.6, <2027.0.0")
                 .is_ok()
         );
+        assert!(validate_version_output("2.14.0.0", ">=2.0.0, <3.0.0").is_ok());
+        assert!(validate_version_output("3.0.0.0", ">=2.0.0, <3.0.0").is_err());
+        assert_eq!(parse_version("2.14.0.0.1"), None);
         for invalid in [
             "2026.02.29-14.34.19",
             "2026.13.06-14.34.19",

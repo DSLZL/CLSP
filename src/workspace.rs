@@ -592,6 +592,42 @@ mod tests {
     }
 
     #[test]
+    fn haskell_files_use_the_nearest_project_root_or_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("apps/demo");
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(project.join("demo.cabal"), "cabal-version: 3.0").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let hls = registry.server("hls").unwrap();
+
+        for name in ["Main.hs", "Notes.lhs"] {
+            let file = source_dir.join(name);
+            fs::write(&file, "module Demo where").unwrap();
+            assert_eq!(
+                workspace
+                    .matching_servers(
+                        &file,
+                        file.extension().unwrap().to_str().unwrap(),
+                        &registry
+                    )
+                    .into_iter()
+                    .map(|server| server.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["hls"]
+            );
+            assert_eq!(workspace.root_for_file(&file, hls), project);
+        }
+
+        fs::remove_file(project.join("demo.cabal")).unwrap();
+        assert_eq!(
+            workspace.root_for_file(&source_dir.join("Main.hs"), hls),
+            fs::canonicalize(root.path()).unwrap()
+        );
+    }
+
+    #[test]
     fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
         let root = tempfile::tempdir().unwrap();
         let deno_root = root.path().join("deno-app");
