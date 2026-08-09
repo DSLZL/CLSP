@@ -30,6 +30,12 @@ jobs:
     steps:
       - checkout:
           method: full
+      - run:
+          name: Install Windows Rust target
+          command: rustup target add x86_64-pc-windows-msvc
+      - run:
+          name: Generate Clippy report
+          command: cargo clippy --all-targets --locked --target x86_64-pc-windows-msvc --message-format=json -- -D warnings > clippy-report.json
       - sonarcloud/scan
 
 workflows:
