@@ -95,6 +95,18 @@ version_args = []
 install = { kind = "manual", version = "3.0.34", hint = "Install Node.js and the official dbaeumer.vscode-eslint 3.0.34 VS Code extension, and add eslint to this project; otherwise set [lsp.eslint].executable to the extension's server/out/eslintServer.js" }
 
 [[server]]
+id = "fsharp"
+display_name = "FsAutoComplete"
+language_id = "fsharp"
+version_req = "=0.83.0"
+extensions = ["fs", "fsi", "fsx", "fsscript"]
+markers = ["*.slnx", "*.sln", "*.fsproj", "global.json"]
+command = "fsautocomplete"
+args = []
+version_args = ["--version"]
+install = { kind = "command", version = "0.83.0", program = "dotnet", args = ["tool", "install", "--global", "fsautocomplete", "--version", "0.83.0"] }
+
+[[server]]
 id = "rust"
 display_name = "rust-analyzer"
 language_id = "rust"

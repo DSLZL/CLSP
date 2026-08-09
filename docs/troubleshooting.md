@@ -226,6 +226,26 @@ CLSP expects the pinned `roslyn-language-server` global tool version defined in 
 
 If your global tool state is broken, repair it with `dotnet tool` and rerun the CLSP operation.
 
+## F# server cannot be resolved
+
+CLSP requires a compatible local .NET SDK/runtime and accepts FsAutoComplete `0.83.0`. Check both the global tool and the official Ionide extension:
+
+```powershell
+dotnet --info
+dotnet tool list --global fsautocomplete
+fsautocomplete --version
+code --list-extensions --show-versions | Select-String Ionide.Ionide-fsharp
+```
+
+The supported standard extension layout is the official `Ionide.Ionide-fsharp` `7.31.x` `bin/net*/fsautocomplete.dll` plus its runtime files. For a custom extensions directory, point CLSP at that DLL explicitly:
+
+```toml
+[lsp.fsharp]
+executable = "C:/tools/ionide/bin/net8.0/fsautocomplete.dll"
+```
+
+If neither source is usable and automatic installation is enabled, CLSP installs or updates the exact global tool through `dotnet`. Run FsAutoComplete only in trusted projects because MSBuild targets can execute project code.
+
 ## Dart server cannot be resolved
 
 CLSP does not install the Dart or Flutter SDK. Check that a compatible Dart SDK is available:

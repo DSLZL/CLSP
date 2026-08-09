@@ -35,6 +35,7 @@ const CLOJURE_SERVER_ID: &str = "clojure-lsp";
 const ELIXIR_LS_SERVER_ID: &str = "elixir-ls";
 const DENO_SERVER_ID: &str = "deno";
 const ESLINT_SERVER_ID: &str = "eslint";
+const FSHARP_SERVER_ID: &str = "fsharp";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -283,6 +284,12 @@ impl LspClient {
             let mut command = Command::new(node);
             command.arg(options.executable);
             command
+        } else if uses_dotnet_host(options.server_id, options.executable) {
+            let dotnet = which::which("dotnet")
+                .map_err(|_| runtime_error("FsAutoComplete requires the .NET runtime"))?;
+            let mut command = Command::new(dotnet);
+            command.arg(options.executable);
+            command
         } else {
             Command::new(options.executable)
         };
@@ -364,6 +371,7 @@ impl LspClient {
                     "hover": {"contentFormat": ["markdown", "plaintext"]},
                     "definition": {"linkSupport": true},
                     "references": {},
+                    "publishDiagnostics": {},
                     "diagnostic": {}
                 },
                 "workspace": {"workspaceFolders": true, "configuration": true}
@@ -401,6 +409,7 @@ impl LspClient {
         let text = tokio::fs::read_to_string(&path)
             .await
             .map_err(server_error)?;
+        let text = strip_utf8_bom(&text).to_owned();
         let mut documents = self.documents.lock().await;
         if documents
             .get(&path)
@@ -739,14 +748,15 @@ async fn reader_loop(
         let Ok(path) = workspace.resolve_file(raw_path, max_file_bytes) else {
             continue;
         };
-        let text = {
+        let open_document = {
             let open = documents.lock().await;
-            open.get(&path).map(|document| document.text.clone())
+            open.get(&path)
+                .map(|document| (document.text.clone(), document.version))
         };
-        let text = match text {
-            Some(text) => text,
+        let (text, open_version) = match open_document {
+            Some((text, version)) => (text, Some(version)),
             None => match tokio::fs::read_to_string(&path).await {
-                Ok(text) => text,
+                Ok(text) => (strip_utf8_bom(&text).to_owned(), None),
                 Err(_) => continue,
             },
         };
@@ -763,10 +773,11 @@ async fn reader_loop(
             *encoding.read().await,
             max_diagnostics_per_file,
         );
-        let version = params
+        let reported_version = params
             .get("version")
             .and_then(Value::as_i64)
             .and_then(|value| i32::try_from(value).ok());
+        let version = diagnostic_version(&server_id, reported_version, open_version);
         diagnostics.publish(path, version, converted).await;
     }
 }
@@ -1087,6 +1098,9 @@ fn server_initialization_options(
     if server_id == DENO_SERVER_ID {
         return Ok(Some(json!({"enable": true})));
     }
+    if server_id == FSHARP_SERVER_ID {
+        return Ok(Some(json!({"AutomaticWorkspaceInit": true})));
+    }
     if !matches!(server_id, ASTRO_SERVER_ID | TYPESCRIPT_SERVER_ID) {
         return Ok(None);
     }
@@ -1101,6 +1115,30 @@ fn server_initialization_options(
             "typescript": {"tsdk": tsdk.to_string_lossy()}
         })
     }))
+}
+
+fn uses_dotnet_host(server_id: &str, executable: &Path) -> bool {
+    server_id == FSHARP_SERVER_ID
+        && executable
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+}
+
+fn strip_utf8_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
+fn diagnostic_version(
+    server_id: &str,
+    reported_version: Option<i32>,
+    open_version: Option<i32>,
+) -> Option<i32> {
+    reported_version.or_else(|| {
+        (server_id == FSHARP_SERVER_ID)
+            .then_some(open_version)
+            .flatten()
+    })
 }
 
 fn astro_typescript_sdk(
@@ -1342,6 +1380,51 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(options, json!({"enable": true}));
+    }
+
+    #[test]
+    fn fsharp_initialization_and_dll_host_are_explicit() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let dll = root.join("fsautocomplete.DLL");
+        let options = server_initialization_options(FSHARP_SERVER_ID, root, root, &dll, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(options, json!({"AutomaticWorkspaceInit": true}));
+        assert!(uses_dotnet_host(FSHARP_SERVER_ID, &dll));
+        assert!(!uses_dotnet_host("csharp", &dll));
+        assert!(!uses_dotnet_host(
+            FSHARP_SERVER_ID,
+            &root.join("fsautocomplete.exe")
+        ));
+        assert_eq!(strip_utf8_bom("\u{feff}let value = 1"), "let value = 1");
+        assert_eq!(strip_utf8_bom("let value = 1"), "let value = 1");
+        assert_eq!(diagnostic_version(FSHARP_SERVER_ID, None, Some(2)), Some(2));
+        assert_eq!(diagnostic_version("rust", None, Some(2)), None);
+        assert_eq!(
+            diagnostic_version(FSHARP_SERVER_ID, Some(1), Some(2)),
+            Some(1)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fsharp_diagnostic_uri_round_trips_an_encoded_lowercase_drive() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("Program.fs");
+        std::fs::write(&file, "module Demo").unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        assert!(!path_to_uri(workspace.root()).unwrap().contains("%3F"));
+        let ordinary = canonical
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/");
+        let (drive, rest) = ordinary.split_once(':').unwrap();
+        let uri = format!("file:///{}%3A{rest}", drive.to_ascii_lowercase());
+
+        let raw = uri_to_path(&uri).unwrap();
+        assert_eq!(workspace.resolve_file(raw, 1024).unwrap(), canonical);
     }
 
     #[test]

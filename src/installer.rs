@@ -34,6 +34,9 @@ const ROSLYN_LANGUAGE_SERVER_PACKAGE: &str = "roslyn-language-server";
 const ELIXIR_LS_SERVER_ID: &str = "elixir-ls";
 const ELIXIR_LS_VERSION_FILE_LIMIT: u64 = 128;
 const ESLINT_SERVER_ID: &str = "eslint";
+const FSHARP_SERVER_ID: &str = "fsharp";
+const FSHARP_LANGUAGE_SERVER_PACKAGE: &str = "fsautocomplete";
+const IONIDE_FSHARP_VERSION_REQ: &str = ">=7.31.1, <7.32.0";
 const PRESERVED_ENV: &[&str] = &[
     "SystemRoot",
     "WINDIR",
@@ -183,6 +186,11 @@ impl ServerResolver {
         {
             return Ok(resolution);
         }
+        if server.id == FSHARP_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_fsharp(server, workspace).await
+        {
+            return Ok(resolution);
+        }
 
         if matches!(server.install, InstallRecipe::Npm { .. }) {
             let manager = self
@@ -238,6 +246,11 @@ impl ServerResolver {
 
         let _guard = self.install_lock.lock().await;
         if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
+            return Ok(resolution);
+        }
+        if server.id == FSHARP_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_fsharp(server, workspace).await
+        {
             return Ok(resolution);
         }
         if let InstallRecipe::GithubZip {
@@ -423,6 +436,31 @@ impl ServerResolver {
     ) -> Option<ResolvedExecutable> {
         let home = self.vscode_user_home.as_deref()?;
         for candidate in vscode_eslint_candidates_from(home) {
+            if let Some(resolution) = self
+                .resolve_candidate(
+                    server,
+                    workspace,
+                    candidate,
+                    ExecutableSource::VsCodeExtension,
+                )
+                .await
+            {
+                return Some(resolution);
+            }
+        }
+        None
+    }
+
+    async fn resolve_vscode_fsharp(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_fsharp_candidates_from(home) {
+            if validate_vscode_fsharp_extension(&candidate).is_err() {
+                continue;
+            }
             if let Some(resolution) = self
                 .resolve_candidate(
                     server,
@@ -769,7 +807,7 @@ impl ServerResolver {
         installed: bool,
     ) -> Result<Option<ResolvedExecutable>, ClspError> {
         let candidate = match server.id.as_str() {
-            "csharp" => self.dotnet_tool_candidate(server, program).await?,
+            "csharp" | FSHARP_SERVER_ID => self.dotnet_tool_candidate(server, program).await?,
             "gopls" => self.gopls_candidate(program).await?,
             "rust" => self.rustup_candidate(program, workspace, installed).await?,
             _ => None,
@@ -801,13 +839,15 @@ impl ServerResolver {
         program: &Path,
         args: &[String],
     ) -> Result<ResolvedExecutable, ClspError> {
-        let dotnet_version = match (&*server.id, &server.install) {
-            ("csharp", InstallRecipe::Command { version, .. }) => Some(version.as_str()),
+        let dotnet_tool = match (&server.install, dotnet_tool_package(&server.id)) {
+            (InstallRecipe::Command { version, .. }, Some(package)) => {
+                Some((package, version.as_str()))
+            }
             _ => None,
         };
-        let command_args = if dotnet_version.is_some() {
+        let command_args = if let Some((package, _)) = dotnet_tool {
             let installed = self
-                .dotnet_global_tool_version(program, ROSLYN_LANGUAGE_SERVER_PACKAGE)
+                .dotnet_global_tool_version(program, package)
                 .await?
                 .is_some();
             dotnet_tool_command_args(args, installed)?
@@ -828,10 +868,8 @@ impl ServerResolver {
         )
         .await?;
 
-        if let Some(expected) = dotnet_version {
-            let actual = self
-                .dotnet_global_tool_version(program, ROSLYN_LANGUAGE_SERVER_PACKAGE)
-                .await?;
+        if let Some((package, expected)) = dotnet_tool {
+            let actual = self.dotnet_global_tool_version(program, package).await?;
             if actual.as_deref() != Some(expected) {
                 return Err(server_error(format!(
                     "{} installed dotnet tool version {}, expected {expected}",
@@ -889,8 +927,11 @@ impl ServerResolver {
         let InstallRecipe::Command { version, .. } = &server.install else {
             return Ok(None);
         };
+        let Some(package) = dotnet_tool_package(&server.id) else {
+            return Ok(None);
+        };
         if self
-            .dotnet_global_tool_version(dotnet, ROSLYN_LANGUAGE_SERVER_PACKAGE)
+            .dotnet_global_tool_version(dotnet, package)
             .await?
             .as_deref()
             != Some(version)
@@ -987,6 +1028,26 @@ impl ServerResolver {
         }
         if server.id == ESLINT_SERVER_ID {
             return probe_vscode_eslint_server(executable, working_dir, &server.version_req).await;
+        }
+        if server.id == FSHARP_SERVER_ID
+            && executable
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+        {
+            if !executable.is_file() {
+                return Err(server_error("FsAutoComplete DLL candidate is not a file"));
+            }
+            let dotnet = self.require_program("dotnet").await?;
+            let mut args = vec![executable.to_string_lossy().into_owned()];
+            args.extend(server.version_args.iter().cloned());
+            let version_output = self
+                .probe_compatible(&dotnet, &args, working_dir, &server.version_req)
+                .await?;
+            return Ok(ServerProbe {
+                version_output,
+                npm_modules_root: None,
+            });
         }
         match &server.install {
             InstallRecipe::Npm { package, .. } => {
@@ -1461,11 +1522,51 @@ fn vscode_eslint_candidates_from(user_home: &Path) -> Vec<PathBuf> {
     )
 }
 
+fn vscode_fsharp_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for (_, root) in vscode_extension_roots_from(user_home, "ionide.ionide-fsharp-") {
+        let Ok(entries) = std::fs::read_dir(root.join("bin")) else {
+            continue;
+        };
+        let mut frameworks: Vec<_> = entries
+            .filter_map(Result::ok)
+            .take(VSCODE_EXTENSION_ENTRY_LIMIT)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|name| name.starts_with("net"))
+            })
+            .collect();
+        frameworks.sort();
+        candidates.extend(frameworks.into_iter().filter_map(|framework| {
+            let executable = framework.join("fsautocomplete.dll");
+            executable.is_file().then_some(executable)
+        }));
+    }
+    candidates
+}
+
 fn vscode_extension_candidates_from(
     user_home: &Path,
     extension_prefix: &str,
     relative_executable: &Path,
 ) -> Vec<PathBuf> {
+    vscode_extension_roots_from(user_home, extension_prefix)
+        .into_iter()
+        .filter_map(|(_, root)| {
+            let executable = root.join(relative_executable);
+            executable.is_file().then_some(executable)
+        })
+        .collect()
+}
+
+fn vscode_extension_roots_from(
+    user_home: &Path,
+    extension_prefix: &str,
+) -> Vec<(Version, PathBuf)> {
     let mut candidates = Vec::new();
     let mut seen = BTreeSet::new();
     for root in [
@@ -1495,9 +1596,8 @@ fn vscode_extension_candidates_from(
             else {
                 continue;
             };
-            let executable = path.join(relative_executable);
-            if executable.is_file() && seen.insert(executable.clone()) {
-                candidates.push((version, executable));
+            if path.is_dir() && seen.insert(path.clone()) {
+                candidates.push((version, path));
             }
         }
     }
@@ -1506,7 +1606,97 @@ fn vscode_extension_candidates_from(
             .cmp(left_version)
             .then_with(|| left_path.cmp(right_path))
     });
-    candidates.into_iter().map(|(_, path)| path).collect()
+    candidates
+}
+
+fn vscode_fsharp_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let name_is = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    if !executable.is_file() || !name_is(executable, "fsautocomplete.dll") {
+        return Err(server_error(
+            "F# candidate is not the official fsautocomplete.dll entry",
+        ));
+    }
+    let framework = executable
+        .parent()
+        .filter(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(|name| name.starts_with("net"))
+        })
+        .ok_or_else(|| server_error("FsAutoComplete entry is outside bin/net*"))?;
+    let bin = framework
+        .parent()
+        .filter(|path| name_is(path, "bin"))
+        .ok_or_else(|| server_error("FsAutoComplete entry is outside bin/net*"))?;
+    bin.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| server_error("FsAutoComplete entry has no extension root"))
+}
+
+fn validate_vscode_fsharp_extension(executable: &Path) -> Result<(), ClspError> {
+    let extension_root = vscode_fsharp_extension_root(executable)?;
+    for sibling in [
+        "fsautocomplete.deps.json",
+        "fsautocomplete.runtimeconfig.json",
+    ] {
+        if !executable.with_file_name(sibling).is_file() {
+            return Err(server_error(format!(
+                "Ionide FsAutoComplete entry is missing {sibling}"
+            )));
+        }
+    }
+
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Ionide extension root has no name"))?;
+    let prefix = "ionide.ionide-fsharp-";
+    let directory_version = directory_name
+        .get(prefix.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..prefix.len())
+                .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("F# server is outside an official Ionide extension root"))?;
+
+    let manifest = extension_root.join("package.json");
+    let metadata = std::fs::metadata(&manifest).map_err(|error| {
+        server_error(format!(
+            "cannot inspect Ionide F# manifest {}: {error}",
+            manifest.display()
+        ))
+    })?;
+    if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+        return Err(server_error(
+            "Ionide F# manifest is not a bounded regular file",
+        ));
+    }
+    let bytes = std::fs::read(&manifest).map_err(server_error)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some("Ionide-fsharp")
+        || value.get("publisher").and_then(serde_json::Value::as_str) != Some("Ionide")
+    {
+        return Err(server_error(
+            "F# server is not from the official Ionide.Ionide-fsharp extension",
+        ));
+    }
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| server_error("Ionide F# manifest has no version"))?;
+    if Version::parse(version).map_err(server_error)? != directory_version {
+        return Err(server_error(
+            "Ionide F# manifest version does not match its extension directory",
+        ));
+    }
+    validate_version_output(version, IONIDE_FSHARP_VERSION_REQ)?;
+    Ok(())
 }
 
 fn vscode_eslint_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
@@ -1703,6 +1893,14 @@ fn dotnet_tool_candidates(home: &Path, command: &str) -> Vec<PathBuf> {
     executable_candidates_in(&home.join(".dotnet/tools"), command)
 }
 
+fn dotnet_tool_package(server_id: &str) -> Option<&'static str> {
+    match server_id {
+        "csharp" => Some(ROSLYN_LANGUAGE_SERVER_PACKAGE),
+        FSHARP_SERVER_ID => Some(FSHARP_LANGUAGE_SERVER_PACKAGE),
+        _ => None,
+    }
+}
+
 fn dotnet_tool_command_args(args: &[String], installed: bool) -> Result<Vec<String>, ClspError> {
     let mut args = args.to_vec();
     if installed {
@@ -1790,7 +1988,7 @@ pub(crate) fn resolution_fingerprint(
             ));
         }
     }
-    if server.id == "csharp" {
+    if matches!(server.id.as_str(), "csharp" | FSHARP_SERVER_ID) {
         for name in ["DOTNET_CLI_HOME", "USERPROFILE", "HOME"] {
             digest.update(
                 std::env::var_os(name)
@@ -1803,7 +2001,10 @@ pub(crate) fn resolution_fingerprint(
             candidates.extend(dotnet_tool_candidates(&home, &server.command));
         }
     }
-    if matches!(server.id.as_str(), ELIXIR_LS_SERVER_ID | ESLINT_SERVER_ID) {
+    if matches!(
+        server.id.as_str(),
+        ELIXIR_LS_SERVER_ID | ESLINT_SERVER_ID | FSHARP_SERVER_ID
+    ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
                 std::env::var_os(name)
@@ -1813,10 +2014,11 @@ pub(crate) fn resolution_fingerprint(
             );
         }
         if let Some(home) = vscode_user_home() {
-            if server.id == ELIXIR_LS_SERVER_ID {
-                candidates.extend(vscode_elixir_ls_candidates_from(&home));
-            } else {
-                candidates.extend(vscode_eslint_candidates_from(&home));
+            match server.id.as_str() {
+                ELIXIR_LS_SERVER_ID => candidates.extend(vscode_elixir_ls_candidates_from(&home)),
+                ESLINT_SERVER_ID => candidates.extend(vscode_eslint_candidates_from(&home)),
+                FSHARP_SERVER_ID => candidates.extend(vscode_fsharp_candidates_from(&home)),
+                _ => {}
             }
         }
     }
@@ -1838,6 +2040,19 @@ pub(crate) fn resolution_fingerprint(
             && let Ok(extension_root) = vscode_eslint_extension_root(&candidate)
         {
             hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+        }
+        if server.id == FSHARP_SERVER_ID
+            && let Ok(extension_root) = vscode_fsharp_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+            hash_executable_candidate(
+                &mut digest,
+                candidate.with_file_name("fsautocomplete.deps.json"),
+            );
+            hash_executable_candidate(
+                &mut digest,
+                candidate.with_file_name("fsautocomplete.runtimeconfig.json"),
+            );
         }
     }
     hex::encode(digest.finalize())
@@ -2155,6 +2370,34 @@ mod tests {
         .unwrap();
     }
 
+    fn write_fsharp_extension(
+        extension_root: &Path,
+        extension_version: &str,
+        framework: &str,
+    ) -> PathBuf {
+        let root = extension_root.join(format!("ionide.ionide-fsharp-{extension_version}"));
+        let server = root.join("bin").join(framework).join("fsautocomplete.dll");
+        std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+        for name in [
+            "fsautocomplete.dll",
+            "fsautocomplete.deps.json",
+            "fsautocomplete.runtimeconfig.json",
+        ] {
+            std::fs::write(server.with_file_name(name), b"server").unwrap();
+        }
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "Ionide-fsharp",
+                "publisher": "Ionide",
+                "version": extension_version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        server
+    }
+
     #[test]
     fn npm_manager_order_and_exact_argv_are_fixed() {
         assert_eq!(
@@ -2228,6 +2471,15 @@ mod tests {
         assert!(PRESERVED_ENV.contains(&"DOTNET_CLI_HOME"));
         assert!(PRESERVED_ENV.contains(&"DOTNET_ROOT"));
         assert!(PRESERVED_ENV.contains(&"ProgramFiles(x86)"));
+        assert_eq!(
+            dotnet_tool_package("csharp"),
+            Some(ROSLYN_LANGUAGE_SERVER_PACKAGE)
+        );
+        assert_eq!(
+            dotnet_tool_package(FSHARP_SERVER_ID),
+            Some(FSHARP_LANGUAGE_SERVER_PACKAGE)
+        );
+        assert_eq!(dotnet_tool_package("rust"), None);
     }
 
     #[tokio::test]
@@ -2517,6 +2769,44 @@ mod tests {
         std::fs::write(fake, b"server").unwrap();
 
         assert_eq!(vscode_eslint_candidates_from(root.path()), [newer, older]);
+    }
+
+    #[test]
+    fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let older =
+            write_fsharp_extension(&root.path().join(".vscode/extensions"), "7.30.0", "net8.0");
+        let newer_net8 = write_fsharp_extension(
+            &root.path().join(".vscode-insiders/extensions"),
+            "7.31.1",
+            "net8.0",
+        );
+        let newer_net9 = write_fsharp_extension(
+            &root.path().join(".vscode-insiders/extensions"),
+            "7.31.1",
+            "net9.0",
+        );
+        let fake = root
+            .path()
+            .join(".vscode/extensions/not-official.ionide-fsharp-9.9.9/bin/net9.0");
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(fake.join("fsautocomplete.dll"), b"server").unwrap();
+
+        assert_eq!(
+            vscode_fsharp_candidates_from(root.path()),
+            [newer_net8.clone(), newer_net9, older.clone()]
+        );
+        validate_vscode_fsharp_extension(&newer_net8).unwrap();
+        assert!(validate_vscode_fsharp_extension(&older).is_err());
+
+        std::fs::write(
+            vscode_fsharp_extension_root(&newer_net8)
+                .unwrap()
+                .join("package.json"),
+            br#"{"name":"Ionide-fsharp","publisher":"other","version":"7.31.1"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_fsharp_extension(&newer_net8).is_err());
     }
 
     #[tokio::test]

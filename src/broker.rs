@@ -49,6 +49,7 @@ const IDE_SESSION_TTL: Duration = Duration::from_secs(6);
 const IDE_DIAGNOSTIC_BASELINE_CAPACITY: usize = 64;
 const IDE_REVIEW_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const IDE_REVIEW_SCHEMA: u8 = 1;
+const FSHARP_SERVER_ID: &str = "fsharp";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1500,19 +1501,28 @@ impl Broker {
             self.set_state(&mut server, ServerState::Starting, None)
                 .await;
         }
-        let client = LspClient::start(LspStartOptions {
-            server_id: &definition.id,
-            executable: &resolution.path,
-            args: &definition.args,
-            root: &server_key.root,
-            workspace: self.workspace.clone(),
-            request_timeout: Duration::from_secs(10),
-            max_message_bytes: self.config.limits.max_response_bytes,
-            max_file_bytes: self.config.limits.max_file_bytes,
-            max_stderr_bytes: self.config.limits.max_stderr_bytes,
-            max_diagnostics_per_file: self.config.diagnostics.max_per_file,
-            npm_modules_root: resolution.npm_modules_root.as_deref(),
-        })
+        let client = async {
+            let args = lsp_start_args(
+                &definition.id,
+                &definition.args,
+                &server_key.root,
+                &self.paths().workspace_state,
+            )?;
+            LspClient::start(LspStartOptions {
+                server_id: &definition.id,
+                executable: &resolution.path,
+                args: &args,
+                root: &server_key.root,
+                workspace: self.workspace.clone(),
+                request_timeout: Duration::from_secs(10),
+                max_message_bytes: self.config.limits.max_response_bytes,
+                max_file_bytes: self.config.limits.max_file_bytes,
+                max_stderr_bytes: self.config.limits.max_stderr_bytes,
+                max_diagnostics_per_file: self.config.diagnostics.max_per_file,
+                npm_modules_root: resolution.npm_modules_root.as_deref(),
+            })
+            .await
+        }
         .await;
         match client {
             Ok(client) => {
@@ -2240,6 +2250,31 @@ fn hash_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+fn lsp_start_args(
+    server_id: &str,
+    args: &[String],
+    root: &Path,
+    workspace_state: &Path,
+) -> Result<Vec<String>, ClspError> {
+    let mut args = args.to_vec();
+    if server_id == FSHARP_SERVER_ID {
+        let state_directory = workspace_state
+            .join("lsp/fsharp")
+            .join(hash_bytes(root.to_string_lossy().as_bytes()));
+        fs::create_dir_all(&state_directory).map_err(|error| {
+            ClspError::new(
+                ErrorCode::ServerUnavailable,
+                format!("cannot create FsAutoComplete state directory: {error}"),
+            )
+            .for_server(server_id)
+            .retryable()
+        })?;
+        args.push("--state-directory".into());
+        args.push(state_directory.to_string_lossy().into_owned());
+    }
+    Ok(args)
+}
+
 fn review_file_name(index: usize, side: &str, path: &Path) -> String {
     let extension = path
         .extension()
@@ -2621,6 +2656,33 @@ mod tests {
         )
         .await;
         request.await.unwrap().unwrap()
+    }
+
+    #[test]
+    fn fsharp_start_args_use_a_root_specific_state_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("state");
+        let root = directory.path().join("workspace/project");
+        let args = lsp_start_args(FSHARP_SERVER_ID, &["existing".into()], &root, &state).unwrap();
+        assert_eq!(args[0], "existing");
+        assert_eq!(args[1], "--state-directory");
+        let state_directory = PathBuf::from(&args[2]);
+        assert!(state_directory.is_dir());
+        assert!(state_directory.starts_with(state.join("lsp/fsharp")));
+        assert_ne!(
+            args,
+            lsp_start_args(
+                FSHARP_SERVER_ID,
+                &["existing".into()],
+                &directory.path().join("workspace/other"),
+                &state,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            lsp_start_args("rust", &["--stdio".into()], &root, &state).unwrap(),
+            ["--stdio"]
+        );
     }
 
     #[test]

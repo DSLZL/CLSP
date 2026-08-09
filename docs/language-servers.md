@@ -16,6 +16,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `deno` | Deno | `deno lsp` | `>=1.40.0` | manual Deno CLI |
 | `elixir-ls` | Elixir | `language_server.bat` | `>=0.31.1, <0.32.0` | official VS Code or manual ElixirLS release |
 | `eslint` | JavaScript / TypeScript / Vue | `node eslintServer.js --stdio` | `>=3.0.34, <3.1.0` | official VS Code extension; manual |
+| `fsharp` | F# | `fsautocomplete` | `=0.83.0` | official Ionide VS Code extension or global `dotnet tool` |
 | `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
@@ -41,6 +42,7 @@ Some server types then have an additional reuse path before installation:
 - command/toolchain servers: toolchain-specific locations such as Go's bin directory or the global .NET tool directory
 - ElixirLS: the official release bundled in standard Stable/Insiders VS Code extension directories
 - ESLint: `server/out/eslintServer.js` from the official `dbaeumer.vscode-eslint` Stable/Insiders extension
+- F#: `bin/net*/fsautocomplete.dll` from the official `Ionide.Ionide-fsharp` Stable/Insiders extension, then the exact global .NET tool
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
 
 Only after those reuse paths fail does automatic installation begin.
@@ -108,6 +110,25 @@ If the global tool already exists at another version, CLSP can update it to the 
 Resolution verifies both the global tool listing and the executable shim/version before accepting the server.
 
 CLSP does not install the .NET SDK itself.
+
+### F#
+
+FsAutoComplete 0.83.0 requires a compatible local .NET SDK/runtime; CLSP does not install .NET. After normal project, explicit, and `PATH` candidates, CLSP scans the standard Stable/Insiders directories for the official `Ionide.Ionide-fsharp` `7.31.x` extension. It accepts only a bounded `bin/net*/fsautocomplete.dll` layout with the official manifest and runtime files, then verifies the actual server version by running the DLL through `dotnet`.
+
+If no compatible extension server exists, CLSP checks and, when enabled, installs or updates the exact global tool:
+
+```powershell
+dotnet tool install --global fsautocomplete --version 0.83.0
+```
+
+For a custom extension directory, configure either its official DLL or a compatible shim explicitly:
+
+```toml
+[lsp.fsharp]
+executable = "C:/tools/ionide/bin/net8.0/fsautocomplete.dll"
+```
+
+CLSP sends `AutomaticWorkspaceInit = true` and passes a root-specific `--state-directory` below `%LOCALAPPDATA%\clsp\state\workspaces`, so FsAutoComplete state is not written into the project. `.fs`, `.fsi`, `.fsx`, and `.fsscript` files use the nearest `*.slnx`, `*.sln`, `*.fsproj`, or `global.json` root. Start FsAutoComplete only in trusted projects because MSBuild targets can execute project code.
 
 ### Clojure
 
@@ -230,6 +251,7 @@ Examples:
 - Dart: `.dart` plus `pubspec.yaml` or `analysis_options.yaml`
 - Deno: `.ts`, `.tsx`, `.js`, `.jsx`, or `.mjs` below `deno.json` or `deno.jsonc`; this takes precedence over the TypeScript server within that root
 - Elixir: `.ex` or `.exs` below the nearest `mix.exs` or `mix.lock`
+- F#: `.fs`, `.fsi`, `.fsx`, or `.fsscript` below the nearest solution, `*.fsproj`, or `global.json`
 
 The registry is deliberately bounded rather than accepting arbitrary server recipes from workspace configuration.
 
