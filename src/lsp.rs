@@ -19,7 +19,10 @@ use tokio::{
 use url::Url;
 
 use crate::{
-    installer::{jdtls_extension_layout, jdtls_java_for_launcher, sanitize_command},
+    installer::{
+        jdtls_extension_layout, jdtls_java_for_launcher, julials_extension_environment,
+        sanitize_command,
+    },
     protocol::{
         ClspError, Diagnostic, DiagnosticSeverity, DiagnosticsReport, ErrorCode, Location,
         Position, QueryOperation, QueryRequest, QueryResult, SourceFreshness, TextRange,
@@ -37,8 +40,9 @@ const DENO_SERVER_ID: &str = "deno";
 const ESLINT_SERVER_ID: &str = "eslint";
 const FSHARP_SERVER_ID: &str = "fsharp";
 const JDTLS_SERVER_ID: &str = "jdtls";
+const JULIALS_SERVER_ID: &str = "julials";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
-const JDTLS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
 type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, ClspError>>>>>;
@@ -282,6 +286,10 @@ impl LspClient {
         )?;
         let mut command = if uses_jdtls_java_host(options.server_id, options.executable) {
             jdtls_java_command(options.executable, options.root, options.request_timeout).await?
+        } else if options.server_id == JULIALS_SERVER_ID
+            && options.executable.file_name() == Some(std::ffi::OsStr::new("Project.toml"))
+        {
+            julials_extension_command(options.executable)?
         } else if options.server_id == ESLINT_SERVER_ID {
             let node = which::which("node")
                 .map_err(|_| runtime_error("ESLint Language Server requires Node.js"))?;
@@ -672,7 +680,10 @@ impl LspClient {
 }
 
 fn initialization_timeout(server_id: &str, request_timeout: Duration) -> Duration {
-    if matches!(server_id, CLOJURE_SERVER_ID | ELIXIR_LS_SERVER_ID) {
+    if matches!(
+        server_id,
+        CLOJURE_SERVER_ID | ELIXIR_LS_SERVER_ID | JULIALS_SERVER_ID
+    ) {
         SLOW_INITIALIZE_TIMEOUT
     } else {
         request_timeout
@@ -680,8 +691,8 @@ fn initialization_timeout(server_id: &str, request_timeout: Duration) -> Duratio
 }
 
 fn server_request_timeout(server_id: &str, request_timeout: Duration) -> Duration {
-    if server_id == JDTLS_SERVER_ID {
-        request_timeout.max(JDTLS_REQUEST_TIMEOUT)
+    if matches!(server_id, JDTLS_SERVER_ID | JULIALS_SERVER_ID) {
+        request_timeout.max(SLOW_REQUEST_TIMEOUT)
     } else {
         request_timeout
     }
@@ -1155,6 +1166,19 @@ fn uses_jdtls_java_host(server_id: &str, executable: &Path) -> bool {
             .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
 }
 
+fn julials_extension_command(project: &Path) -> Result<Command, ClspError> {
+    let environment = julials_extension_environment(project)?;
+    let julia = which::which("julia")
+        .map_err(|_| runtime_error("Julia extension LanguageServer requires Julia on PATH"))?;
+    Ok(julials_command(&julia, &environment))
+}
+
+fn julials_command(julia: &Path, environment: &Path) -> Command {
+    let mut command = Command::new(julia);
+    command.arg(format!("--project={}", environment.to_string_lossy()));
+    command
+}
+
 async fn jdtls_java_command(
     launcher: &Path,
     root: &Path,
@@ -1501,7 +1525,11 @@ mod tests {
         );
         assert_eq!(
             server_request_timeout(JDTLS_SERVER_ID, Duration::from_secs(10)),
-            JDTLS_REQUEST_TIMEOUT
+            SLOW_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            server_request_timeout(JULIALS_SERVER_ID, Duration::from_secs(10)),
+            SLOW_REQUEST_TIMEOUT
         );
         assert_eq!(
             server_request_timeout("rust", Duration::from_secs(10)),
@@ -1539,6 +1567,33 @@ mod tests {
         let java_24_args = jdtls_vm_args(&configuration, &launcher, 24);
         assert_eq!(java_24_args[0], "-Djdk.xml.maxGeneralEntitySizeLimit=0");
         assert_eq!(java_24_args[1], "-Djdk.xml.totalEntitySizeLimit=0");
+    }
+
+    #[test]
+    fn julials_extension_uses_its_project_without_initialization_options() {
+        let julia = Path::new("C:/Julia/bin/julia.exe");
+        let environment =
+            Path::new("C:/extensions/julia/scripts/environments/languageserver/v1.11");
+        let command = julials_command(julia, environment);
+        assert_eq!(command.as_std().get_program(), julia.as_os_str());
+        assert_eq!(
+            command.as_std().get_args().collect::<Vec<_>>(),
+            [std::ffi::OsString::from(format!(
+                "--project={}",
+                environment.to_string_lossy()
+            ))]
+        );
+        assert!(
+            server_initialization_options(
+                JULIALS_SERVER_ID,
+                environment,
+                environment,
+                julia,
+                None,
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[cfg(windows)]
@@ -1619,7 +1674,7 @@ mod tests {
     #[test]
     fn only_slow_starting_servers_get_the_long_initialize_timeout() {
         let normal = Duration::from_secs(10);
-        for server_id in [CLOJURE_SERVER_ID, ELIXIR_LS_SERVER_ID] {
+        for server_id in [CLOJURE_SERVER_ID, ELIXIR_LS_SERVER_ID, JULIALS_SERVER_ID] {
             assert_eq!(
                 initialization_timeout(server_id, normal),
                 Duration::from_secs(300)

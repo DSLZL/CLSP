@@ -40,6 +40,12 @@ const IONIDE_FSHARP_VERSION_REQ: &str = ">=7.31.1, <7.32.0";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JDTLS_EXTENSION_PREFIX: &str = "redhat.java-";
 const JDTLS_PLUGIN_ENTRY_LIMIT: usize = 512;
+const JULIALS_SERVER_ID: &str = "julials";
+const JULIALS_EXTENSION_PREFIX: &str = "julialang.language-julia-";
+const JULIALS_LANGUAGE_SERVER_UUID: &str = "2b0e0bc5-e4fd-59b4-8912-456d1b03d8d7";
+const JULIALS_FILE_LIMIT: u64 = 1024 * 1024;
+const JULIALS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const JULIALS_PROBE_SCRIPT: &str = r#"using TOML; path = Base.find_package("LanguageServer"); path === nothing && exit(2); project = TOML.parsefile(joinpath(dirname(dirname(path)), "Project.toml")); println(VERSION); println(project["version"]); print(path)"#;
 const PRESERVED_ENV: &[&str] = &[
     "SystemRoot",
     "WINDIR",
@@ -65,6 +71,9 @@ const PRESERVED_ENV: &[&str] = &[
     "RUSTUP_TOOLCHAIN",
     "DOTNET_CLI_HOME",
     "DOTNET_ROOT",
+    "JULIA_DEPOT_PATH",
+    "JULIA_LOAD_PATH",
+    "JULIA_PROJECT",
     "ProgramFiles(x86)",
     "PNPM_HOME",
     "NPM_CONFIG_PREFIX",
@@ -196,6 +205,11 @@ impl ServerResolver {
         }
         if server.id == JDTLS_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_jdtls(server, workspace).await
+        {
+            return Ok(resolution);
+        }
+        if server.id == JULIALS_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_julials(server, workspace).await
         {
             return Ok(resolution);
         }
@@ -502,6 +516,41 @@ impl ServerResolver {
             {
                 return Some(resolution);
             }
+        }
+        None
+    }
+
+    async fn resolve_vscode_julials(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        let julia = path_julia_candidate()?;
+        let probe_timeout =
+            julials_probe_timeout(Duration::from_millis(self.config.runtime.probe_timeout_ms));
+        let (julia_version, _) = probe_julia_version(&julia, workspace, probe_timeout, ">=1.11.0")
+            .await
+            .ok()?;
+        for candidate in vscode_julials_candidates_from(home, &julia_version) {
+            let Ok(version_output) = probe_vscode_julials(
+                &julia,
+                &candidate,
+                workspace,
+                &server.version_req,
+                &julia_version,
+                probe_timeout,
+            )
+            .await
+            else {
+                continue;
+            };
+            return Some(ResolvedExecutable {
+                path: candidate,
+                version_output,
+                source: ExecutableSource::VsCodeExtension,
+                npm_modules_root: None,
+            });
         }
         None
     }
@@ -1082,6 +1131,23 @@ impl ServerResolver {
             };
             return Ok(ServerProbe {
                 version_output,
+                npm_modules_root: None,
+            });
+        }
+        if server.id == JULIALS_SERVER_ID {
+            return Ok(ServerProbe {
+                version_output: probe_julials(
+                    executable,
+                    None,
+                    working_dir,
+                    &server.version_req,
+                    ">=1.10.0",
+                    julials_probe_timeout(Duration::from_millis(
+                        self.config.runtime.probe_timeout_ms,
+                    )),
+                )
+                .await?
+                .version_output,
                 npm_modules_root: None,
             });
         }
@@ -1887,6 +1953,430 @@ async fn probe_jdtls_launcher(
     Ok(format!("jdtls launcher; {java}"))
 }
 
+#[derive(Clone, Debug)]
+struct JuliaLsExtensionLayout {
+    extension_root: PathBuf,
+    extension_version: Version,
+    environment: PathBuf,
+    project: PathBuf,
+    manifest: PathBuf,
+    package_project: PathBuf,
+}
+
+struct JuliaLsProbe {
+    julia_version: Version,
+    server_version: Version,
+    package_path: PathBuf,
+    version_output: String,
+}
+
+fn path_julia_candidate() -> Option<PathBuf> {
+    executable_names("julia")
+        .into_iter()
+        .find_map(|name| which::which(name).ok())
+}
+
+async fn probe_julia_version(
+    executable: &Path,
+    working_dir: &Path,
+    probe_timeout: Duration,
+    requirement: &str,
+) -> Result<(Version, String), ClspError> {
+    if !executable.is_file() {
+        return Err(server_error("Julia candidate is not a file"));
+    }
+    let output = run_checked(
+        executable,
+        &["--version".to_owned()],
+        working_dir,
+        probe_timeout,
+        "Julia runtime probe",
+    )
+    .await?;
+    let text = if output.stdout.is_empty() {
+        bounded_text(&output.stderr)
+    } else {
+        bounded_text(&output.stdout)
+    };
+    let version = validate_version_output(&text, requirement)?;
+    Ok((version, text.trim().chars().take(512).collect()))
+}
+
+fn julials_probe_args(project: Option<&Path>) -> Vec<String> {
+    let mut args = vec!["--startup-file=no".into(), "--history-file=no".into()];
+    if let Some(project) = project {
+        args.push(format!("--project={}", project.to_string_lossy()));
+    }
+    args.extend(["-e".into(), JULIALS_PROBE_SCRIPT.into()]);
+    args
+}
+
+fn julials_probe_timeout(configured: Duration) -> Duration {
+    configured.max(JULIALS_PROBE_TIMEOUT)
+}
+
+async fn probe_julials(
+    executable: &Path,
+    project: Option<&Path>,
+    working_dir: &Path,
+    server_requirement: &str,
+    julia_requirement: &str,
+    probe_timeout: Duration,
+) -> Result<JuliaLsProbe, ClspError> {
+    if !executable.is_file() {
+        return Err(server_error("Julia candidate is not a file"));
+    }
+    let output = run_checked(
+        executable,
+        &julials_probe_args(project),
+        working_dir,
+        probe_timeout,
+        "Julia LanguageServer probe",
+    )
+    .await?;
+    parse_julials_probe_output(&output.stdout, server_requirement, julia_requirement)
+}
+
+fn parse_julials_probe_output(
+    output: &[u8],
+    server_requirement: &str,
+    julia_requirement: &str,
+) -> Result<JuliaLsProbe, ClspError> {
+    let text = std::str::from_utf8(output).map_err(server_error)?;
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let julia = lines
+        .next()
+        .ok_or_else(|| server_error("Julia probe returned no runtime version"))?;
+    let server = lines
+        .next()
+        .ok_or_else(|| server_error("Julia probe returned no LanguageServer version"))?;
+    let package = lines
+        .next()
+        .ok_or_else(|| server_error("Julia probe returned no LanguageServer path"))?;
+    if lines.next().is_some() {
+        return Err(server_error("Julia probe returned unexpected output"));
+    }
+    let julia_version = validate_version_output(julia, julia_requirement)?;
+    let server_version = validate_version_output(server, server_requirement)?;
+    let package_path = PathBuf::from(package);
+    if !package_path.is_absolute() || !package_path.is_file() {
+        return Err(server_error(
+            "Julia probe returned an invalid LanguageServer path",
+        ));
+    }
+    Ok(JuliaLsProbe {
+        julia_version: julia_version.clone(),
+        server_version: server_version.clone(),
+        package_path,
+        version_output: format!("Julia {julia_version}; LanguageServer {server_version}"),
+    })
+}
+
+fn vscode_julials_candidates_from(user_home: &Path, julia_version: &Version) -> Vec<PathBuf> {
+    vscode_extension_roots_from(user_home, JULIALS_EXTENSION_PREFIX)
+        .into_iter()
+        .filter_map(|(_, root)| {
+            let environments = root.join("scripts/environments/languageserver");
+            let matching =
+                environments.join(format!("v{}.{}", julia_version.major, julia_version.minor));
+            let environment = if matching.is_dir() {
+                matching
+            } else {
+                environments.join("fallback")
+            };
+            let project = environment.join("Project.toml");
+            project.is_file().then_some(project)
+        })
+        .collect()
+}
+
+fn vscode_julials_environment_projects_from(user_home: &Path) -> Vec<PathBuf> {
+    let mut projects = Vec::new();
+    for (_, root) in vscode_extension_roots_from(user_home, JULIALS_EXTENSION_PREFIX) {
+        let Ok(entries) = std::fs::read_dir(root.join("scripts/environments/languageserver"))
+        else {
+            continue;
+        };
+        let mut extension_projects = entries
+            .filter_map(Result::ok)
+            .take(VSCODE_INSTALL_ENTRY_LIMIT)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(valid_julials_environment_name)
+            })
+            .map(|environment| environment.join("Project.toml"))
+            .filter(|project| project.is_file())
+            .collect::<Vec<_>>();
+        extension_projects.sort();
+        projects.extend(extension_projects);
+    }
+    projects
+}
+
+fn valid_julials_environment_name(name: &str) -> bool {
+    if name == "fallback" {
+        return true;
+    }
+    let Some((major, minor)) = name
+        .strip_prefix('v')
+        .and_then(|value| value.split_once('.'))
+    else {
+        return false;
+    };
+    !major.is_empty()
+        && !minor.is_empty()
+        && major.bytes().all(|byte| byte.is_ascii_digit())
+        && minor.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn julials_extension_layout(project: &Path) -> Result<JuliaLsExtensionLayout, ClspError> {
+    if !project.is_file() || project.file_name() != Some(OsStr::new("Project.toml")) {
+        return Err(server_error(
+            "Julia extension candidate is not an environment Project.toml",
+        ));
+    }
+    let environment = project
+        .parent()
+        .filter(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(valid_julials_environment_name)
+        })
+        .ok_or_else(|| server_error("Julia extension environment name is invalid"))?;
+    let languageserver = environment
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("languageserver")))
+        .ok_or_else(|| server_error("Julia extension environment is outside languageserver"))?;
+    let environments = languageserver
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("environments")))
+        .ok_or_else(|| server_error("Julia extension environment is outside environments"))?;
+    let scripts = environments
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("scripts")))
+        .ok_or_else(|| server_error("Julia extension environment is outside scripts"))?;
+    let extension_root = scripts
+        .parent()
+        .ok_or_else(|| server_error("Julia extension environment has no extension root"))?;
+    let extension_version = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|name| name.strip_prefix(JULIALS_EXTENSION_PREFIX))
+        .and_then(|version| Version::parse(version).ok())
+        .filter(|version| version.major == 1)
+        .ok_or_else(|| {
+            server_error("Julia server is outside an official Julia extension directory")
+        })?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let project = std::fs::canonicalize(project).map_err(server_error)?;
+    let manifest =
+        std::fs::canonicalize(environment.join("Manifest.toml")).map_err(server_error)?;
+    let package_project =
+        std::fs::canonicalize(extension_root.join("scripts/packages/LanguageServer/Project.toml"))
+            .map_err(server_error)?;
+    for path in [&project, &manifest, &package_project] {
+        if !path.starts_with(&extension_root) {
+            return Err(server_error(
+                "Julia extension path escapes its extension root",
+            ));
+        }
+    }
+    Ok(JuliaLsExtensionLayout {
+        extension_root,
+        extension_version,
+        environment: project.parent().unwrap().to_path_buf(),
+        project,
+        manifest,
+        package_project,
+    })
+}
+
+pub(crate) fn julials_extension_environment(project: &Path) -> Result<PathBuf, ClspError> {
+    julials_extension_layout(project).map(|layout| layout.environment)
+}
+
+fn read_julials_file(path: &Path, label: &str) -> Result<Vec<u8>, ClspError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| server_error(format!("cannot inspect {label}: {error}")))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > JULIALS_FILE_LIMIT {
+        return Err(server_error(format!(
+            "{label} is not a bounded regular file"
+        )));
+    }
+    std::fs::read(path).map_err(server_error)
+}
+
+fn read_julials_toml(path: &Path, label: &str) -> Result<toml::Value, ClspError> {
+    let bytes = read_julials_file(path, label)?;
+    let text = std::str::from_utf8(&bytes).map_err(server_error)?;
+    toml::from_str(text).map_err(server_error)
+}
+
+fn validate_vscode_julials_environment(
+    project: &Path,
+    requirement: &str,
+) -> Result<(JuliaLsExtensionLayout, Version, Version), ClspError> {
+    let layout = julials_extension_layout(project)?;
+    let extension_manifest = read_julials_file(
+        &layout.extension_root.join("package.json"),
+        "Julia extension manifest",
+    )?;
+    let extension_manifest: serde_json::Value =
+        serde_json::from_slice(&extension_manifest).map_err(server_error)?;
+    if extension_manifest
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        != Some("language-julia")
+        || extension_manifest
+            .get("publisher")
+            .and_then(serde_json::Value::as_str)
+            != Some("julialang")
+    {
+        return Err(server_error(
+            "Julia server is not from the official julialang.language-julia extension",
+        ));
+    }
+    let extension_version = extension_manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .filter(|version| version.major == 1)
+        .ok_or_else(|| server_error("Julia extension version is invalid"))?;
+    if extension_version != layout.extension_version {
+        return Err(server_error(
+            "Julia extension manifest version does not match its directory",
+        ));
+    }
+
+    let environment_project = read_julials_toml(&layout.project, "Julia environment Project.toml")?;
+    if environment_project
+        .get("deps")
+        .and_then(toml::Value::as_table)
+        .and_then(|deps| deps.get("LanguageServer"))
+        .and_then(toml::Value::as_str)
+        != Some(JULIALS_LANGUAGE_SERVER_UUID)
+    {
+        return Err(server_error(
+            "Julia extension environment does not declare official LanguageServer.jl",
+        ));
+    }
+
+    let package_project = read_julials_toml(
+        &layout.package_project,
+        "Julia extension LanguageServer Project.toml",
+    )?;
+    if package_project.get("name").and_then(toml::Value::as_str) != Some("LanguageServer")
+        || package_project.get("uuid").and_then(toml::Value::as_str)
+            != Some(JULIALS_LANGUAGE_SERVER_UUID)
+    {
+        return Err(server_error(
+            "Julia extension package is not official LanguageServer.jl",
+        ));
+    }
+    let server_version = package_project
+        .get("version")
+        .and_then(toml::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Julia extension LanguageServer version is invalid"))?;
+    if !VersionReq::parse(requirement)
+        .map_err(server_error)?
+        .matches(&server_version)
+    {
+        return Err(server_error(format!(
+            "Julia extension LanguageServer version {server_version} does not satisfy {requirement}"
+        )));
+    }
+
+    let environment_manifest =
+        read_julials_toml(&layout.manifest, "Julia environment Manifest.toml")?;
+    let entries = environment_manifest
+        .get("deps")
+        .and_then(toml::Value::as_table)
+        .and_then(|deps| deps.get("LanguageServer"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| server_error("Julia extension manifest has no LanguageServer entry"))?;
+    if entries.len() != 1 {
+        return Err(server_error(
+            "Julia extension manifest has an ambiguous LanguageServer entry",
+        ));
+    }
+    let entry = entries[0]
+        .as_table()
+        .ok_or_else(|| server_error("Julia extension LanguageServer entry is invalid"))?;
+    let manifest_version = entry
+        .get("version")
+        .and_then(toml::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Julia extension manifest version is invalid"))?;
+    if entry.get("uuid").and_then(toml::Value::as_str) != Some(JULIALS_LANGUAGE_SERVER_UUID)
+        || manifest_version != server_version
+    {
+        return Err(server_error(
+            "Julia extension manifest does not match LanguageServer.jl",
+        ));
+    }
+    let package_path = entry
+        .get("path")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| server_error("Julia extension manifest has no LanguageServer path"))?;
+    let package_path =
+        std::fs::canonicalize(layout.environment.join(package_path)).map_err(server_error)?;
+    let expected_package = layout
+        .package_project
+        .parent()
+        .ok_or_else(|| server_error("Julia extension package has no root"))?;
+    if package_path != expected_package {
+        return Err(server_error(
+            "Julia extension manifest resolves LanguageServer outside the official package",
+        ));
+    }
+    Ok((layout, extension_version, server_version))
+}
+
+async fn probe_vscode_julials(
+    julia: &Path,
+    project: &Path,
+    working_dir: &Path,
+    requirement: &str,
+    expected_julia: &Version,
+    probe_timeout: Duration,
+) -> Result<String, ClspError> {
+    let (layout, extension_version, server_version) =
+        validate_vscode_julials_environment(project, requirement)?;
+    let probe = probe_julials(
+        julia,
+        Some(&layout.environment),
+        working_dir,
+        requirement,
+        ">=1.11.0",
+        probe_timeout,
+    )
+    .await?;
+    if &probe.julia_version != expected_julia || probe.server_version != server_version {
+        return Err(server_error(
+            "Julia extension probe does not match the selected environment",
+        ));
+    }
+    let package = std::fs::canonicalize(&probe.package_path).map_err(server_error)?;
+    let package_root = layout
+        .package_project
+        .parent()
+        .ok_or_else(|| server_error("Julia extension package has no root"))?;
+    if !package.starts_with(package_root) {
+        return Err(server_error(
+            "Julia extension resolved LanguageServer outside the extension",
+        ));
+    }
+    Ok(format!(
+        "{}; julialang.language-julia {extension_version}",
+        probe.version_output
+    ))
+}
+
 fn vscode_extension_candidates_from(
     user_home: &Path,
     extension_prefix: &str,
@@ -2341,7 +2831,11 @@ pub(crate) fn resolution_fingerprint(
     }
     if matches!(
         server.id.as_str(),
-        ELIXIR_LS_SERVER_ID | ESLINT_SERVER_ID | FSHARP_SERVER_ID | JDTLS_SERVER_ID
+        ELIXIR_LS_SERVER_ID
+            | ESLINT_SERVER_ID
+            | FSHARP_SERVER_ID
+            | JDTLS_SERVER_ID
+            | JULIALS_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -2357,6 +2851,9 @@ pub(crate) fn resolution_fingerprint(
                 ESLINT_SERVER_ID => candidates.extend(vscode_eslint_candidates_from(&home)),
                 FSHARP_SERVER_ID => candidates.extend(vscode_fsharp_candidates_from(&home)),
                 JDTLS_SERVER_ID => candidates.extend(vscode_jdtls_candidates_from(&home)),
+                JULIALS_SERVER_ID => {
+                    candidates.extend(vscode_julials_environment_projects_from(&home))
+                }
                 _ => {}
             }
         }
@@ -2368,6 +2865,16 @@ pub(crate) fn resolution_fingerprint(
                 .to_string_lossy()
                 .as_bytes(),
         );
+    }
+    if server.id == JULIALS_SERVER_ID {
+        for name in ["JULIA_DEPOT_PATH", "JULIA_LOAD_PATH", "JULIA_PROJECT"] {
+            digest.update(
+                std::env::var_os(name)
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+        }
     }
     if server.id == ESLINT_SERVER_ID {
         hash_executable_candidate(
@@ -2410,6 +2917,13 @@ pub(crate) fn resolution_fingerprint(
             for java in jdtls_java_candidates(Some(&layout.extension_root)) {
                 hash_executable_candidate(&mut digest, java);
             }
+        }
+        if server.id == JULIALS_SERVER_ID
+            && let Ok(layout) = julials_extension_layout(&candidate)
+        {
+            hash_executable_candidate(&mut digest, layout.extension_root.join("package.json"));
+            hash_executable_candidate(&mut digest, layout.manifest);
+            hash_executable_candidate(&mut digest, layout.package_project);
         }
     }
     hex::encode(digest.finalize())
@@ -2799,6 +3313,73 @@ mod tests {
             &format!("echo openjdk version \"{java_version}\" 1>&2"),
         );
         (launcher, java)
+    }
+
+    fn write_julials_extension(
+        extension_root: &Path,
+        extension_version: &str,
+        environment_name: &str,
+        server_version: &str,
+    ) -> (PathBuf, PathBuf) {
+        let root = extension_root.join(format!("{JULIALS_EXTENSION_PREFIX}{extension_version}"));
+        let environment = root
+            .join("scripts/environments/languageserver")
+            .join(environment_name);
+        let package = root.join("scripts/packages/LanguageServer");
+        let source = package.join("src/LanguageServer.jl");
+        std::fs::create_dir_all(&environment).unwrap();
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "language-julia",
+                "publisher": "julialang",
+                "version": extension_version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            environment.join("Project.toml"),
+            format!("[deps]\nLanguageServer = \"{JULIALS_LANGUAGE_SERVER_UUID}\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            environment.join("Manifest.toml"),
+            format!(
+                "manifest_format = \"2.0\"\n\n[[deps.LanguageServer]]\npath = \"../../../packages/LanguageServer\"\nuuid = \"{JULIALS_LANGUAGE_SERVER_UUID}\"\nversion = \"{server_version}\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("Project.toml"),
+            format!(
+                "name = \"LanguageServer\"\nuuid = \"{JULIALS_LANGUAGE_SERVER_UUID}\"\nversion = \"{server_version}\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(&source, "module LanguageServer\nend\n").unwrap();
+        (environment.join("Project.toml"), source)
+    }
+
+    fn write_fake_julia(
+        root: &Path,
+        runtime_version: &str,
+        server_version: &str,
+        package: &Path,
+    ) -> PathBuf {
+        std::fs::create_dir_all(root).unwrap();
+        #[cfg(windows)]
+        let body = format!(
+            "if \"%~1\"==\"--version\" (\r\n  echo julia version {runtime_version}\r\n  exit /b 0\r\n)\r\necho {runtime_version}\r\necho {server_version}\r\necho {}",
+            package.display()
+        );
+        #[cfg(unix)]
+        let body = format!(
+            "if [ \"$1\" = \"--version\" ]; then\n  echo 'julia version {runtime_version}'\n  exit 0\nfi\nprintf '%s\\n' '{runtime_version}' '{server_version}' '{}'",
+            package.display()
+        );
+        fake_executable(root, "julia", &body)
     }
 
     #[test]
@@ -3280,6 +3861,170 @@ mod tests {
         )
         .unwrap();
         assert!(jdtls_extension_layout(&older).is_err());
+    }
+
+    #[tokio::test]
+    async fn julials_probe_checks_julia_and_language_server_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let package = root.path().join("LanguageServer/src/LanguageServer.jl");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::write(&package, "module LanguageServer\nend\n").unwrap();
+        let julia = write_fake_julia(&root.path().join("bin"), "1.11.9", "5.0.0", &package);
+
+        assert_eq!(
+            julials_probe_args(None),
+            [
+                "--startup-file=no",
+                "--history-file=no",
+                "-e",
+                JULIALS_PROBE_SCRIPT,
+            ]
+        );
+        assert_eq!(
+            julials_probe_timeout(Duration::from_millis(1_500)),
+            JULIALS_PROBE_TIMEOUT
+        );
+        assert_eq!(
+            julials_probe_timeout(Duration::from_secs(10)),
+            Duration::from_secs(10)
+        );
+        let environment = root.path().join("environment");
+        assert_eq!(
+            julials_probe_args(Some(&environment)),
+            [
+                "--startup-file=no".to_owned(),
+                "--history-file=no".to_owned(),
+                format!("--project={}", environment.to_string_lossy()),
+                "-e".to_owned(),
+                JULIALS_PROBE_SCRIPT.to_owned(),
+            ]
+        );
+        let probe = probe_julials(
+            &julia,
+            None,
+            root.path(),
+            ">=5.0.0, <6.0.0",
+            ">=1.10.0",
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(probe.julia_version, Version::new(1, 11, 9));
+        assert_eq!(probe.server_version, Version::new(5, 0, 0));
+        assert_eq!(probe.package_path, package);
+        assert!(
+            probe_julia_version(&julia, root.path(), Duration::from_secs(5), ">=1.12.0")
+                .await
+                .is_err()
+        );
+        assert!(
+            parse_julials_probe_output(
+                format!("1.9.4\n5.0.0\n{}", package.display()).as_bytes(),
+                ">=5.0.0, <6.0.0",
+                ">=1.10.0",
+            )
+            .is_err()
+        );
+        assert!(
+            parse_julials_probe_output(
+                format!("1.11.9\n4.5.0\n{}", package.display()).as_bytes(),
+                ">=5.0.0, <6.0.0",
+                ">=1.10.0",
+            )
+            .is_err()
+        );
+        assert!(PRESERVED_ENV.contains(&"JULIA_DEPOT_PATH"));
+        assert!(PRESERVED_ENV.contains(&"JULIA_LOAD_PATH"));
+        assert!(PRESERVED_ENV.contains(&"JULIA_PROJECT"));
+    }
+
+    #[tokio::test]
+    async fn vscode_julials_uses_official_exact_or_fallback_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let stable = root.path().join(".vscode/extensions");
+        let insiders = root.path().join(".vscode-insiders/extensions");
+        let (fallback, _) = write_julials_extension(&stable, "1.230.0", "fallback", "5.0.0");
+        let (matching, source) = write_julials_extension(&insiders, "1.231.1", "v1.11", "5.1.0");
+        let julia_version = Version::new(1, 11, 9);
+
+        assert_eq!(
+            vscode_julials_candidates_from(root.path(), &julia_version),
+            [matching.clone(), fallback.clone()]
+        );
+        assert_eq!(
+            vscode_julials_candidates_from(root.path(), &Version::new(1, 12, 1)),
+            [fallback]
+        );
+        let (layout, extension_version, server_version) =
+            validate_vscode_julials_environment(&matching, ">=5.0.0, <6.0.0").unwrap();
+        assert_eq!(extension_version, Version::new(1, 231, 1));
+        assert_eq!(server_version, Version::new(5, 1, 0));
+        assert_eq!(
+            julials_extension_environment(&matching).unwrap(),
+            layout.environment
+        );
+
+        let julia = write_fake_julia(&root.path().join("bin"), "1.11.9", "5.1.0", &source);
+        let output = probe_vscode_julials(
+            &julia,
+            &matching,
+            root.path(),
+            ">=5.0.0, <6.0.0",
+            &julia_version,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(output.contains("Julia 1.11.9; LanguageServer 5.1.0"));
+        assert!(output.contains("julialang.language-julia 1.231.1"));
+    }
+
+    #[test]
+    fn vscode_julials_rejects_forged_oversized_and_escaping_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let extensions = root.path().join(".vscode/extensions");
+
+        let (forged, _) = write_julials_extension(&extensions, "1.231.0", "v1.11", "5.1.0");
+        let forged_root = julials_extension_layout(&forged).unwrap().extension_root;
+        std::fs::write(
+            forged_root.join("package.json"),
+            br#"{"name":"language-julia","publisher":"other","version":"1.231.0"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_julials_environment(&forged, ">=5.0.0, <6.0.0").is_err());
+
+        let (mismatched, _) = write_julials_extension(&extensions, "1.231.1", "v1.11", "5.1.0");
+        let mismatched_root = julials_extension_layout(&mismatched)
+            .unwrap()
+            .extension_root;
+        std::fs::write(
+            mismatched_root.join("package.json"),
+            br#"{"name":"language-julia","publisher":"julialang","version":"1.231.0"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_julials_environment(&mismatched, ">=5.0.0, <6.0.0").is_err());
+
+        let (oversized, _) = write_julials_extension(&extensions, "1.232.0", "v1.11", "5.1.0");
+        let oversized_root = julials_extension_layout(&oversized).unwrap().extension_root;
+        std::fs::write(
+            oversized_root.join("package.json"),
+            vec![b'x'; JULIALS_FILE_LIMIT as usize + 1],
+        )
+        .unwrap();
+        assert!(validate_vscode_julials_environment(&oversized, ">=5.0.0, <6.0.0").is_err());
+
+        let (escaping, _) = write_julials_extension(&extensions, "1.233.0", "v1.11", "5.1.0");
+        let outside = extensions.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let layout = julials_extension_layout(&escaping).unwrap();
+        std::fs::write(
+            &layout.manifest,
+            format!(
+                "[[deps.LanguageServer]]\npath = \"../../../../../outside\"\nuuid = \"{JULIALS_LANGUAGE_SERVER_UUID}\"\nversion = \"5.1.0\"\n"
+            ),
+        )
+        .unwrap();
+        assert!(validate_vscode_julials_environment(&escaping, ">=5.0.0, <6.0.0").is_err());
     }
 
     #[tokio::test]
@@ -3810,6 +4555,23 @@ mod tests {
         let first = resolution_fingerprint(server, &workspace, Some(&launcher));
         std::fs::write(core, b"different-core").unwrap();
         let second = resolution_fingerprint(server, &workspace, Some(&launcher));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn julials_environment_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let (project, _) = write_julials_extension(directory.path(), "1.231.1", "v1.11", "5.1.0");
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(JULIALS_SERVER_ID).unwrap();
+        let manifest = julials_extension_layout(&project).unwrap().manifest;
+        let first = resolution_fingerprint(server, &workspace, Some(&project));
+        let mut contents = std::fs::read_to_string(&manifest).unwrap();
+        contents.push_str("\n# changed\n");
+        std::fs::write(manifest, contents).unwrap();
+        let second = resolution_fingerprint(server, &workspace, Some(&project));
         assert_ne!(first, second);
     }
 }

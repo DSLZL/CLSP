@@ -73,6 +73,7 @@ After setup:
 | Go | gopls | `go install` |
 | Haskell | Haskell Language Server | Manual GHCup/HLS toolchain |
 | Java | Eclipse JDT Language Server | Reuse local JDTLS or official `redhat.java` extension |
+| Julia | Julia Language Server | Reuse active Julia environment or official `julialang.language-julia` extension |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
@@ -99,6 +100,8 @@ Go support covers `.go` files. A `go.work` anywhere between the file and workspa
 Haskell support covers `.hs` and `.lhs` files below the nearest `stack.yaml`, `cabal.project`, `hie.yaml`, or `*.cabal`, with the workspace root as the fallback. CLSP reuses a compatible HLS `2.x` wrapper from `PATH` or `[lsp.hls].executable` and starts `haskell-language-server-wrapper --lsp`; it does not install or select GHC/HLS versions. The official `haskell.haskell` extension is an independent client of an external HLS and can publish Problems through the IDE bridge. Start HLS only in trusted projects because project cradle/build configuration may execute code.
 
 Java support covers `.java` files inside recognized Gradle, Maven, or Eclipse projects. CLSP reuses a local `jdtls` launcher or the server bundled with the official `redhat.java` Stable/Insiders extension, requires Java 21+, and keeps JDTLS data isolated per project root. Loose Java files without a project marker do not start a CLSP JDTLS client. CLSP installs none of these components; open only trusted Maven/Gradle projects because project import may execute build logic.
+
+Julia support covers `.jl` files below the nearest `Project.toml`, `Manifest.toml`, or directory containing Julia source, with the workspace root as the fallback. CLSP first reuses Julia 1.10+ with LanguageServer.jl 5.x in its active environment, then an official `julialang.language-julia` Stable/Insiders environment with Julia 1.11+. CLSP installs none of these components; use JuliaLS only in trusted projects because it loads Julia environments and package metadata.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

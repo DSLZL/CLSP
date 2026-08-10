@@ -274,6 +274,26 @@ executable = "C:/tools/jdtls/bin/jdtls.bat"
 
 CLSP deliberately skips loose `.java` files. Add a recognized Gradle marker (`settings.gradle[.kts]`, `gradlew[.bat]`, or `build.gradle[.kts]`), Maven `pom.xml`, or Eclipse `.project` / `.classpath`. Maven parent roots are selected only when `<modules>` declares the child. Use only trusted Maven/Gradle projects because imports may execute build logic.
 
+## JuliaLS cannot be resolved
+
+CLSP does not install Julia, Juliaup, LanguageServer.jl, or the VS Code extension. Check the runtime, active Julia environment, and official extension visible to the current process:
+
+```powershell
+where.exe julia
+julia --version
+julia --startup-file=no --history-file=no -e 'using LanguageServer; println(pkgversion(LanguageServer))'
+code --list-extensions --show-versions | Select-String julialang.language-julia
+```
+
+Standalone resolution requires Julia 1.10+ and LanguageServer.jl 5.x in the active environment. `JULIA_PROJECT`, `JULIA_LOAD_PATH`, and `JULIA_DEPOT_PATH` affect that environment and are preserved when CLSP probes and starts Julia. Configure a Julia executable outside `PATH` directly:
+
+```toml
+[lsp.julials]
+executable = "C:/tools/Julia/bin/julia.exe"
+```
+
+The official extension path additionally requires Julia 1.11+. CLSP accepts only a bounded official `julialang.language-julia` 1.x manifest and its matching `scripts/environments/languageserver/v<major>.<minor>` or `fallback` environment with LanguageServer 5.x. A standalone Julia package failure does not make a forged or incomplete extension acceptable. Use JuliaLS only with trusted projects because it loads Julia environments and package metadata.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.

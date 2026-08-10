@@ -24,6 +24,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `jdtls` | Java | `jdtls` or Java + Equinox launcher | `>=1.30.0, <2.0.0` | official `redhat.java` extension or manual JDTLS |
+| `julials` | Julia | `julia ... using LanguageServer; runserver()` | `>=5.0.0, <6.0.0` | active Julia environment or official `julialang.language-julia` extension |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
 
@@ -47,6 +48,7 @@ Some server types then have an additional reuse path before installation:
 - ESLint: `server/out/eslintServer.js` from the official `dbaeumer.vscode-eslint` Stable/Insiders extension
 - F#: `bin/net*/fsautocomplete.dll` from the official `Ionide.Ionide-fsharp` Stable/Insiders extension, then the exact global .NET tool
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
+- JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
 
 Only after those reuse paths fail does automatic installation begin.
@@ -138,6 +140,26 @@ executable = "C:/tools/jdtls/bin/jdtls.bat"
 Root selection follows OpenCode: Gradle settings files take priority over a wrapper and build files; Maven roots climb only through parent POMs that explicitly declare the child module; `.project` and `.classpath` provide the Eclipse fallback. A loose `.java` file with none of these markers does not start CLSP JDTLS. Each selected root gets a separate CLSP-owned `-data` directory.
 
 JDTLS may import Maven or Gradle projects and execute build logic. Use it only with trusted projects.
+
+### Julia
+
+For standalone use, install Julia 1.10+ and LanguageServer.jl 5.x in the Julia environment visible to CLSP:
+
+```powershell
+julia -e 'using Pkg; Pkg.add(name="LanguageServer", version="5.0.0")'
+julia --startup-file=no --history-file=no -e 'using LanguageServer; println(pkgversion(LanguageServer))'
+```
+
+CLSP probes Julia and the package without loading LanguageServer, then starts the OpenCode-compatible `using LanguageServer; runserver()` stdio command. A Julia executable outside `PATH` can be configured directly:
+
+```toml
+[lsp.julials]
+executable = "C:/tools/Julia/bin/julia.exe"
+```
+
+If the active Julia environment has no compatible package, CLSP scans only the standard Stable/Insiders directories for the official `julialang.language-julia` 1.x extension. With Julia 1.11+, it selects the extension's `v<major>.<minor>` LanguageServer environment or its `fallback`, validates the environment and bundled LanguageServer 5.x package, and starts Julia with `--project=<environment>`. CLSP does not install Julia, Juliaup, LanguageServer.jl, or the extension.
+
+Root selection follows OpenCode: the nearest `Project.toml`, `Manifest.toml`, or directory containing `*.jl` wins, otherwise CLSP uses the workspace root. JuliaLS loads Julia environments and package metadata; use it only with trusted projects.
 
 ### C#
 

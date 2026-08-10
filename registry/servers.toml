@@ -191,6 +191,18 @@ version_args = []
 install = { kind = "manual", version = "1.61.0-202608051627", hint = "Install Eclipse JDT Language Server 1.x and Java 21+ (validated with 1.61.0-202608051627), then ensure jdtls is on PATH or set [lsp.jdtls].executable; CLSP also supports the official redhat.java VS Code extension" }
 
 [[server]]
+id = "julials"
+display_name = "Julia Language Server"
+language_id = "julia"
+version_req = ">=5.0.0, <6.0.0"
+extensions = ["jl"]
+markers = ["Project.toml", "Manifest.toml", "*.jl"]
+command = "julia"
+args = ["--startup-file=no", "--history-file=no", "-e", "using LanguageServer; runserver()"]
+version_args = ["--version"]
+install = { kind = "manual", version = "5.0.0", hint = "Install Julia 1.10+ and LanguageServer.jl 5.x in the active Julia environment, then ensure julia is on PATH or set [lsp.julials].executable; CLSP also supports the official julialang.language-julia VS Code extension with Julia 1.11+" }
+
+[[server]]
 id = "clangd"
 display_name = "clangd"
 language_id = "cpp"

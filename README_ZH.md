@@ -71,6 +71,7 @@ clsp setup --workspace .
 | Go | gopls | `go install` |
 | Haskell | Haskell Language Server | 手动安装 GHCup/HLS 工具链 |
 | Java | Eclipse JDT Language Server | 复用本地 JDTLS 或官方 `redhat.java` 扩展 |
+| Julia | Julia Language Server | 复用当前 Julia 环境或官方 `julialang.language-julia` 扩展 |
 | Python | Pyright | npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
@@ -97,6 +98,8 @@ Go 支持 `.go` 文件。文件与 workspace 根之间只要存在 `go.work`，�
 Haskell 支持 `.hs` 与 `.lhs` 文件，根目录取最近的 `stack.yaml`、`cabal.project`、`hie.yaml` 或 `*.cabal`，找不到时回退到 workspace 根。CLSP 复用 `PATH` 或 `[lsp.hls].executable` 中兼容的 HLS `2.x` wrapper，并启动 `haskell-language-server-wrapper --lsp`；不会安装或替用户选择 GHC/HLS 版本。官方 `haskell.haskell` 扩展是外部 HLS 的独立客户端，可通过现有 IDE Bridge 提供 Problems。项目 cradle/构建配置可能执行代码，因此只应在可信项目中启动 HLS。
 
 Java 支持位于 Gradle、Maven 或 Eclipse 项目中的 `.java` 文件。CLSP 复用本地 `jdtls` launcher 或官方 `redhat.java` Stable/Insiders 扩展内的服务器，要求 Java 21+，并按项目根隔离 JDTLS data。没有项目标记的松散 Java 文件不会启动 CLSP JDTLS 客户端。CLSP 不安装这些组件；Maven/Gradle 导入可能执行构建逻辑，因此只应打开可信项目。
+
+Julia 支持 `.jl` 文件，根目录取最近的 `Project.toml`、`Manifest.toml` 或包含 Julia 源文件的目录，找不到时回退到 workspace 根。CLSP 先复用 Julia 1.10+ 当前环境中的 LanguageServer.jl 5.x，再尝试配合 Julia 1.11+ 使用官方 `julialang.language-julia` Stable/Insiders 扩展环境。CLSP 不安装这些组件；JuliaLS 会加载 Julia 环境与包元数据，因此只应在可信项目中使用。
 
 如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
 

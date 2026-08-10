@@ -875,6 +875,43 @@ mod tests {
     }
 
     #[test]
+    fn julia_files_use_the_nearest_opencode_marker_or_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("packages/demo");
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(root.path().join("Project.toml"), "[deps]").unwrap();
+        fs::write(project.join("Manifest.toml"), "manifest_format = \"2.0\"").unwrap();
+        let file = source_dir.join("Demo.jl");
+        fs::write(&file, "module Demo\nend").unwrap();
+        let pending = project.join("pending/Demo.jl");
+        fs::create_dir_all(pending.parent().unwrap()).unwrap();
+        let loose = root.path().join("loose/Loose.jl");
+        fs::create_dir_all(loose.parent().unwrap()).unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(root.path()).unwrap();
+        let julials = registry.server("julials").unwrap();
+
+        assert_eq!(
+            workspace
+                .matching_servers(&file, "jl", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["julials"]
+        );
+        assert_eq!(workspace.root_for_file(&file, julials), source_dir);
+        assert_eq!(workspace.root_for_file(&pending, julials), project);
+        fs::remove_file(project.join("Manifest.toml")).unwrap();
+        assert_eq!(workspace.root_for_file(&pending, julials), root.path());
+        fs::remove_file(root.path().join("Project.toml")).unwrap();
+        assert_eq!(
+            workspace.root_for_file(&loose, julials),
+            fs::canonicalize(root.path()).unwrap()
+        );
+    }
+
+    #[test]
     fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
         let root = tempfile::tempdir().unwrap();
         let deno_root = root.path().join("deno-app");

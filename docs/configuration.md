@@ -359,6 +359,7 @@ gleam
 gopls
 hls
 jdtls
+julials
 pyright
 rust
 typescript

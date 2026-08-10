@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 18] = [
+const APPROVED_IDS: [&str; 19] = [
     "astro",
     "bash",
     "csharp",
@@ -20,16 +20,17 @@ const APPROVED_IDS: [&str; 18] = [
     "gopls",
     "hls",
     "jdtls",
+    "julials",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 47] = [
+const APPROVED_EXTENSIONS: [&str; 48] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
-    "hh", "hpp", "hs", "hxx", "java", "js", "jsx", "ksh", "lhs", "mjs", "mts", "py", "pyi", "rs",
-    "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "lhs", "mjs", "mts", "py", "pyi",
+    "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -303,9 +304,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_eighteen_server_set() {
+    fn builtin_is_the_closed_nineteen_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 18);
+        assert_eq!(registry.server.len(), 19);
         assert_eq!(
             registry
                 .server
@@ -392,6 +393,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["jdtls"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".JL")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["julials"]
         );
     }
 
@@ -519,6 +527,34 @@ mod tests {
         assert!(hint.contains("Java 21+"));
         assert!(hint.contains("[lsp.jdtls].executable"));
         assert!(hint.contains("redhat.java"));
+    }
+
+    #[test]
+    fn julials_uses_the_opencode_contract_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let julials = registry.server("julials").unwrap();
+        assert_eq!(julials.language_id, "julia");
+        assert_eq!(julials.version_req, ">=5.0.0, <6.0.0");
+        assert_eq!(julials.extensions, ["jl"]);
+        assert_eq!(julials.markers, ["Project.toml", "Manifest.toml", "*.jl"]);
+        assert_eq!(julials.command, "julia");
+        assert_eq!(
+            julials.args,
+            [
+                "--startup-file=no",
+                "--history-file=no",
+                "-e",
+                "using LanguageServer; runserver()",
+            ]
+        );
+        assert_eq!(julials.version_args, ["--version"]);
+        let InstallRecipe::Manual { version, hint } = &julials.install else {
+            panic!("JuliaLS must use a manual recipe");
+        };
+        assert_eq!(version, "5.0.0");
+        assert!(hint.contains("Julia 1.10+"));
+        assert!(hint.contains("[lsp.julials].executable"));
+        assert!(hint.contains("julialang.language-julia"));
     }
 
     #[test]
