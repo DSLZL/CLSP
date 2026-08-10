@@ -25,6 +25,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `jdtls` | Java | `jdtls` or Java + Equinox launcher | `>=1.30.0, <2.0.0` | official `redhat.java` extension or manual JDTLS |
 | `julials` | Julia | `julia ... using LanguageServer; runserver()` | `>=5.0.0, <6.0.0` | active Julia environment or official `julialang.language-julia` extension |
+| `kotlin-ls` | Kotlin | `kotlin-lsp` or `intellij-server --stdio` | `>=262.4739.0, <264.0.0` | official `JetBrains.kotlin-server` extension or manual standalone server |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
 
@@ -49,6 +50,7 @@ Some server types then have an additional reuse path before installation:
 - F#: `bin/net*/fsautocomplete.dll` from the official `Ionide.Ionide-fsharp` Stable/Insiders extension, then the exact global .NET tool
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
+- Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
 
 Only after those reuse paths fail does automatic installation begin.
@@ -160,6 +162,19 @@ executable = "C:/tools/Julia/bin/julia.exe"
 If the active Julia environment has no compatible package, CLSP scans only the standard Stable/Insiders directories for the official `julialang.language-julia` 1.x extension. With Julia 1.11+, it selects the extension's `v<major>.<minor>` LanguageServer environment or its `fallback`, validates the environment and bundled LanguageServer 5.x package, and starts Julia with `--project=<environment>`. CLSP does not install Julia, Juliaup, LanguageServer.jl, or the extension.
 
 Root selection follows OpenCode: the nearest `Project.toml`, `Manifest.toml`, or directory containing `*.jl` wins, otherwise CLSP uses the workspace root. JuliaLS loads Julia environments and package metadata; use it only with trusted projects.
+
+### Kotlin
+
+The standalone Kotlin Language Server requires JDK 25; the official extension bundles its own JBR 25. CLSP first checks project-local, explicit, and `PATH` `kotlin-lsp` launchers, then `intellij-server` on `PATH`, then the bundled server in the official `JetBrains.kotlin-server` Stable/Insiders extension. It accepts server versions from 262.4739.0 through the 263.x line; the standalone validation baseline is 262.9593.0, while the current extension baseline is 0.0.8 with server 263.2689.0. CLSP does not install a JDK, server, or extension.
+
+Configure a standalone launcher outside `PATH` directly:
+
+```toml
+[lsp.kotlin-ls]
+executable = "C:/tools/kotlin-lsp/bin/intellij-server.exe"
+```
+
+Root selection follows OpenCode precedence: Gradle settings files, wrapper scripts, Gradle build files, then Maven `pom.xml`; otherwise CLSP uses the workspace root. Each selected root gets a separate CLSP-owned `--system-path`, and Kotlin receives no server-specific initialization options. `JAVA_HOME` and `GRADLE_USER_HOME` are preserved, and Kotlin alone gets a longer initialize deadline for cold IntelliJ startup. Use only trusted projects because Gradle and Maven imports may execute build logic.
 
 ### C#
 

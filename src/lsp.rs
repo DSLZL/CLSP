@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::{Mutex, Notify, RwLock, oneshot},
+    sync::{Mutex, Notify, RwLock, mpsc, oneshot},
     time::timeout,
 };
 use url::Url;
@@ -41,6 +41,7 @@ const ESLINT_SERVER_ID: &str = "eslint";
 const FSHARP_SERVER_ID: &str = "fsharp";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JULIALS_SERVER_ID: &str = "julials";
+const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -332,6 +333,7 @@ impl LspClient {
             .and_then(|value| value.to_str())
             .unwrap_or("workspace")
             .to_owned();
+        let (diagnostic_refresh_tx, mut diagnostic_refresh_rx) = mpsc::channel(1);
         let client = Arc::new(Self {
             server_id: options.server_id.into(),
             root: options.root.to_path_buf(),
@@ -366,7 +368,17 @@ impl LspClient {
             Arc::clone(&client.encoding),
             root_uri.clone(),
             root_name.clone(),
+            diagnostic_refresh_tx,
         ));
+        let refresh_client = Arc::downgrade(&client);
+        tokio::spawn(async move {
+            while diagnostic_refresh_rx.recv().await.is_some() {
+                let Some(client) = refresh_client.upgrade() else {
+                    break;
+                };
+                client.refresh_open_diagnostics().await;
+            }
+        });
         tokio::spawn(stderr_loop(
             stderr,
             Arc::clone(&client.stderr),
@@ -386,7 +398,11 @@ impl LspClient {
                     "publishDiagnostics": {},
                     "diagnostic": {}
                 },
-                "workspace": {"workspaceFolders": true, "configuration": true}
+                "workspace": {
+                    "workspaceFolders": true,
+                    "configuration": true,
+                    "diagnostics": {"refreshSupport": true}
+                }
             },
             "clientInfo": {"name": "clsp", "version": env!("CARGO_PKG_VERSION")}
         });
@@ -467,19 +483,8 @@ impl LspClient {
         )
         .await?;
 
-        if *self.supports_pull_diagnostics.read().await
-            && let Ok(result) = self
-                .request(
-                    "textDocument/diagnostic",
-                    json!({"textDocument": {"uri": uri}}),
-                )
-                .await
-            && let Some(items) = result.get("items").and_then(Value::as_array)
-        {
-            let diagnostics = self.convert_diagnostics(&path, items).await;
-            self.diagnostics
-                .publish_pull(path.clone(), version, diagnostics)
-                .await;
+        if *self.supports_pull_diagnostics.read().await {
+            self.pull_document_diagnostics(&path, &uri, version).await;
         }
         Ok(Some(SyncResult {
             path,
@@ -487,6 +492,38 @@ impl LspClient {
             baseline,
             baseline_available,
         }))
+    }
+
+    async fn pull_document_diagnostics(&self, path: &Path, uri: &str, version: i32) {
+        if let Ok(result) = self
+            .request(
+                "textDocument/diagnostic",
+                json!({"textDocument": {"uri": uri}}),
+            )
+            .await
+            && let Some(items) = result.get("items").and_then(Value::as_array)
+        {
+            let diagnostics = self.convert_diagnostics(path, items).await;
+            self.diagnostics
+                .publish_pull(path.to_path_buf(), version, diagnostics)
+                .await;
+        }
+    }
+
+    async fn refresh_open_diagnostics(&self) {
+        if !*self.supports_pull_diagnostics.read().await {
+            return;
+        }
+        let documents = self
+            .documents
+            .lock()
+            .await
+            .iter()
+            .map(|(path, document)| (path.clone(), document.uri.clone(), document.version))
+            .collect::<Vec<_>>();
+        for (path, uri, version) in documents {
+            self.pull_document_diagnostics(&path, &uri, version).await;
+        }
     }
 
     pub async fn close_file(&self, path: &Path) -> Result<(), ClspError> {
@@ -682,7 +719,7 @@ impl LspClient {
 fn initialization_timeout(server_id: &str, request_timeout: Duration) -> Duration {
     if matches!(
         server_id,
-        CLOJURE_SERVER_ID | ELIXIR_LS_SERVER_ID | JULIALS_SERVER_ID
+        CLOJURE_SERVER_ID | ELIXIR_LS_SERVER_ID | JULIALS_SERVER_ID | KOTLIN_LS_SERVER_ID
     ) {
         SLOW_INITIALIZE_TIMEOUT
     } else {
@@ -713,6 +750,7 @@ async fn reader_loop(
     encoding: Arc<RwLock<PositionEncoding>>,
     root_uri: String,
     root_name: String,
+    diagnostic_refresh: mpsc::Sender<()>,
 ) {
     loop {
         let message = match read_frame(&mut stdout, max_message_bytes).await {
@@ -744,6 +782,7 @@ async fn reader_loop(
             continue;
         };
         if let Some(id) = message.get("id").cloned() {
+            let refresh_diagnostics = method == "workspace/diagnostic/refresh";
             let response = server_request_response(
                 &server_id,
                 method,
@@ -758,6 +797,9 @@ async fn reader_loop(
                 }
             };
             let _ = write_frame(&mut *writer.lock().await, &value, max_message_bytes).await;
+            if refresh_diagnostics {
+                let _ = diagnostic_refresh.try_send(());
+            }
             continue;
         }
         if method != "textDocument/publishDiagnostics" {
@@ -866,7 +908,8 @@ fn server_request_response(
         "client/registerCapability"
         | "client/unregisterCapability"
         | "window/workDoneProgress/create"
-        | "window/showMessageRequest" => Ok(Value::Null),
+        | "window/showMessageRequest"
+        | "workspace/diagnostic/refresh" => Ok(Value::Null),
         "workspace/workspaceFolders" => Ok(json!([{"uri": root_uri, "name": root_name}])),
         "workspace/applyEdit" => Ok(json!({
             "applied": false,
@@ -1672,9 +1715,29 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_refresh_request_is_acknowledged() {
+        assert_eq!(
+            server_request_response(
+                KOTLIN_LS_SERVER_ID,
+                "workspace/diagnostic/refresh",
+                None,
+                "file:///workspace",
+                "workspace",
+            )
+            .unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
     fn only_slow_starting_servers_get_the_long_initialize_timeout() {
         let normal = Duration::from_secs(10);
-        for server_id in [CLOJURE_SERVER_ID, ELIXIR_LS_SERVER_ID, JULIALS_SERVER_ID] {
+        for server_id in [
+            CLOJURE_SERVER_ID,
+            ELIXIR_LS_SERVER_ID,
+            JULIALS_SERVER_ID,
+            KOTLIN_LS_SERVER_ID,
+        ] {
             assert_eq!(
                 initialization_timeout(server_id, normal),
                 Duration::from_secs(300)

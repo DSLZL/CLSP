@@ -17,6 +17,7 @@ use crate::{
 const DENO_SERVER_ID: &str = "deno";
 const GOPLS_SERVER_ID: &str = "gopls";
 const JDTLS_SERVER_ID: &str = "jdtls";
+const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const JDTLS_POM_LIMIT: u64 = 1024 * 1024;
 
@@ -305,6 +306,9 @@ fn nearest_marked_root(
     if server.id == JDTLS_SERVER_ID {
         return nearest_jdtls_root(file, workspace);
     }
+    if server.id == KOTLIN_LS_SERVER_ID {
+        return nearest_kotlin_root(file, workspace);
+    }
     if server.id == GOPLS_SERVER_ID {
         let mut directory = file.parent();
         while let Some(candidate) = directory {
@@ -347,6 +351,20 @@ fn nearest_jdtls_root(file: &Path, workspace: &Path) -> Option<PathBuf> {
     }
     nearest_maven_root(file, workspace)
         .or_else(|| nearest_root_with_markers(file, workspace, &[".project", ".classpath"]))
+}
+
+fn nearest_kotlin_root(file: &Path, workspace: &Path) -> Option<PathBuf> {
+    for markers in [
+        &["settings.gradle.kts", "settings.gradle"][..],
+        &["gradlew", "gradlew.bat"],
+        &["build.gradle.kts", "build.gradle"],
+        &["pom.xml"],
+    ] {
+        if let Some(root) = nearest_root_with_markers(file, workspace, markers) {
+            return Some(root);
+        }
+    }
+    None
 }
 
 fn nearest_root_with_markers(file: &Path, workspace: &Path, markers: &[&str]) -> Option<PathBuf> {
@@ -835,6 +853,40 @@ mod tests {
             workspace
                 .matching_servers(&source, "java", &registry)
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn kotlin_uses_opencode_root_precedence_and_workspace_boundary() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("workspace");
+        let app = root.join("app");
+        let module = app.join("module");
+        let project = module.join("project");
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(parent.path().join("settings.gradle"), "").unwrap();
+        fs::write(root.join("settings.gradle.kts"), "").unwrap();
+        fs::write(app.join("gradlew.bat"), "").unwrap();
+        fs::write(module.join("build.gradle.kts"), "").unwrap();
+        fs::write(project.join("pom.xml"), "<project />").unwrap();
+        let source = source_dir.join("Main.kt");
+        fs::write(&source, "fun main() = Unit").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&root).unwrap();
+        let kotlin = registry.server(KOTLIN_LS_SERVER_ID).unwrap();
+
+        assert_eq!(workspace.root_for_file(&source, kotlin), root);
+        fs::remove_file(root.join("settings.gradle.kts")).unwrap();
+        assert_eq!(workspace.root_for_file(&source, kotlin), app);
+        fs::remove_file(app.join("gradlew.bat")).unwrap();
+        assert_eq!(workspace.root_for_file(&source, kotlin), module);
+        fs::remove_file(module.join("build.gradle.kts")).unwrap();
+        assert_eq!(workspace.root_for_file(&source, kotlin), project);
+        fs::remove_file(project.join("pom.xml")).unwrap();
+        assert_eq!(
+            workspace.root_for_file(&source, kotlin),
+            fs::canonicalize(&root).unwrap()
         );
     }
 

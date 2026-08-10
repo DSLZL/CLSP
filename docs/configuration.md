@@ -360,6 +360,7 @@ gopls
 hls
 jdtls
 julials
+kotlin-ls
 pyright
 rust
 typescript

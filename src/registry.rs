@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 19] = [
+const APPROVED_IDS: [&str; 20] = [
     "astro",
     "bash",
     "csharp",
@@ -21,16 +21,17 @@ const APPROVED_IDS: [&str; 19] = [
     "hls",
     "jdtls",
     "julials",
+    "kotlin-ls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 48] = [
+const APPROVED_EXTENSIONS: [&str; 50] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
-    "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "lhs", "mjs", "mts", "py", "pyi",
-    "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs", "mjs", "mts",
+    "py", "pyi", "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -304,9 +305,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_nineteen_server_set() {
+    fn builtin_is_the_closed_twenty_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 19);
+        assert_eq!(registry.server.len(), 20);
         assert_eq!(
             registry
                 .server
@@ -400,6 +401,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["julials"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".KTS")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kotlin-ls"]
         );
     }
 
@@ -555,6 +563,37 @@ mod tests {
         assert!(hint.contains("Julia 1.10+"));
         assert!(hint.contains("[lsp.julials].executable"));
         assert!(hint.contains("julialang.language-julia"));
+    }
+
+    #[test]
+    fn kotlin_ls_uses_the_opencode_contract_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let kotlin = registry.server("kotlin-ls").unwrap();
+        assert_eq!(kotlin.language_id, "kotlin");
+        assert_eq!(kotlin.version_req, ">=262.4739.0, <264.0.0");
+        assert_eq!(kotlin.extensions, ["kt", "kts"]);
+        assert_eq!(
+            kotlin.markers,
+            [
+                "settings.gradle.kts",
+                "settings.gradle",
+                "gradlew",
+                "gradlew.bat",
+                "build.gradle.kts",
+                "build.gradle",
+                "pom.xml",
+            ]
+        );
+        assert_eq!(kotlin.command, "kotlin-lsp");
+        assert_eq!(kotlin.args, ["--stdio"]);
+        assert_eq!(kotlin.version_args, ["--version"]);
+        let InstallRecipe::Manual { version, hint } = &kotlin.install else {
+            panic!("KotlinLS must use a manual recipe");
+        };
+        assert_eq!(version, "262.9593.0");
+        assert!(hint.contains("JDK 25"));
+        assert!(hint.contains("[lsp.kotlin-ls].executable"));
+        assert!(hint.contains("JetBrains.kotlin-server"));
     }
 
     #[test]

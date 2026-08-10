@@ -51,6 +51,7 @@ const IDE_REVIEW_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const IDE_REVIEW_SCHEMA: u8 = 1;
 const FSHARP_SERVER_ID: &str = "fsharp";
 const JDTLS_SERVER_ID: &str = "jdtls";
+const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -2289,6 +2290,22 @@ fn lsp_start_args(
         args.push("-data".into());
         args.push(data_directory.to_string_lossy().into_owned());
     }
+    if server_id == KOTLIN_LS_SERVER_ID {
+        let system_path = workspace_state
+            .join("lsp/kotlin-ls")
+            .join(hash_bytes(root.to_string_lossy().as_bytes()))
+            .join("system");
+        fs::create_dir_all(&system_path).map_err(|error| {
+            ClspError::new(
+                ErrorCode::ServerUnavailable,
+                format!("cannot create Kotlin LSP system path: {error}"),
+            )
+            .for_server(server_id)
+            .retryable()
+        })?;
+        args.push("--system-path".into());
+        args.push(system_path.to_string_lossy().into_owned());
+    }
     Ok(args)
 }
 
@@ -2717,6 +2734,29 @@ mod tests {
             lsp_start_args(
                 JDTLS_SERVER_ID,
                 &[],
+                &directory.path().join("workspace/other"),
+                &state,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn kotlin_start_args_use_a_root_specific_system_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("state");
+        let root = directory.path().join("workspace/project");
+        let args = lsp_start_args(KOTLIN_LS_SERVER_ID, &["--stdio".into()], &root, &state).unwrap();
+        assert_eq!(args[0], "--stdio");
+        assert_eq!(args[1], "--system-path");
+        let system_path = PathBuf::from(&args[2]);
+        assert!(system_path.is_dir());
+        assert!(system_path.starts_with(state.join("lsp/kotlin-ls")));
+        assert_ne!(
+            args,
+            lsp_start_args(
+                KOTLIN_LS_SERVER_ID,
+                &["--stdio".into()],
                 &directory.path().join("workspace/other"),
                 &state,
             )

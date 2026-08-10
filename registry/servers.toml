@@ -203,6 +203,18 @@ version_args = ["--version"]
 install = { kind = "manual", version = "5.0.0", hint = "Install Julia 1.10+ and LanguageServer.jl 5.x in the active Julia environment, then ensure julia is on PATH or set [lsp.julials].executable; CLSP also supports the official julialang.language-julia VS Code extension with Julia 1.11+" }
 
 [[server]]
+id = "kotlin-ls"
+display_name = "Kotlin Language Server"
+language_id = "kotlin"
+version_req = ">=262.4739.0, <264.0.0"
+extensions = ["kt", "kts"]
+markers = ["settings.gradle.kts", "settings.gradle", "gradlew", "gradlew.bat", "build.gradle.kts", "build.gradle", "pom.xml"]
+command = "kotlin-lsp"
+args = ["--stdio"]
+version_args = ["--version"]
+install = { kind = "manual", version = "262.9593.0", hint = "Install JDK 25 and JetBrains Kotlin Language Server 262.x or 263.x, then ensure kotlin-lsp or intellij-server is on PATH or set [lsp.kotlin-ls].executable; CLSP also supports the bundled server in the official JetBrains.kotlin-server VS Code extension" }
+
+[[server]]
 id = "clangd"
 display_name = "clangd"
 language_id = "cpp"

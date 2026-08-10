@@ -294,6 +294,28 @@ executable = "C:/tools/Julia/bin/julia.exe"
 
 The official extension path additionally requires Julia 1.11+. CLSP accepts only a bounded official `julialang.language-julia` 1.x manifest and its matching `scripts/environments/languageserver/v<major>.<minor>` or `fallback` environment with LanguageServer 5.x. A standalone Julia package failure does not make a forged or incomplete extension acceptable. Use JuliaLS only with trusted projects because it loads Julia environments and package metadata.
 
+## Kotlin Language Server cannot be resolved
+
+The standalone Kotlin Language Server requires JDK 25 and a compatible 262.x or 263.x server; the official extension bundles its own JBR 25. Check standalone launchers and the official extension visible to the current process:
+
+```powershell
+java -version
+where.exe kotlin-lsp
+kotlin-lsp --version
+where.exe intellij-server
+intellij-server --version
+code --list-extensions --show-versions | Select-String JetBrains.kotlin-server
+```
+
+CLSP checks `kotlin-lsp`, then `intellij-server`, then the bundled server in the standard Stable/Insiders `JetBrains.kotlin-server` extension. It validates the official manifest, product/build metadata, launcher, and bundled JBR 25, and does not download any component. Configure a standalone launcher outside `PATH` explicitly:
+
+```toml
+[lsp.kotlin-ls]
+executable = "C:/tools/kotlin-lsp/bin/intellij-server.exe"
+```
+
+Gradle settings files outrank wrapper scripts and build files; Maven `pom.xml` is the final project marker, with the workspace root as fallback. Each root has an isolated CLSP system path. Use only trusted projects because project import may execute Gradle or Maven build logic.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.

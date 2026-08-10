@@ -74,6 +74,7 @@ After setup:
 | Haskell | Haskell Language Server | Manual GHCup/HLS toolchain |
 | Java | Eclipse JDT Language Server | Reuse local JDTLS or official `redhat.java` extension |
 | Julia | Julia Language Server | Reuse active Julia environment or official `julialang.language-julia` extension |
+| Kotlin | Kotlin Language Server | Reuse standalone server or official `JetBrains.kotlin-server` extension |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
@@ -102,6 +103,8 @@ Haskell support covers `.hs` and `.lhs` files below the nearest `stack.yaml`, `c
 Java support covers `.java` files inside recognized Gradle, Maven, or Eclipse projects. CLSP reuses a local `jdtls` launcher or the server bundled with the official `redhat.java` Stable/Insiders extension, requires Java 21+, and keeps JDTLS data isolated per project root. Loose Java files without a project marker do not start a CLSP JDTLS client. CLSP installs none of these components; open only trusted Maven/Gradle projects because project import may execute build logic.
 
 Julia support covers `.jl` files below the nearest `Project.toml`, `Manifest.toml`, or directory containing Julia source, with the workspace root as the fallback. CLSP first reuses Julia 1.10+ with LanguageServer.jl 5.x in its active environment, then an official `julialang.language-julia` Stable/Insiders environment with Julia 1.11+. CLSP installs none of these components; use JuliaLS only in trusted projects because it loads Julia environments and package metadata.
+
+Kotlin support covers `.kt` and `.kts` files in Gradle or Maven projects. CLSP reuses a compatible standalone Kotlin Language Server or the server and JBR 25 bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension, and isolates server indexes per project root. CLSP installs none of these components; use it only in trusted projects because Gradle and Maven imports may execute build logic.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

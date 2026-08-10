@@ -46,6 +46,10 @@ const JULIALS_LANGUAGE_SERVER_UUID: &str = "2b0e0bc5-e4fd-59b4-8912-456d1b03d8d7
 const JULIALS_FILE_LIMIT: u64 = 1024 * 1024;
 const JULIALS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const JULIALS_PROBE_SCRIPT: &str = r#"using TOML; path = Base.find_package("LanguageServer"); path === nothing && exit(2); project = TOML.parsefile(joinpath(dirname(dirname(path)), "Project.toml")); println(VERSION); println(project["version"]); print(path)"#;
+const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
+const KOTLIN_EXTENSION_PREFIX: &str = "jetbrains.kotlin-server-";
+const KOTLIN_EXTENSION_VERSION_REQ: &str = ">=0.0.6, <0.1.0";
+const KOTLIN_METADATA_FILE_LIMIT: u64 = 1024 * 1024;
 const PRESERVED_ENV: &[&str] = &[
     "SystemRoot",
     "WINDIR",
@@ -64,6 +68,7 @@ const PRESERVED_ENV: &[&str] = &[
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
     "JAVA_HOME",
+    "GRADLE_USER_HOME",
     "GOBIN",
     "GOPATH",
     "CARGO_HOME",
@@ -188,6 +193,17 @@ impl ServerResolver {
             return Ok(resolution);
         }
 
+        if server.id == KOTLIN_LS_SERVER_ID {
+            for candidate in path_kotlin_candidates() {
+                if let Some(resolution) = self
+                    .resolve_candidate(server, workspace, candidate, ExecutableSource::Path)
+                    .await
+                {
+                    return Ok(resolution);
+                }
+            }
+        }
+
         if server.id == ELIXIR_LS_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_elixir_ls(server, workspace).await
         {
@@ -210,6 +226,11 @@ impl ServerResolver {
         }
         if server.id == JULIALS_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_julials(server, workspace).await
+        {
+            return Ok(resolution);
+        }
+        if server.id == KOTLIN_LS_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_kotlin(server, workspace).await
         {
             return Ok(resolution);
         }
@@ -551,6 +572,31 @@ impl ServerResolver {
                 source: ExecutableSource::VsCodeExtension,
                 npm_modules_root: None,
             });
+        }
+        None
+    }
+
+    async fn resolve_vscode_kotlin(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_kotlin_candidates_from(home) {
+            if validate_vscode_kotlin_extension(&candidate, &server.version_req).is_err() {
+                continue;
+            }
+            if let Some(resolution) = self
+                .resolve_candidate(
+                    server,
+                    workspace,
+                    candidate,
+                    ExecutableSource::VsCodeExtension,
+                )
+                .await
+            {
+                return Some(resolution);
+            }
         }
         None
     }
@@ -1335,6 +1381,10 @@ fn parse_version(output: &str) -> Option<Version> {
             !(character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+'))
         })
         .filter_map(|candidate| {
+            let candidate = candidate
+                .strip_prefix("ILS-")
+                .or_else(|| candidate.strip_prefix("LS-"))
+                .unwrap_or(candidate);
             let candidate = candidate.strip_prefix('v').unwrap_or(candidate);
             Version::parse(candidate)
                 .ok()
@@ -1696,6 +1746,15 @@ fn vscode_jdtls_candidates_from(user_home: &Path) -> Vec<PathBuf> {
         .into_iter()
         .filter_map(|(_, root)| jdtls_launcher_in_extension(&root).ok())
         .collect()
+}
+
+fn vscode_kotlin_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    let launcher = if cfg!(windows) {
+        "server/bin/intellij-server.exe"
+    } else {
+        "server/bin/intellij-server"
+    };
+    vscode_extension_candidates_from(user_home, KOTLIN_EXTENSION_PREFIX, Path::new(launcher))
 }
 
 #[derive(Clone, Debug)]
@@ -2437,6 +2496,207 @@ fn vscode_extension_roots_from(
     candidates
 }
 
+#[derive(Clone, Debug)]
+struct KotlinExtensionLayout {
+    extension_root: PathBuf,
+    manifest: PathBuf,
+    product_info: PathBuf,
+    build_file: PathBuf,
+    bundled_java: PathBuf,
+}
+
+fn kotlin_extension_layout(executable: &Path) -> Result<KotlinExtensionLayout, ClspError> {
+    let launcher = if cfg!(windows) {
+        "intellij-server.exe"
+    } else {
+        "intellij-server"
+    };
+    if !executable.is_file()
+        || !executable
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(launcher))
+    {
+        return Err(server_error(
+            "Kotlin candidate is not the official intellij-server launcher",
+        ));
+    }
+    let bin = executable
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("bin")))
+        .ok_or_else(|| server_error("Kotlin launcher is outside server/bin"))?;
+    let server_root = bin
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("server")))
+        .ok_or_else(|| server_error("Kotlin launcher is outside server/bin"))?;
+    let extension_root = server_root
+        .parent()
+        .ok_or_else(|| server_error("Kotlin launcher has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    let product_info = std::fs::canonicalize(extension_root.join("server/product-info.json"))
+        .map_err(server_error)?;
+    let build_file =
+        std::fs::canonicalize(extension_root.join("server/build.txt")).map_err(server_error)?;
+    let bundled_java = std::fs::canonicalize(extension_root.join(if cfg!(windows) {
+        "server/jbr/bin/java.exe"
+    } else {
+        "server/jbr/bin/java"
+    }))
+    .map_err(server_error)?;
+    for path in [
+        &executable,
+        &manifest,
+        &product_info,
+        &build_file,
+        &bundled_java,
+    ] {
+        if !path.starts_with(&extension_root) || !path.is_file() {
+            return Err(server_error(
+                "Kotlin extension path escapes its extension root",
+            ));
+        }
+    }
+    Ok(KotlinExtensionLayout {
+        extension_root,
+        manifest,
+        product_info,
+        build_file,
+        bundled_java,
+    })
+}
+
+fn read_kotlin_json(path: &Path, label: &str) -> Result<serde_json::Value, ClspError> {
+    let metadata = std::fs::metadata(path).map_err(server_error)?;
+    if !metadata.is_file() || metadata.len() > KOTLIN_METADATA_FILE_LIMIT {
+        return Err(server_error(format!(
+            "Kotlin {label} is not a bounded regular file"
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(server_error)?;
+    serde_json::from_slice(&bytes).map_err(server_error)
+}
+
+fn validate_vscode_kotlin_extension(
+    executable: &Path,
+    requirement: &str,
+) -> Result<KotlinExtensionLayout, ClspError> {
+    let layout = kotlin_extension_layout(executable)?;
+    let directory_name = layout
+        .extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Kotlin extension root has no name"))?;
+    let directory_version = directory_name
+        .get(KOTLIN_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..KOTLIN_EXTENSION_PREFIX.len())
+                .is_some_and(|value| value.eq_ignore_ascii_case(KOTLIN_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Kotlin server is outside an official extension root"))?;
+
+    let manifest = read_kotlin_json(&layout.manifest, "manifest")?;
+    if manifest.get("name").and_then(serde_json::Value::as_str) != Some("kotlin-server")
+        || manifest
+            .get("publisher")
+            .and_then(serde_json::Value::as_str)
+            != Some("JetBrains")
+    {
+        return Err(server_error(
+            "Kotlin server is not from the official JetBrains.kotlin-server extension",
+        ));
+    }
+    let extension_version = manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Kotlin extension manifest version is invalid"))?;
+    if (
+        extension_version.major,
+        extension_version.minor,
+        extension_version.patch,
+    ) != (
+        directory_version.major,
+        directory_version.minor,
+        directory_version.patch,
+    ) {
+        return Err(server_error(
+            "Kotlin extension manifest version does not match its directory",
+        ));
+    }
+    validate_version_output(&extension_version.to_string(), KOTLIN_EXTENSION_VERSION_REQ)?;
+
+    let product = read_kotlin_json(&layout.product_info, "product-info.json")?;
+    if product.get("name").and_then(serde_json::Value::as_str) != Some("kotlin-server")
+        || product
+            .get("productVendor")
+            .and_then(serde_json::Value::as_str)
+            != Some("JetBrains")
+        || product
+            .get("productCode")
+            .and_then(serde_json::Value::as_str)
+            != Some("ILS")
+        || product
+            .get("minRequiredJavaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != Some(25)
+    {
+        return Err(server_error("Kotlin product metadata is invalid"));
+    }
+    let build = product
+        .get("buildNumber")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| server_error("Kotlin product metadata has no build number"))?;
+    validate_version_output(build, requirement)?;
+    let expected_launcher = if cfg!(windows) {
+        "bin/intellij-server.exe"
+    } else {
+        "bin/intellij-server"
+    };
+    let expected_java = if cfg!(windows) {
+        "jbr/bin/java.exe"
+    } else {
+        "jbr/bin/java"
+    };
+    let launch_matches = product
+        .get("launch")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|launches| {
+            launches.iter().any(|launch| {
+                launch
+                    .get("launcherPath")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(expected_launcher)
+                    && launch
+                        .get("javaExecutablePath")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(expected_java)
+                    && launch
+                        .get("stdioRedirectArg")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("--stdio")
+            })
+        });
+    if !launch_matches {
+        return Err(server_error("Kotlin product launch metadata is invalid"));
+    }
+    let build_metadata = std::fs::metadata(&layout.build_file).map_err(server_error)?;
+    if build_metadata.len() > KOTLIN_METADATA_FILE_LIMIT {
+        return Err(server_error("Kotlin build metadata exceeds limit"));
+    }
+    let build_text = std::fs::read_to_string(&layout.build_file).map_err(server_error)?;
+    if build_text.trim() != format!("ILS-{build}") {
+        return Err(server_error(
+            "Kotlin build metadata does not match product info",
+        ));
+    }
+    Ok(layout)
+}
+
 fn vscode_fsharp_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
     let name_is = |path: &Path, expected: &str| {
         path.file_name()
@@ -2683,6 +2943,15 @@ fn local_candidates<'a>(
     candidates
 }
 
+fn path_kotlin_candidates() -> Vec<PathBuf> {
+    let mut seen = BTreeSet::new();
+    executable_names("intellij-server")
+        .into_iter()
+        .filter_map(|name| which::which(name).ok())
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
+}
+
 fn executable_candidates_in(directory: &Path, command: &str) -> Vec<PathBuf> {
     executable_names(command)
         .into_iter()
@@ -2836,6 +3105,7 @@ pub(crate) fn resolution_fingerprint(
             | FSHARP_SERVER_ID
             | JDTLS_SERVER_ID
             | JULIALS_SERVER_ID
+            | KOTLIN_LS_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -2854,11 +3124,15 @@ pub(crate) fn resolution_fingerprint(
                 JULIALS_SERVER_ID => {
                     candidates.extend(vscode_julials_environment_projects_from(&home))
                 }
+                KOTLIN_LS_SERVER_ID => candidates.extend(vscode_kotlin_candidates_from(&home)),
                 _ => {}
             }
         }
     }
-    if server.id == JDTLS_SERVER_ID {
+    if server.id == KOTLIN_LS_SERVER_ID {
+        candidates.extend(path_kotlin_candidates());
+    }
+    if matches!(server.id.as_str(), JDTLS_SERVER_ID | KOTLIN_LS_SERVER_ID) {
         digest.update(
             std::env::var_os("JAVA_HOME")
                 .unwrap_or_default()
@@ -2924,6 +3198,14 @@ pub(crate) fn resolution_fingerprint(
             hash_executable_candidate(&mut digest, layout.extension_root.join("package.json"));
             hash_executable_candidate(&mut digest, layout.manifest);
             hash_executable_candidate(&mut digest, layout.package_project);
+        }
+        if server.id == KOTLIN_LS_SERVER_ID
+            && let Ok(layout) = kotlin_extension_layout(&candidate)
+        {
+            hash_executable_candidate(&mut digest, layout.manifest);
+            hash_executable_candidate(&mut digest, layout.product_info);
+            hash_executable_candidate(&mut digest, layout.build_file);
+            hash_executable_candidate(&mut digest, layout.bundled_java);
         }
     }
     hex::encode(digest.finalize())
@@ -3267,6 +3549,61 @@ mod tests {
         )
         .unwrap();
         server
+    }
+
+    fn write_kotlin_extension(
+        extension_root: &Path,
+        directory_version: &str,
+        manifest_version: &str,
+        server_version: &str,
+    ) -> PathBuf {
+        let root = extension_root.join(format!("{KOTLIN_EXTENSION_PREFIX}{directory_version}"));
+        let launcher_path = if cfg!(windows) {
+            "bin/intellij-server.exe"
+        } else {
+            "bin/intellij-server"
+        };
+        let java_path = if cfg!(windows) {
+            "jbr/bin/java.exe"
+        } else {
+            "jbr/bin/java"
+        };
+        let server = root.join("server");
+        let launcher = server.join(launcher_path);
+        let java = server.join(java_path);
+        std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(java.parent().unwrap()).unwrap();
+        std::fs::write(&launcher, b"launcher").unwrap();
+        std::fs::write(&java, b"java").unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "kotlin-server",
+                "publisher": "JetBrains",
+                "version": manifest_version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(server.join("build.txt"), format!("ILS-{server_version}\n")).unwrap();
+        std::fs::write(
+            server.join("product-info.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "kotlin-server",
+                "buildNumber": server_version,
+                "productCode": "ILS",
+                "productVendor": "JetBrains",
+                "minRequiredJavaVersion": 25,
+                "launch": [{
+                    "launcherPath": launcher_path,
+                    "javaExecutablePath": java_path,
+                    "stdioRedirectArg": "--stdio",
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        launcher
     }
 
     fn write_jdtls_extension(
@@ -3791,6 +4128,46 @@ mod tests {
         )
         .unwrap();
         assert!(validate_vscode_fsharp_extension(&newer_net8).is_err());
+    }
+
+    #[test]
+    fn vscode_kotlin_candidates_validate_official_bundled_servers() {
+        let root = tempfile::tempdir().unwrap();
+        let older = write_kotlin_extension(
+            &root.path().join(".vscode/extensions"),
+            "0.0.6-win32-x64",
+            "0.0.6",
+            "262.9593.0",
+        );
+        let newer = write_kotlin_extension(
+            &root.path().join(".vscode-insiders/extensions"),
+            "0.0.8-win32-x64",
+            "0.0.8",
+            "263.2689.0",
+        );
+
+        assert_eq!(
+            vscode_kotlin_candidates_from(root.path()),
+            [newer.clone(), older]
+        );
+        let layout = validate_vscode_kotlin_extension(&newer, ">=262.4739.0, <264.0.0").unwrap();
+        assert!(layout.bundled_java.is_file());
+
+        let incompatible = write_kotlin_extension(
+            &root.path().join("other"),
+            "0.0.8-win32-x64",
+            "0.0.8",
+            "264.1.0",
+        );
+        assert!(validate_vscode_kotlin_extension(&incompatible, ">=262.4739.0, <264.0.0").is_err());
+
+        std::fs::write(
+            layout.manifest,
+            br#"{"name":"kotlin-server","publisher":"other","version":"0.0.8"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_kotlin_extension(&newer, ">=262.4739.0, <264.0.0").is_err());
+        assert!(PRESERVED_ENV.contains(&"GRADLE_USER_HOME"));
     }
 
     #[tokio::test]
@@ -4457,6 +4834,8 @@ mod tests {
                 Version::new(2, 8, 1),
             ),
             ("gleam 1.18.1", Version::new(1, 18, 1)),
+            ("LS-262.9593.0", Version::new(262, 9593, 0)),
+            ("ILS-263.2689.0", Version::new(263, 2689, 0)),
             ("2.14.0.0", Version::new(2, 14, 0)),
         ] {
             assert_eq!(parse_version(output), Some(expected));
@@ -4572,6 +4951,22 @@ mod tests {
         contents.push_str("\n# changed\n");
         std::fs::write(manifest, contents).unwrap();
         let second = resolution_fingerprint(server, &workspace, Some(&project));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn kotlin_bundle_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let launcher =
+            write_kotlin_extension(directory.path(), "0.0.8-win32-x64", "0.0.8", "263.2689.0");
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(KOTLIN_LS_SERVER_ID).unwrap();
+        let build_file = kotlin_extension_layout(&launcher).unwrap().build_file;
+        let first = resolution_fingerprint(server, &workspace, Some(&launcher));
+        std::fs::write(build_file, b"ILS-263.2689.1\n").unwrap();
+        let second = resolution_fingerprint(server, &workspace, Some(&launcher));
         assert_ne!(first, second);
     }
 }
