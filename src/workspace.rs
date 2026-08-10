@@ -964,6 +964,40 @@ mod tests {
     }
 
     #[test]
+    fn lua_files_use_the_nearest_opencode_marker_within_the_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = root.path().join("workspace");
+        let project = workspace_root.join("packages/demo");
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(root.path().join(".luarc.json"), "{}").unwrap();
+        let file = source_dir.join("main.lua");
+        fs::write(&file, "local value = 1").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&workspace_root).unwrap();
+        let lua = registry.server("lua-ls").unwrap();
+
+        assert_eq!(
+            workspace
+                .matching_servers(&file, "lua", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["lua-ls"]
+        );
+        for marker in &lua.markers {
+            let marker = project.join(marker);
+            fs::write(&marker, "{}").unwrap();
+            assert_eq!(workspace.root_for_file(&file, lua), project);
+            fs::remove_file(marker).unwrap();
+        }
+        assert_eq!(
+            workspace.root_for_file(&file, lua),
+            fs::canonicalize(&workspace_root).unwrap()
+        );
+    }
+
+    #[test]
     fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
         let root = tempfile::tempdir().unwrap();
         let deno_root = root.path().join("deno-app");

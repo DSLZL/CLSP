@@ -361,6 +361,7 @@ hls
 jdtls
 julials
 kotlin-ls
+lua-ls
 pyright
 rust
 typescript

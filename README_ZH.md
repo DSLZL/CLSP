@@ -73,6 +73,7 @@ clsp setup --workspace .
 | Java | Eclipse JDT Language Server | 复用本地 JDTLS 或官方 `redhat.java` 扩展 |
 | Julia | Julia Language Server | 复用当前 Julia 环境或官方 `julialang.language-julia` 扩展 |
 | Kotlin | Kotlin Language Server | 复用独立服务端或官方 `JetBrains.kotlin-server` 扩展 |
+| Lua | Lua Language Server | 复用独立 LuaLS 或官方 `sumneko.lua` 扩展 |
 | Python | Pyright | npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
@@ -103,6 +104,8 @@ Java 支持位于 Gradle、Maven 或 Eclipse 项目中的 `.java` 文件。CLSP 
 Julia 支持 `.jl` 文件，根目录取最近的 `Project.toml`、`Manifest.toml` 或包含 Julia 源文件的目录，找不到时回退到 workspace 根。CLSP 先复用 Julia 1.10+ 当前环境中的 LanguageServer.jl 5.x，再尝试配合 Julia 1.11+ 使用官方 `julialang.language-julia` Stable/Insiders 扩展环境。CLSP 不安装这些组件；JuliaLS 会加载 Julia 环境与包元数据，因此只应在可信项目中使用。
 
 Kotlin 支持 Gradle 或 Maven 项目中的 `.kt` 与 `.kts` 文件。CLSP 会复用兼容的独立 Kotlin Language Server，或官方 `JetBrains.kotlin-server` Stable/Insiders 扩展内置的服务端与 JBR 25，并按项目根隔离索引。CLSP 不安装这些组件；Gradle/Maven 导入可能执行构建逻辑，因此只应在可信项目中使用。
+
+Lua 支持 `.lua` 文件，根目录取最近的 OpenCode 兼容 Lua 配置标记，找不到时回退到 workspace 根。CLSP 先复用兼容的 LuaLS `3.x` 可执行文件，再尝试官方 `sumneko.lua` Stable/Insiders 扩展内置的完整服务端；两者都不会由 CLSP 安装。LuaLS 插件可能执行代码，因此只应使用可信的项目配置。
 
 如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
 

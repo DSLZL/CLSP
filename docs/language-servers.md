@@ -26,6 +26,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `jdtls` | Java | `jdtls` or Java + Equinox launcher | `>=1.30.0, <2.0.0` | official `redhat.java` extension or manual JDTLS |
 | `julials` | Julia | `julia ... using LanguageServer; runserver()` | `>=5.0.0, <6.0.0` | active Julia environment or official `julialang.language-julia` extension |
 | `kotlin-ls` | Kotlin | `kotlin-lsp` or `intellij-server --stdio` | `>=262.4739.0, <264.0.0` | official `JetBrains.kotlin-server` extension or manual standalone server |
+| `lua-ls` | Lua | `lua-language-server` | `>=3.19.0, <4.0.0` | official `sumneko.lua` extension or manual standalone server |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
 
@@ -51,6 +52,7 @@ Some server types then have an additional reuse path before installation:
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
+- LuaLS: the complete server bundled with the official `sumneko.lua` Stable/Insiders extension after standalone executables; its manifest, launcher, runtime files, and actual server version are verified
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
 
 Only after those reuse paths fail does automatic installation begin.
@@ -175,6 +177,19 @@ executable = "C:/tools/kotlin-lsp/bin/intellij-server.exe"
 ```
 
 Root selection follows OpenCode precedence: Gradle settings files, wrapper scripts, Gradle build files, then Maven `pom.xml`; otherwise CLSP uses the workspace root. Each selected root gets a separate CLSP-owned `--system-path`, and Kotlin receives no server-specific initialization options. `JAVA_HOME` and `GRADLE_USER_HOME` are preserved, and Kotlin alone gets a longer initialize deadline for cold IntelliJ startup. Use only trusted projects because Gradle and Maven imports may execute build logic.
+
+### Lua
+
+CLSP first checks project-local, explicit, and `PATH` `lua-language-server` executables, then the standard Stable/Insiders directories for the official `sumneko.lua` extension. It accepts LuaLS `3.x` from `3.19.0` onward and validates that an extension candidate has the official manifest, complete runtime layout, and a server version matching the extension. CLSP does not install LuaLS or the extension.
+
+Configure a standalone server outside `PATH` directly:
+
+```toml
+[lsp.lua-ls]
+executable = "C:/tools/lua-language-server/bin/lua-language-server.exe"
+```
+
+Root selection follows OpenCode: the nearest `.luarc.json`, `.luarc.jsonc`, `.luacheckrc`, `.stylua.toml`, `stylua.toml`, `selene.toml`, or `selene.yml` wins; otherwise CLSP uses the workspace root. LuaLS receives no extension-private initialization options. Project configuration can enable executable LuaLS plugins, so use only trusted projects.
 
 ### C#
 

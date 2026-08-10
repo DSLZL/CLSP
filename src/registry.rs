@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 20] = [
+const APPROVED_IDS: [&str; 21] = [
     "astro",
     "bash",
     "csharp",
@@ -22,16 +22,17 @@ const APPROVED_IDS: [&str; 20] = [
     "jdtls",
     "julials",
     "kotlin-ls",
+    "lua-ls",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 50] = [
+const APPROVED_EXTENSIONS: [&str; 51] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
-    "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs", "mjs", "mts",
-    "py", "pyi", "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs", "lua", "mjs",
+    "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -305,9 +306,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_twenty_server_set() {
+    fn builtin_is_the_closed_twenty_one_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 20);
+        assert_eq!(registry.server.len(), 21);
         assert_eq!(
             registry
                 .server
@@ -408,6 +409,13 @@ mod tests {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["kotlin-ls"]
+        );
+        assert_eq!(
+            registry
+                .matching_extension(".LUA")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["lua-ls"]
         );
     }
 
@@ -594,6 +602,36 @@ mod tests {
         assert!(hint.contains("JDK 25"));
         assert!(hint.contains("[lsp.kotlin-ls].executable"));
         assert!(hint.contains("JetBrains.kotlin-server"));
+    }
+
+    #[test]
+    fn lua_ls_uses_the_opencode_contract_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let lua = registry.server("lua-ls").unwrap();
+        assert_eq!(lua.language_id, "lua");
+        assert_eq!(lua.version_req, ">=3.19.0, <4.0.0");
+        assert_eq!(lua.extensions, ["lua"]);
+        assert_eq!(
+            lua.markers,
+            [
+                ".luarc.json",
+                ".luarc.jsonc",
+                ".luacheckrc",
+                ".stylua.toml",
+                "stylua.toml",
+                "selene.toml",
+                "selene.yml",
+            ]
+        );
+        assert_eq!(lua.command, "lua-language-server");
+        assert!(lua.args.is_empty());
+        assert_eq!(lua.version_args, ["--version"]);
+        let InstallRecipe::Manual { version, hint } = &lua.install else {
+            panic!("LuaLS must use a manual recipe");
+        };
+        assert_eq!(version, "3.19.0");
+        assert!(hint.contains("[lsp.lua-ls].executable"));
+        assert!(hint.contains("sumneko.lua"));
     }
 
     #[test]

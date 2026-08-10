@@ -215,6 +215,18 @@ version_args = ["--version"]
 install = { kind = "manual", version = "262.9593.0", hint = "Install JDK 25 and JetBrains Kotlin Language Server 262.x or 263.x, then ensure kotlin-lsp or intellij-server is on PATH or set [lsp.kotlin-ls].executable; CLSP also supports the bundled server in the official JetBrains.kotlin-server VS Code extension" }
 
 [[server]]
+id = "lua-ls"
+display_name = "Lua Language Server"
+language_id = "lua"
+version_req = ">=3.19.0, <4.0.0"
+extensions = ["lua"]
+markers = [".luarc.json", ".luarc.jsonc", ".luacheckrc", ".stylua.toml", "stylua.toml", "selene.toml", "selene.yml"]
+command = "lua-language-server"
+args = []
+version_args = ["--version"]
+install = { kind = "manual", version = "3.19.0", hint = "Install LuaLS 3.x and ensure lua-language-server is on PATH or set [lsp.lua-ls].executable; CLSP also supports the bundled server in the official sumneko.lua VS Code extension" }
+
+[[server]]
 id = "clangd"
 display_name = "clangd"
 language_id = "cpp"

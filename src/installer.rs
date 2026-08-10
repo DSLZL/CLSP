@@ -50,6 +50,9 @@ const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
 const KOTLIN_EXTENSION_PREFIX: &str = "jetbrains.kotlin-server-";
 const KOTLIN_EXTENSION_VERSION_REQ: &str = ">=0.0.6, <0.1.0";
 const KOTLIN_METADATA_FILE_LIMIT: u64 = 1024 * 1024;
+const LUA_LS_SERVER_ID: &str = "lua-ls";
+const LUA_EXTENSION_PREFIX: &str = "sumneko.lua-";
+const LUA_EXTENSION_FILE_LIMIT: u64 = 1024 * 1024;
 const PRESERVED_ENV: &[&str] = &[
     "SystemRoot",
     "WINDIR",
@@ -231,6 +234,11 @@ impl ServerResolver {
         }
         if server.id == KOTLIN_LS_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_kotlin(server, workspace).await
+        {
+            return Ok(resolution);
+        }
+        if server.id == LUA_LS_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_lua(server, workspace).await
         {
             return Ok(resolution);
         }
@@ -595,6 +603,36 @@ impl ServerResolver {
                 )
                 .await
             {
+                return Some(resolution);
+            }
+        }
+        None
+    }
+
+    async fn resolve_vscode_lua(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_lua_candidates_from(home) {
+            let Ok((_, extension_version)) =
+                validate_vscode_lua_extension(&candidate, &server.version_req)
+            else {
+                continue;
+            };
+            let Some(resolution) = self
+                .resolve_candidate(
+                    server,
+                    workspace,
+                    candidate,
+                    ExecutableSource::VsCodeExtension,
+                )
+                .await
+            else {
+                continue;
+            };
+            if validate_lua_server_version(&resolution.version_output, &extension_version).is_ok() {
                 return Some(resolution);
             }
         }
@@ -1757,6 +1795,15 @@ fn vscode_kotlin_candidates_from(user_home: &Path) -> Vec<PathBuf> {
     vscode_extension_candidates_from(user_home, KOTLIN_EXTENSION_PREFIX, Path::new(launcher))
 }
 
+fn vscode_lua_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    let launcher = if cfg!(windows) {
+        "server/bin/lua-language-server.exe"
+    } else {
+        "server/bin/lua-language-server"
+    };
+    vscode_extension_candidates_from(user_home, LUA_EXTENSION_PREFIX, Path::new(launcher))
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct JdtlsExtensionLayout {
     pub extension_root: PathBuf,
@@ -2497,6 +2544,152 @@ fn vscode_extension_roots_from(
 }
 
 #[derive(Clone, Debug)]
+struct LuaExtensionLayout {
+    extension_root: PathBuf,
+    manifest: PathBuf,
+    server_main: PathBuf,
+    bin_main: PathBuf,
+    script: PathBuf,
+    meta: PathBuf,
+    locale: PathBuf,
+}
+
+fn lua_extension_layout(executable: &Path) -> Result<LuaExtensionLayout, ClspError> {
+    let launcher = if cfg!(windows) {
+        "lua-language-server.exe"
+    } else {
+        "lua-language-server"
+    };
+    if !executable.is_file()
+        || !executable
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(launcher))
+    {
+        return Err(server_error(
+            "LuaLS candidate is not the official platform launcher",
+        ));
+    }
+    let bin = executable
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("bin")))
+        .ok_or_else(|| server_error("LuaLS launcher is outside server/bin"))?;
+    let server = bin
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("server")))
+        .ok_or_else(|| server_error("LuaLS launcher is outside server/bin"))?;
+    let extension_root = server
+        .parent()
+        .ok_or_else(|| server_error("LuaLS launcher has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    let server_main =
+        std::fs::canonicalize(extension_root.join("server/main.lua")).map_err(server_error)?;
+    let bin_main =
+        std::fs::canonicalize(extension_root.join("server/bin/main.lua")).map_err(server_error)?;
+    let script =
+        std::fs::canonicalize(extension_root.join("server/script")).map_err(server_error)?;
+    let meta = std::fs::canonicalize(extension_root.join("server/meta")).map_err(server_error)?;
+    let locale =
+        std::fs::canonicalize(extension_root.join("server/locale")).map_err(server_error)?;
+
+    for path in [&executable, &manifest, &server_main, &bin_main] {
+        if !path.starts_with(&extension_root) || !path.is_file() {
+            return Err(server_error("LuaLS file escapes its extension root"));
+        }
+    }
+    for path in [&script, &meta, &locale] {
+        if !path.starts_with(&extension_root) || !path.is_dir() {
+            return Err(server_error("LuaLS directory escapes its extension root"));
+        }
+    }
+
+    Ok(LuaExtensionLayout {
+        extension_root,
+        manifest,
+        server_main,
+        bin_main,
+        script,
+        meta,
+        locale,
+    })
+}
+
+fn validate_vscode_lua_extension(
+    executable: &Path,
+    requirement: &str,
+) -> Result<(LuaExtensionLayout, Version), ClspError> {
+    let layout = lua_extension_layout(executable)?;
+    let directory_name = layout
+        .extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Lua extension root has no name"))?;
+    let directory_version = directory_name
+        .get(LUA_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..LUA_EXTENSION_PREFIX.len())
+                .is_some_and(|value| value.eq_ignore_ascii_case(LUA_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("LuaLS is outside an official extension root"))?;
+
+    let metadata = std::fs::metadata(&layout.manifest).map_err(server_error)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > LUA_EXTENSION_FILE_LIMIT {
+        return Err(server_error(
+            "Lua extension manifest is not a bounded regular file",
+        ));
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&layout.manifest).map_err(server_error)?)
+            .map_err(server_error)?;
+    if manifest.get("name").and_then(serde_json::Value::as_str) != Some("lua")
+        || manifest
+            .get("publisher")
+            .and_then(serde_json::Value::as_str)
+            != Some("sumneko")
+    {
+        return Err(server_error(
+            "LuaLS is not from the official sumneko.lua extension",
+        ));
+    }
+    let extension_version = manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Lua extension manifest version is invalid"))?;
+    if (
+        extension_version.major,
+        extension_version.minor,
+        extension_version.patch,
+    ) != (
+        directory_version.major,
+        directory_version.minor,
+        directory_version.patch,
+    ) {
+        return Err(server_error(
+            "Lua extension manifest version does not match its directory",
+        ));
+    }
+    validate_version_output(&extension_version.to_string(), requirement)?;
+    Ok((layout, extension_version))
+}
+
+fn validate_lua_server_version(output: &str, expected: &Version) -> Result<(), ClspError> {
+    let actual = parse_version(output)
+        .ok_or_else(|| server_error("LuaLS probe returned no semantic version"))?;
+    if &actual != expected {
+        return Err(server_error(format!(
+            "LuaLS server version {actual} does not match extension {expected}"
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
 struct KotlinExtensionLayout {
     extension_root: PathBuf,
     manifest: PathBuf,
@@ -3106,6 +3299,7 @@ pub(crate) fn resolution_fingerprint(
             | JDTLS_SERVER_ID
             | JULIALS_SERVER_ID
             | KOTLIN_LS_SERVER_ID
+            | LUA_LS_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -3125,6 +3319,7 @@ pub(crate) fn resolution_fingerprint(
                     candidates.extend(vscode_julials_environment_projects_from(&home))
                 }
                 KOTLIN_LS_SERVER_ID => candidates.extend(vscode_kotlin_candidates_from(&home)),
+                LUA_LS_SERVER_ID => candidates.extend(vscode_lua_candidates_from(&home)),
                 _ => {}
             }
         }
@@ -3206,6 +3401,16 @@ pub(crate) fn resolution_fingerprint(
             hash_executable_candidate(&mut digest, layout.product_info);
             hash_executable_candidate(&mut digest, layout.build_file);
             hash_executable_candidate(&mut digest, layout.bundled_java);
+        }
+        if server.id == LUA_LS_SERVER_ID
+            && let Ok(layout) = lua_extension_layout(&candidate)
+        {
+            hash_executable_candidate(&mut digest, layout.manifest);
+            hash_executable_candidate(&mut digest, layout.server_main);
+            hash_executable_candidate(&mut digest, layout.bin_main);
+            hash_executable_candidate(&mut digest, layout.script);
+            hash_executable_candidate(&mut digest, layout.meta);
+            hash_executable_candidate(&mut digest, layout.locale);
         }
     }
     hex::encode(digest.finalize())
@@ -3604,6 +3809,41 @@ mod tests {
         )
         .unwrap();
         launcher
+    }
+
+    fn write_lua_extension(
+        extension_root: &Path,
+        directory_version: &str,
+        manifest_version: &str,
+    ) -> PathBuf {
+        let root = extension_root.join(format!("{LUA_EXTENSION_PREFIX}{directory_version}"));
+        let executable = root.join(if cfg!(windows) {
+            "server/bin/lua-language-server.exe"
+        } else {
+            "server/bin/lua-language-server"
+        });
+        for directory in [
+            executable.parent().unwrap().to_path_buf(),
+            root.join("server/script"),
+            root.join("server/meta"),
+            root.join("server/locale"),
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(&executable, b"launcher").unwrap();
+        std::fs::write(root.join("server/main.lua"), b"return true").unwrap();
+        std::fs::write(root.join("server/bin/main.lua"), b"return true").unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "lua",
+                "publisher": "sumneko",
+                "version": manifest_version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        executable
     }
 
     fn write_jdtls_extension(
@@ -4168,6 +4408,70 @@ mod tests {
         .unwrap();
         assert!(validate_vscode_kotlin_extension(&newer, ">=262.4739.0, <264.0.0").is_err());
         assert!(PRESERVED_ENV.contains(&"GRADLE_USER_HOME"));
+    }
+
+    #[test]
+    fn vscode_lua_candidates_validate_official_bounded_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let older = write_lua_extension(
+            &root.path().join(".vscode/extensions"),
+            "3.18.2-win32-x64",
+            "3.18.2",
+        );
+        let newer = write_lua_extension(
+            &root.path().join(".vscode-insiders/extensions"),
+            "3.19.0-win32-x64",
+            "3.19.0",
+        );
+        assert_eq!(
+            vscode_lua_candidates_from(root.path()),
+            [newer.clone(), older]
+        );
+
+        let (layout, version) = validate_vscode_lua_extension(&newer, ">=3.19.0, <4.0.0").unwrap();
+        assert_eq!(version, Version::new(3, 19, 0));
+        validate_lua_server_version("3.19.0", &version).unwrap();
+        assert!(validate_lua_server_version("3.19.1", &version).is_err());
+
+        let mismatched = write_lua_extension(
+            &root.path().join("mismatched"),
+            "3.19.1-win32-x64",
+            "3.19.0",
+        );
+        assert!(validate_vscode_lua_extension(&mismatched, ">=3.19.0, <4.0.0").is_err());
+
+        let forged = write_lua_extension(&root.path().join("forged"), "3.19.0-win32-x64", "3.19.0");
+        let forged_manifest = lua_extension_layout(&forged).unwrap().manifest;
+        std::fs::write(
+            forged_manifest,
+            br#"{"name":"lua","publisher":"other","version":"3.19.0"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_lua_extension(&forged, ">=3.19.0, <4.0.0").is_err());
+
+        let incomplete = write_lua_extension(
+            &root.path().join("incomplete"),
+            "3.19.0-win32-x64",
+            "3.19.0",
+        );
+        std::fs::remove_dir_all(lua_extension_layout(&incomplete).unwrap().locale).unwrap();
+        assert!(validate_vscode_lua_extension(&incomplete, ">=3.19.0, <4.0.0").is_err());
+
+        std::fs::write(
+            layout.manifest,
+            vec![b' '; LUA_EXTENSION_FILE_LIMIT as usize + 1],
+        )
+        .unwrap();
+        assert!(validate_vscode_lua_extension(&newer, ">=3.19.0, <4.0.0").is_err());
+
+        let outside = root.path().join(if cfg!(windows) {
+            "outside/lua-language-server.exe"
+        } else {
+            "outside/lua-language-server"
+        });
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, b"launcher").unwrap();
+        assert!(lua_extension_layout(&outside).is_err());
     }
 
     #[tokio::test]
@@ -4967,6 +5271,21 @@ mod tests {
         let first = resolution_fingerprint(server, &workspace, Some(&launcher));
         std::fs::write(build_file, b"ILS-263.2689.1\n").unwrap();
         let second = resolution_fingerprint(server, &workspace, Some(&launcher));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn lua_runtime_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let executable = write_lua_extension(directory.path(), "3.19.0-win32-x64", "3.19.0");
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(LUA_LS_SERVER_ID).unwrap();
+        let server_main = lua_extension_layout(&executable).unwrap().server_main;
+        let first = resolution_fingerprint(server, &workspace, Some(&executable));
+        std::fs::write(server_main, b"return false -- changed").unwrap();
+        let second = resolution_fingerprint(server, &workspace, Some(&executable));
         assert_ne!(first, second);
     }
 }

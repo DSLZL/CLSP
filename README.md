@@ -75,6 +75,7 @@ After setup:
 | Java | Eclipse JDT Language Server | Reuse local JDTLS or official `redhat.java` extension |
 | Julia | Julia Language Server | Reuse active Julia environment or official `julialang.language-julia` extension |
 | Kotlin | Kotlin Language Server | Reuse standalone server or official `JetBrains.kotlin-server` extension |
+| Lua | Lua Language Server | Reuse standalone LuaLS or official `sumneko.lua` extension |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
@@ -105,6 +106,8 @@ Java support covers `.java` files inside recognized Gradle, Maven, or Eclipse pr
 Julia support covers `.jl` files below the nearest `Project.toml`, `Manifest.toml`, or directory containing Julia source, with the workspace root as the fallback. CLSP first reuses Julia 1.10+ with LanguageServer.jl 5.x in its active environment, then an official `julialang.language-julia` Stable/Insiders environment with Julia 1.11+. CLSP installs none of these components; use JuliaLS only in trusted projects because it loads Julia environments and package metadata.
 
 Kotlin support covers `.kt` and `.kts` files in Gradle or Maven projects. CLSP reuses a compatible standalone Kotlin Language Server or the server and JBR 25 bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension, and isolates server indexes per project root. CLSP installs none of these components; use it only in trusted projects because Gradle and Maven imports may execute build logic.
+
+Lua support covers `.lua` files below the nearest OpenCode-compatible Lua configuration marker, with the workspace root as the fallback. CLSP first reuses a compatible LuaLS `3.x` executable, then the complete server bundled with the official `sumneko.lua` Stable/Insiders extension. CLSP installs neither source; use trusted project configuration because LuaLS plugins may execute code.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

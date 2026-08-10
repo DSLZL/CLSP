@@ -316,6 +316,25 @@ executable = "C:/tools/kotlin-lsp/bin/intellij-server.exe"
 
 Gradle settings files outrank wrapper scripts and build files; Maven `pom.xml` is the final project marker, with the workspace root as fallback. Each root has an isolated CLSP system path. Use only trusted projects because project import may execute Gradle or Maven build logic.
 
+## LuaLS cannot be resolved
+
+CLSP does not install LuaLS or the VS Code extension. Check both supported sources:
+
+```powershell
+where.exe lua-language-server
+lua-language-server --version
+code --list-extensions --show-versions | Select-String sumneko.lua
+```
+
+CLSP checks compatible project, explicit, and `PATH` executables first, then the server in standard Stable/Insiders `sumneko.lua` extension directories. Extension reuse requires the official manifest, complete `server` runtime, and matching LuaLS version. Configure a standalone executable outside `PATH` explicitly:
+
+```toml
+[lsp.lua-ls]
+executable = "C:/tools/lua-language-server/bin/lua-language-server.exe"
+```
+
+The registry accepts LuaLS `>=3.19.0, <4.0.0`. Add one of the documented Lua project markers when a nested project needs its own root; otherwise the workspace root is used. Project configuration can enable executable plugins, so use only trusted projects.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.
