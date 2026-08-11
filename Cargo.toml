@@ -46,8 +46,8 @@ tempfile = "3.20"
 [profile.release]
 strip = true
 opt-level = "z"
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 8
 panic = "abort"
 
 # Preserve vectorized hashing while the rest of the executable optimizes for size.
