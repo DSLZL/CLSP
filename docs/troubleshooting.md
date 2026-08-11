@@ -196,6 +196,12 @@ Explicit example:
 executable = "C:/tools/pyright-langserver.cmd"
 ```
 
+## The Pyright VS Code extension is disabled by Pylance
+
+The official `ms-pyright.pyright` extension disables its own editor client when Pylance is installed. This does not prevent CLSP from validating and starting the extension's bundled `dist/server.js` independently.
+
+In that setup, `ide_diagnostics` may report Problems published by Pylance while `lsp_diagnostics` reports CLSP-managed Pyright diagnostics. To test the open-source Pyright extension itself, use a VS Code profile or isolated extension directory without Pylance.
+
 ## npm Language Server install fails even though another package manager exists
 
 CLSP probes package managers in this order:

@@ -927,6 +927,46 @@ mod tests {
     }
 
     #[test]
+    fn python_files_use_the_nearest_opencode_marker_within_the_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = root.path().join("workspace");
+        let project = workspace_root.join("packages/demo");
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(root.path().join("pyproject.toml"), "").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&workspace_root).unwrap();
+        let pyright = registry.server("pyright").unwrap();
+
+        for name in ["demo.py", "demo.pyi"] {
+            let file = source_dir.join(name);
+            fs::write(&file, "value: str = 42").unwrap();
+            assert_eq!(
+                workspace
+                    .matching_servers(
+                        &file,
+                        file.extension().unwrap().to_str().unwrap(),
+                        &registry
+                    )
+                    .into_iter()
+                    .map(|server| server.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["pyright"]
+            );
+            for marker in &pyright.markers {
+                let marker = project.join(marker);
+                fs::write(&marker, "").unwrap();
+                assert_eq!(workspace.root_for_file(&file, pyright), project);
+                fs::remove_file(marker).unwrap();
+            }
+            assert_eq!(
+                workspace.root_for_file(&file, pyright),
+                fs::canonicalize(&workspace_root).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn julia_files_use_the_nearest_opencode_marker_or_workspace() {
         let root = tempfile::tempdir().unwrap();
         let project = root.path().join("packages/demo");

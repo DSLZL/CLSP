@@ -20,7 +20,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `gleam` | Gleam | `gleam lsp` | `>=1.0.0, <2.0.0` | manual Gleam compiler |
 | `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
-| `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
+| `pyright` | Python | `pyright-langserver --stdio` | `>=1.1.300, <2.0.0` | official VS Code extension or `pyright@1.1.411` |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
@@ -55,6 +55,7 @@ Some server types then have an additional reuse path before installation:
 - F#: `bin/net*/fsautocomplete.dll` from the official `Ionide.Ionide-fsharp` Stable/Insiders extension, then the exact global .NET tool
 - Intelephense: `node_modules/intelephense/lib/intelephense.js` from the official `bmewburn.vscode-intelephense-client` Stable/Insiders extension, then the selected package manager's global installation
 - Prisma: `dist/language-server/bin.js` plus its schema WASM from the official `Prisma.prisma` Stable/Insiders extension, then the selected package manager's global installation
+- Pyright: `dist/server.js` from the official `ms-pyright.pyright` Stable/Insiders extension, then the selected package manager's global installation
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
@@ -256,6 +257,14 @@ executable = "C:/tools/prisma/dist/language-server/bin.js"
 
 CLSP starts the server with `--stdio` for `.prisma` files and sends no extension-private settings or Prisma-specific initialization options. It answers each standard `workspace/configuration` item with an empty object so diagnostics remain enabled. Prisma omits the optional diagnostic version, so CLSP correlates a push only to the current version of an already-open document; an explicit server version always wins. The nearest `schema.prisma`, `prisma/schema.prisma`, or `prisma` directory selects the root, otherwise the workspace root is used. `package.json` does not disable Prisma detection. Prisma configuration files may execute project code, so use the server only in trusted workspaces.
 
+### Python
+
+Pyright requires Node.js 14 or newer. CLSP first checks the selected project's `node_modules/.bin`, `[lsp.pyright].executable`, and `PATH`. It then scans only the standard Stable/Insiders directories for the official `ms-pyright.pyright` extension and validates its identity, version, bundled `dist/server.js`, and extension-root containment.
+
+If no compatible existing source is found, CLSP checks the selected package manager's global root and, when automatic installation is enabled, installs the exact `pyright@1.1.411` package. CLSP starts `pyright-langserver --stdio` and sends no extension-private settings or Pyright-specific initialization options.
+
+The nearest `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `Pipfile`, or `pyrightconfig.json` selects the root, otherwise the workspace root is used. The official extension disables its own editor client when Pylance is installed, but CLSP's server process and `lsp_diagnostics` remain independent from VS Code Problems.
+
 ### C#
 
 CLSP uses the existing `dotnet` CLI and the pinned global tool:
@@ -417,7 +426,7 @@ Examples:
 
 - Rust: `.rs`, `Cargo.toml`, `rust-project.json`
 - Go: `.go`; any ancestor `go.work` takes priority over the nearest `go.mod` or `go.sum`
-- Python: `.py`, `.pyi`, `pyproject.toml`, `pyrightconfig.json`
+- Python: `.py` or `.pyi` below the nearest `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `Pipfile`, or `pyrightconfig.json`, with workspace-root fallback
 - TypeScript/JavaScript: JS/TS extensions plus `package.json`, `tsconfig.json`, or `jsconfig.json`
 - C/C++: C-family extensions plus `compile_commands.json`, `CMakeLists.txt`, or `.clangd`
 - Dart: `.dart` plus `pubspec.yaml` or `analysis_options.yaml`

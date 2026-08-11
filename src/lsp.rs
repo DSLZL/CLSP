@@ -41,6 +41,7 @@ const ESLINT_SERVER_ID: &str = "eslint";
 const FSHARP_SERVER_ID: &str = "fsharp";
 const INTELEPHENSE_SERVER_ID: &str = "intelephense";
 const PRISMA_SERVER_ID: &str = "prisma";
+const PYRIGHT_SERVER_ID: &str = "pyright";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JULIALS_SERVER_ID: &str = "julials";
 const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
@@ -298,6 +299,7 @@ impl LspClient {
                 ESLINT_SERVER_ID => "ESLint Language Server",
                 INTELEPHENSE_SERVER_ID => "PHP Intelephense",
                 PRISMA_SERVER_ID => "Prisma Language Server",
+                PYRIGHT_SERVER_ID => "Pyright",
                 _ => unreachable!(),
             };
             let node = which::which("node")
@@ -1217,11 +1219,13 @@ fn uses_dotnet_host(server_id: &str, executable: &Path) -> bool {
 
 fn uses_node_host(server_id: &str, executable: &Path) -> bool {
     server_id == ESLINT_SERVER_ID
-        || (matches!(server_id, INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID)
-            && executable
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("js")))
+        || (matches!(
+            server_id,
+            INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID | PYRIGHT_SERVER_ID
+        ) && executable
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("js")))
 }
 
 fn uses_jdtls_java_host(server_id: &str, executable: &Path) -> bool {
@@ -1604,6 +1608,21 @@ mod tests {
             diagnostic_version(PRISMA_SERVER_ID, Some(1), Some(2)),
             Some(1)
         );
+    }
+
+    #[test]
+    fn pyright_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let script = root.join("server.js");
+        let shim = root.join("pyright-langserver.cmd");
+        assert!(
+            server_initialization_options(PYRIGHT_SERVER_ID, root, root, &script, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(uses_node_host(PYRIGHT_SERVER_ID, &script));
+        assert!(!uses_node_host(PYRIGHT_SERVER_ID, &shim));
     }
 
     #[test]

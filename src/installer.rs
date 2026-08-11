@@ -41,6 +41,8 @@ const INTELEPHENSE_SERVER_ID: &str = "intelephense";
 const INTELEPHENSE_EXTENSION_PREFIX: &str = "bmewburn.vscode-intelephense-client-";
 const PRISMA_SERVER_ID: &str = "prisma";
 const PRISMA_EXTENSION_PREFIX: &str = "prisma.prisma-";
+const PYRIGHT_SERVER_ID: &str = "pyright";
+const PYRIGHT_EXTENSION_PREFIX: &str = "ms-pyright.pyright-";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JDTLS_EXTENSION_PREFIX: &str = "redhat.java-";
 const JDTLS_PLUGIN_ENTRY_LIMIT: usize = 512;
@@ -193,14 +195,16 @@ impl ServerResolver {
         }
         if matches!(
             server.id.as_str(),
-            ESLINT_SERVER_ID | INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID
+            ESLINT_SERVER_ID | INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID | PYRIGHT_SERVER_ID
         ) {
-            self.require_program(
-                "node",
-                (server.id == PRISMA_SERVER_ID).then_some(">=20.0.0"),
-            )
-            .await
-            .map_err(|error| error.for_server(&server.id))?;
+            let requirement = match server.id.as_str() {
+                PRISMA_SERVER_ID => Some(">=20.0.0"),
+                PYRIGHT_SERVER_ID => Some(">=14.0.0"),
+                _ => None,
+            };
+            self.require_program("node", requirement)
+                .await
+                .map_err(|error| error.for_server(&server.id))?;
         }
         if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
             return Ok(resolution);
@@ -234,6 +238,11 @@ impl ServerResolver {
         }
         if server.id == PRISMA_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_prisma(server).await
+        {
+            return Ok(resolution);
+        }
+        if server.id == PYRIGHT_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_pyright(server).await
         {
             return Ok(resolution);
         }
@@ -547,6 +556,27 @@ impl ServerResolver {
         for candidate in vscode_prisma_candidates_from(home) {
             let Ok(version_output) =
                 validate_vscode_prisma_extension(&candidate, &server.version_req)
+            else {
+                continue;
+            };
+            return Some(ResolvedExecutable {
+                path: candidate,
+                version_output,
+                source: ExecutableSource::VsCodeExtension,
+                npm_modules_root: None,
+            });
+        }
+        None
+    }
+
+    async fn resolve_vscode_pyright(
+        &self,
+        server: &ServerDefinition,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_pyright_candidates_from(home) {
+            let Ok(version_output) =
+                validate_vscode_pyright_extension(&candidate, &server.version_req)
             else {
                 continue;
             };
@@ -1837,6 +1867,14 @@ fn vscode_prisma_candidates_from(user_home: &Path) -> Vec<PathBuf> {
         user_home,
         PRISMA_EXTENSION_PREFIX,
         Path::new("dist/language-server/bin.js"),
+    )
+}
+
+fn vscode_pyright_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    vscode_extension_candidates_from(
+        user_home,
+        PYRIGHT_EXTENSION_PREFIX,
+        Path::new("dist/server.js"),
     )
 }
 
@@ -3281,6 +3319,81 @@ fn validate_vscode_prisma_extension(
     Ok(format!("@prisma/language-server {version}"))
 }
 
+fn vscode_pyright_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let name_is = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    if !executable.is_file() || !name_is(executable, "server.js") {
+        return Err(server_error(
+            "Pyright candidate is not the official dist/server.js entry",
+        ));
+    }
+    let dist = executable
+        .parent()
+        .filter(|path| name_is(path, "dist"))
+        .ok_or_else(|| server_error("Pyright entry is outside dist"))?;
+    let extension_root = dist
+        .parent()
+        .ok_or_else(|| server_error("Pyright entry has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let expected =
+        std::fs::canonicalize(extension_root.join("dist/server.js")).map_err(server_error)?;
+    if executable != expected || !executable.starts_with(&extension_root) {
+        return Err(server_error("Pyright entry escapes its extension root"));
+    }
+    Ok(extension_root)
+}
+
+fn validate_vscode_pyright_extension(
+    executable: &Path,
+    requirement: &str,
+) -> Result<String, ClspError> {
+    let extension_root = vscode_pyright_extension_root(executable)?;
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Pyright extension root has no name"))?;
+    let directory_version = directory_name
+        .get(PYRIGHT_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..PYRIGHT_EXTENSION_PREFIX.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PYRIGHT_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Pyright is outside an official extension root"))?;
+
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    if !manifest.starts_with(&extension_root) {
+        return Err(server_error("Pyright extension manifest escapes its root"));
+    }
+    let bytes = read_bounded_manifest(&manifest, "Pyright extension manifest")?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some("pyright")
+        || value.get("publisher").and_then(serde_json::Value::as_str) != Some("ms-pyright")
+    {
+        return Err(server_error(
+            "Pyright server is not from the official ms-pyright.pyright extension",
+        ));
+    }
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| server_error("Pyright extension manifest has no version"))?;
+    let manifest_version = Version::parse(version).map_err(server_error)?;
+    if manifest_version != directory_version {
+        return Err(server_error(
+            "Pyright extension manifest version does not match its directory",
+        ));
+    }
+    validate_version_output(version, requirement)?;
+    Ok(format!("pyright {version}"))
+}
+
 fn vscode_eslint_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
     let name_is = |path: &Path, expected: &str| {
         path.file_name()
@@ -3599,6 +3712,7 @@ pub(crate) fn resolution_fingerprint(
             | FSHARP_SERVER_ID
             | INTELEPHENSE_SERVER_ID
             | PRISMA_SERVER_ID
+            | PYRIGHT_SERVER_ID
             | JDTLS_SERVER_ID
             | JULIALS_SERVER_ID
             | KOTLIN_LS_SERVER_ID
@@ -3621,6 +3735,7 @@ pub(crate) fn resolution_fingerprint(
                     candidates.extend(vscode_intelephense_candidates_from(&home))
                 }
                 PRISMA_SERVER_ID => candidates.extend(vscode_prisma_candidates_from(&home)),
+                PYRIGHT_SERVER_ID => candidates.extend(vscode_pyright_candidates_from(&home)),
                 JDTLS_SERVER_ID => candidates.extend(vscode_jdtls_candidates_from(&home)),
                 JULIALS_SERVER_ID => {
                     candidates.extend(vscode_julials_environment_projects_from(&home))
@@ -3701,6 +3816,11 @@ pub(crate) fn resolution_fingerprint(
                 &mut digest,
                 extension_root.join("dist/language-server/prisma_schema_build_bg.wasm"),
             );
+        }
+        if server.id == PYRIGHT_SERVER_ID
+            && let Ok(extension_root) = vscode_pyright_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
         }
         if server.id == JDTLS_SERVER_ID
             && let Ok(layout) = jdtls_extension_layout(&candidate)
@@ -4095,6 +4215,24 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "name": "prisma",
                 "publisher": "Prisma",
+                "version": version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        server
+    }
+
+    fn write_pyright_extension(extension_root: &Path, version: &str) -> PathBuf {
+        let root = extension_root.join(format!("{PYRIGHT_EXTENSION_PREFIX}{version}"));
+        let server = root.join("dist/server.js");
+        std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+        std::fs::write(&server, b"server").unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "pyright",
+                "publisher": "ms-pyright",
                 "version": version,
             }))
             .unwrap(),
@@ -4750,6 +4888,26 @@ mod tests {
     }
 
     #[test]
+    fn vscode_pyright_candidates_are_newest_first_and_official() {
+        let root = tempfile::tempdir().unwrap();
+        let older = write_pyright_extension(&root.path().join(".vscode/extensions"), "1.1.410");
+        let newer =
+            write_pyright_extension(&root.path().join(".vscode-insiders/extensions"), "1.1.411");
+        let fake = root
+            .path()
+            .join(".vscode/extensions/not-official.pyright-9.9.9/dist/server.js");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(fake, b"server").unwrap();
+
+        assert_eq!(
+            vscode_pyright_candidates_from(root.path()),
+            [newer.clone(), older.clone()]
+        );
+        assert!(validate_vscode_pyright_extension(&newer, ">=1.1.300, <2.0.0").is_ok());
+        assert!(validate_vscode_pyright_extension(&older, ">=1.1.411, <2.0.0").is_err());
+    }
+
+    #[test]
     fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
         let root = tempfile::tempdir().unwrap();
         let older =
@@ -5305,6 +5463,57 @@ mod tests {
         assert!(resolution.npm_modules_root.is_none());
     }
 
+    #[test]
+    fn pyright_extension_probe_requires_official_matching_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = write_pyright_extension(root.path(), "1.1.411");
+        assert_eq!(
+            validate_vscode_pyright_extension(&executable, ">=1.1.300, <2.0.0").unwrap(),
+            "pyright 1.1.411"
+        );
+
+        let extension_root = vscode_pyright_extension_root(&executable).unwrap();
+        std::fs::write(
+            extension_root.join("package.json"),
+            br#"{"name":"pyright","publisher":"other","version":"1.1.411"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_pyright_extension(&executable, ">=1.1.300, <2.0.0").is_err());
+
+        write_pyright_extension(root.path(), "1.1.411");
+        std::fs::write(
+            extension_root.join("package.json"),
+            br#"{"name":"pyright","publisher":"ms-pyright","version":"1.1.410"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_pyright_extension(&executable, ">=1.1.300, <2.0.0").is_err());
+
+        write_pyright_extension(root.path(), "1.1.411");
+        std::fs::remove_file(&executable).unwrap();
+        assert!(validate_vscode_pyright_extension(&executable, ">=1.1.300, <2.0.0").is_err());
+    }
+
+    #[tokio::test]
+    async fn pyright_reuses_the_official_vscode_server() {
+        let root = tempfile::tempdir().unwrap();
+        let executable =
+            write_pyright_extension(&root.path().join(".vscode/extensions"), "1.1.411");
+        let mut resolver = test_resolver(root.path());
+        resolver.config.auto_install = false;
+        resolver.vscode_user_home = Some(root.path().to_path_buf());
+        let server = Registry::builtin()
+            .unwrap()
+            .server(PYRIGHT_SERVER_ID)
+            .unwrap()
+            .clone();
+
+        let resolution = resolver.resolve_vscode_pyright(&server).await.unwrap();
+        assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+        assert_eq!(resolution.path, executable);
+        assert_eq!(resolution.version_output, "pyright 1.1.411");
+        assert!(resolution.npm_modules_root.is_none());
+    }
+
     #[tokio::test]
     async fn github_zip_resolution_prefers_vscode_then_cache() {
         let root = tempfile::tempdir().unwrap();
@@ -5800,6 +6009,27 @@ mod tests {
             .join("dist/language-server/prisma_schema_build_bg.wasm");
         let first = resolution_fingerprint(server, &workspace, Some(&executable));
         std::fs::write(wasm, b"different-wasm").unwrap();
+        let second = resolution_fingerprint(server, &workspace, Some(&executable));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn pyright_manifest_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let executable = write_pyright_extension(directory.path(), "1.1.411");
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(PYRIGHT_SERVER_ID).unwrap();
+        let manifest = vscode_pyright_extension_root(&executable)
+            .unwrap()
+            .join("package.json");
+        let first = resolution_fingerprint(server, &workspace, Some(&executable));
+        std::fs::write(
+            manifest,
+            br#"{"name":"pyright","publisher":"ms-pyright","version":"1.1.410"}"#,
+        )
+        .unwrap();
         let second = resolution_fingerprint(server, &workspace, Some(&executable));
         assert_ne!(first, second);
     }

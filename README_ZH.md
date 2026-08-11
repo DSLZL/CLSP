@@ -78,7 +78,7 @@ clsp setup --workspace .
 | Oxlint | Oxlint Language Server | 项目本地包或手动配置可执行文件 |
 | PHP | Intelephense | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | Prisma | Prisma Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
-| Python | Pyright | npm 兼容包管理器 |
+| Python | Pyright | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
 | YAML | YAML Language Server | npm 兼容包管理器 |
@@ -116,6 +116,8 @@ OCaml 支持 `.ml` 与 `.mli` 文件，根目录取最近的 `dune-project`、`d
 PHP 支持 `.php` 文件，根目录取最近的 `composer.json`、`composer.lock` 或 `.php-version`，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 Intelephense、官方 `bmewburn.vscode-intelephense-client` Stable/Insiders 扩展内置服务端，以及兼容的全局包；启用自动安装时固定安装 `intelephense@1.18.5`。CLSP 只发送 `telemetry.enabled = false`，不会读取或管理 Intelephense 许可证文件。
 
 Prisma 支持 `.prisma` 文件，根目录取最近的 `schema.prisma`、`prisma/schema.prisma` 或 `prisma` 目录，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `Prisma.prisma` Stable/Insiders 扩展内置服务端，以及兼容的全局包；启用自动安装时固定安装 `@prisma/language-server@31.11.0`。本机需要 Node.js 20+；Prisma 配置可能执行项目代码，因此只应在可信 workspace 中使用。
+
+Python 支持 `.py` 与 `.pyi` 文件，根目录取最近的 OpenCode 兼容 Python 项目标记，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 Pyright、官方 `ms-pyright.pyright` Stable/Insiders 扩展内置服务端，以及兼容的全局包；启用自动安装时固定安装 `pyright@1.1.411`。本机需要 Node.js 14+。
 
 Oxlint 支持 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.mts`、`.cts`、`.vue`、`.astro` 与 `.svelte`。CLSP 复用所选项目 `node_modules/.bin`、`PATH` 或 `[lsp.oxlint].executable` 中兼容的 Oxlint 1.x，并启动 `oxlint --lsp`；不会安装 npm 包或官方 `oxc.oxc-vscode` 扩展。该扩展会独立使用同一个项目工具，并可通过现有 IDE Bridge 提供 Problems。Oxlint 配置和 JavaScript 插件可能执行项目代码，因此只应在可信项目中使用。
 

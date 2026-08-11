@@ -487,6 +487,40 @@ mod tests {
     }
 
     #[test]
+    fn pyright_uses_the_locked_opencode_contract() {
+        let registry = Registry::builtin().unwrap();
+        let pyright = registry.server("pyright").unwrap();
+        assert_eq!(pyright.display_name, "Pyright");
+        assert_eq!(pyright.language_id, "python");
+        assert_eq!(pyright.version_req, ">=1.1.300, <2.0.0");
+        assert_eq!(pyright.extensions, ["py", "pyi"]);
+        assert_eq!(
+            pyright.markers,
+            [
+                "pyproject.toml",
+                "setup.py",
+                "setup.cfg",
+                "requirements.txt",
+                "Pipfile",
+                "pyrightconfig.json",
+            ]
+        );
+        assert_eq!(pyright.command, "pyright-langserver");
+        assert_eq!(pyright.args, ["--stdio"]);
+        let InstallRecipe::Npm {
+            version,
+            package,
+            companions,
+        } = &pyright.install
+        else {
+            panic!("Pyright must use the npm recipe");
+        };
+        assert_eq!(version, "1.1.411");
+        assert_eq!(package, "pyright");
+        assert!(companions.is_empty());
+    }
+
+    #[test]
     fn gopls_uses_the_locked_official_language_server() {
         let registry = Registry::builtin().unwrap();
         let gopls = registry.server("gopls").unwrap();

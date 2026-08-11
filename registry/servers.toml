@@ -148,11 +148,11 @@ display_name = "Pyright"
 language_id = "python"
 version_req = ">=1.1.300, <2.0.0"
 extensions = ["py", "pyi"]
-markers = ["pyproject.toml", "pyrightconfig.json", "setup.py", "requirements.txt"]
+markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]
 command = "pyright-langserver"
 args = ["--stdio"]
 version_args = ["--version"]
-install = { kind = "npm", version = "1.1.405", package = "pyright", companions = [] }
+install = { kind = "npm", version = "1.1.411", package = "pyright", companions = [] }
 
 [[server]]
 id = "gopls"

@@ -80,7 +80,7 @@ After setup:
 | Oxlint | Oxlint Language Server | Project-local package or manual executable |
 | PHP | Intelephense | Reuse official VS Code extension or npm-compatible manager |
 | Prisma | Prisma Language Server | Reuse official VS Code extension or npm-compatible manager |
-| Python | Pyright | npm-compatible manager |
+| Python | Pyright | Reuse official VS Code extension or npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
 | YAML | YAML Language Server | npm-compatible manager |
@@ -118,6 +118,8 @@ OCaml support covers `.ml` and `.mli` files below the nearest `dune-project`, `d
 PHP support covers `.php` files below the nearest `composer.json`, `composer.lock`, or `.php-version`, with the workspace root as the fallback. CLSP reuses a compatible project, explicit, or `PATH` Intelephense, then the server bundled with the official `bmewburn.vscode-intelephense-client` Stable/Insiders extension, then a compatible global package; if enabled, automatic installation pins `intelephense@1.18.5`. CLSP sends only `telemetry.enabled = false` and never reads or manages Intelephense licence files.
 
 Prisma support covers `.prisma` files below the nearest `schema.prisma`, `prisma/schema.prisma`, or `prisma` directory, with the workspace root as the fallback. CLSP reuses a compatible project, explicit, or `PATH` server, then the bundle in the official `Prisma.prisma` Stable/Insiders extension, then a compatible global package; if enabled, automatic installation pins `@prisma/language-server@31.11.0`. Node.js 20+ is required. Use only trusted workspaces because Prisma configuration can execute project code.
+
+Python support covers `.py` and `.pyi` files below the nearest OpenCode-compatible Python project marker, with the workspace root as the fallback. CLSP reuses a compatible project, explicit, or `PATH` Pyright, then the server bundled with the official `ms-pyright.pyright` Stable/Insiders extension, then a compatible global package; if enabled, automatic installation pins `pyright@1.1.411`. Node.js 14+ is required.
 
 Oxlint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, `.vue`, `.astro`, and `.svelte`. CLSP reuses compatible `oxlint` 1.x from the selected project's `node_modules/.bin`, `PATH`, or `[lsp.oxlint].executable` and starts `oxlint --lsp`; it does not install packages or the official `oxc.oxc-vscode` extension. The extension independently uses the same external project tool and can publish Problems through the IDE bridge. Use Oxlint only in trusted projects because configuration and JavaScript plugins may execute project code.
 
