@@ -76,6 +76,7 @@ clsp setup --workspace .
 | Lua | Lua Language Server | 复用独立 LuaLS 或官方 `sumneko.lua` 扩展 |
 | OCaml | OCaml Language Server | 手动安装到 opam switch |
 | Oxlint | Oxlint Language Server | 项目本地包或手动配置可执行文件 |
+| PHP | Intelephense | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | Python | Pyright | npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
@@ -110,6 +111,8 @@ Kotlin 支持 Gradle 或 Maven 项目中的 `.kt` 与 `.kts` 文件。CLSP 会�
 Lua 支持 `.lua` 文件，根目录取最近的 OpenCode 兼容 Lua 配置标记，找不到时回退到 workspace 根。CLSP 先复用兼容的 LuaLS `3.x` 可执行文件，再尝试官方 `sumneko.lua` Stable/Insiders 扩展内置的完整服务端；两者都不会由 CLSP 安装。LuaLS 插件可能执行代码，因此只应使用可信的项目配置。
 
 OCaml 支持 `.ml` 与 `.mli` 文件，根目录取最近的 `dune-project`、`dune-workspace`、`.merlin` 或 `opam`，找不到时回退到 workspace 根。CLSP 复用 `PATH` 或 `[lsp.ocaml-lsp].executable` 中兼容的 `ocamllsp`；不会安装 opam、OCaml、Dune、服务端或官方 `ocamllabs.ocaml-platform` 扩展。该扩展是同一外部服务端的独立客户端，可通过现有 IDE Bridge 提供 Problems。
+
+PHP 支持 `.php` 文件，根目录取最近的 `composer.json`、`composer.lock` 或 `.php-version`，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 Intelephense、官方 `bmewburn.vscode-intelephense-client` Stable/Insiders 扩展内置服务端，以及兼容的全局包；启用自动安装时固定安装 `intelephense@1.18.5`。CLSP 只发送 `telemetry.enabled = false`，不会读取或管理 Intelephense 许可证文件。
 
 Oxlint 支持 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.mts`、`.cts`、`.vue`、`.astro` 与 `.svelte`。CLSP 复用所选项目 `node_modules/.bin`、`PATH` 或 `[lsp.oxlint].executable` 中兼容的 Oxlint 1.x，并启动 `oxlint --lsp`；不会安装 npm 包或官方 `oxc.oxc-vscode` 扩展。该扩展会独立使用同一个项目工具，并可通过现有 IDE Bridge 提供 Problems。Oxlint 配置和 JavaScript 插件可能执行项目代码，因此只应在可信项目中使用。
 

@@ -358,6 +358,7 @@ fsharp
 gleam
 gopls
 hls
+intelephense
 jdtls
 julials
 kotlin-ls

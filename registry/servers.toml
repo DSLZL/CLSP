@@ -179,6 +179,18 @@ version_args = ["--numeric-version"]
 install = { kind = "manual", version = "2.14.0.0", hint = "Install a supported GHC toolchain and Haskell Language Server 2.x with GHCup (validated with 2.14.0.0), then ensure haskell-language-server-wrapper is on PATH or set [lsp.hls].executable; the official haskell.haskell VS Code extension uses an external HLS" }
 
 [[server]]
+id = "intelephense"
+display_name = "PHP Intelephense"
+language_id = "php"
+version_req = ">=1.18.5, <2.0.0"
+extensions = ["php"]
+markers = ["composer.json", "composer.lock", ".php-version"]
+command = "intelephense"
+args = ["--stdio"]
+version_args = []
+install = { kind = "npm", version = "1.18.5", package = "intelephense", companions = [] }
+
+[[server]]
 id = "jdtls"
 display_name = "Eclipse JDT Language Server"
 language_id = "java"

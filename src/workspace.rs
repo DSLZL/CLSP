@@ -1042,6 +1042,40 @@ mod tests {
     }
 
     #[test]
+    fn php_files_use_the_nearest_opencode_marker_within_the_workspace() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace_root = parent.path().join("workspace");
+        let project = workspace_root.join("apps/demo");
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(parent.path().join("composer.json"), "{}").unwrap();
+        let file = source_dir.join("index.php");
+        fs::write(&file, "<?php echo $missing;").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&workspace_root).unwrap();
+        let intelephense = registry.server("intelephense").unwrap();
+
+        assert_eq!(
+            workspace
+                .matching_servers(&file, "php", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["intelephense"]
+        );
+        assert_eq!(
+            workspace.root_for_file(&file, intelephense),
+            fs::canonicalize(&workspace_root).unwrap()
+        );
+        for marker in &intelephense.markers {
+            let marker = project.join(marker);
+            fs::write(&marker, "{}").unwrap();
+            assert_eq!(workspace.root_for_file(&file, intelephense), project);
+            fs::remove_file(marker).unwrap();
+        }
+    }
+
+    #[test]
     fn oxlint_uses_the_nearest_opencode_marker_and_coexists_with_astro() {
         let parent = tempfile::tempdir().unwrap();
         let workspace_root = parent.path().join("workspace");

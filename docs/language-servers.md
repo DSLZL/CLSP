@@ -23,6 +23,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `pyright` | Python | `pyright-langserver` | `>=1.1.300, <2.0.0` | `pyright@1.1.405` |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
+| `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
 | `jdtls` | Java | `jdtls` or Java + Equinox launcher | `>=1.30.0, <2.0.0` | official `redhat.java` extension or manual JDTLS |
 | `julials` | Julia | `julia ... using LanguageServer; runserver()` | `>=5.0.0, <6.0.0` | active Julia environment or official `julialang.language-julia` extension |
 | `kotlin-ls` | Kotlin | `kotlin-lsp` or `intellij-server --stdio` | `>=262.4739.0, <264.0.0` | official `JetBrains.kotlin-server` extension or manual standalone server |
@@ -51,6 +52,7 @@ Some server types then have an additional reuse path before installation:
 - ElixirLS: the official release bundled in standard Stable/Insiders VS Code extension directories
 - ESLint: `server/out/eslintServer.js` from the official `dbaeumer.vscode-eslint` Stable/Insiders extension
 - F#: `bin/net*/fsautocomplete.dll` from the official `Ionide.Ionide-fsharp` Stable/Insiders extension, then the exact global .NET tool
+- Intelephense: `node_modules/intelephense/lib/intelephense.js` from the official `bmewburn.vscode-intelephense-client` Stable/Insiders extension, then the selected package manager's global installation
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
@@ -226,6 +228,19 @@ The nearest `.oxlintrc.json`, `package-lock.json`, `bun.lockb`, `bun.lock`, `pnp
 
 CLSP sends no extension-private `oxc.*` settings. Keep lint behavior in the project's Oxlint configuration. Configuration and JavaScript plugins can execute project code, so use Oxlint only in trusted workspaces.
 
+### PHP
+
+Intelephense `1.18.5` requires Node.js 20 or newer. CLSP first checks the selected project's `node_modules/.bin`, `[lsp.intelephense].executable`, and `PATH`. It then scans only the standard Stable/Insiders directories for the official `bmewburn.vscode-intelephense-client` extension and validates its identity, version, nested `intelephense` package, entry path, and extension-root containment.
+
+If no compatible existing source is found, CLSP checks the selected package manager's global root and, when automatic installation is enabled, installs the exact `intelephense@1.18.5` package. A custom extension directory can be configured directly:
+
+```toml
+[lsp.intelephense]
+executable = "C:/tools/vscode-intelephense/node_modules/intelephense/lib/intelephense.js"
+```
+
+CLSP starts `intelephense --stdio` for `.php` files. The nearest `composer.json`, `composer.lock`, or `.php-version` selects the root, otherwise the workspace root is used. Initialization contains only `{"telemetry":{"enabled":false}}`. The server is proprietary/freemium; premium activation remains Intelephense's responsibility through `%USERPROFILE%/intelephense/licence.txt`, and CLSP does not read, copy, or manage that file or its key.
+
 ### C#
 
 CLSP uses the existing `dotnet` CLI and the pinned global tool:
@@ -395,6 +410,7 @@ Examples:
 - Elixir: `.ex` or `.exs` below the nearest `mix.exs` or `mix.lock`
 - F#: `.fs`, `.fsi`, `.fsx`, or `.fsscript` below the nearest solution, `*.fsproj`, or `global.json`
 - Gleam: `.gleam` below the nearest `gleam.toml`, with workspace-root fallback
+- PHP: `.php` below the nearest `composer.json`, `composer.lock`, or `.php-version`, with workspace-root fallback
 - OCaml: `.ml` or `.mli` below the nearest `dune-project`, `dune-workspace`, `.merlin`, or `opam`, with workspace-root fallback
 - Oxlint: JS/TS and supported framework files below the nearest Oxlint config, package-manager lockfile, or `package.json`, with workspace-root fallback
 

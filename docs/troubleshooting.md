@@ -378,6 +378,28 @@ The nearest `.oxlintrc.json`, package-manager lockfile, or `package.json` select
 
 Only run Oxlint in a trusted project. Configuration and JavaScript plugins may execute project code.
 
+## PHP Intelephense cannot be resolved
+
+Intelephense `1.18.5` requires Node.js 20 or newer. Check the runtime and supported existing sources:
+
+```powershell
+node --version
+Get-ChildItem node_modules/.bin/intelephense*
+(Get-Content node_modules/intelephense/package.json | ConvertFrom-Json).version
+code --list-extensions --show-versions | Select-String bmewburn.vscode-intelephense-client
+```
+
+CLSP accepts `intelephense >=1.18.5, <2.0.0`. It checks project, explicit, and `PATH` candidates first, then the official Stable/Insiders extension, then a compatible package-manager global root. With automatic installation enabled, it installs the exact npm package using the first available manager in `bun > pnpm > npm` order.
+
+For an official extension outside the standard directories, configure its server entry directly:
+
+```toml
+[lsp.intelephense]
+executable = "C:/tools/vscode-intelephense/node_modules/intelephense/lib/intelephense.js"
+```
+
+If a premium feature remains unavailable, manage the official `%USERPROFILE%/intelephense/licence.txt` file yourself. CLSP neither reads nor forwards licence contents; it only disables telemetry in initialization options.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.

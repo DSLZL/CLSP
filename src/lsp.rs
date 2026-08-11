@@ -39,6 +39,7 @@ const ELIXIR_LS_SERVER_ID: &str = "elixir-ls";
 const DENO_SERVER_ID: &str = "deno";
 const ESLINT_SERVER_ID: &str = "eslint";
 const FSHARP_SERVER_ID: &str = "fsharp";
+const INTELEPHENSE_SERVER_ID: &str = "intelephense";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JULIALS_SERVER_ID: &str = "julials";
 const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
@@ -291,9 +292,14 @@ impl LspClient {
             && options.executable.file_name() == Some(std::ffi::OsStr::new("Project.toml"))
         {
             julials_extension_command(options.executable)?
-        } else if options.server_id == ESLINT_SERVER_ID {
+        } else if uses_node_host(options.server_id, options.executable) {
+            let name = if options.server_id == ESLINT_SERVER_ID {
+                "ESLint Language Server"
+            } else {
+                "PHP Intelephense"
+            };
             let node = which::which("node")
-                .map_err(|_| runtime_error("ESLint Language Server requires Node.js"))?;
+                .map_err(|_| runtime_error(format!("{name} requires Node.js")))?;
             let mut command = Command::new(node);
             command.arg(options.executable);
             command
@@ -1172,6 +1178,9 @@ fn server_initialization_options(
     if server_id == FSHARP_SERVER_ID {
         return Ok(Some(json!({"AutomaticWorkspaceInit": true})));
     }
+    if server_id == INTELEPHENSE_SERVER_ID {
+        return Ok(Some(json!({"telemetry": {"enabled": false}})));
+    }
     if server_id == JDTLS_SERVER_ID {
         return Ok(Some(json!({
             "workspaceFolders": [path_to_uri(server_root)?],
@@ -1200,6 +1209,15 @@ fn uses_dotnet_host(server_id: &str, executable: &Path) -> bool {
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+}
+
+fn uses_node_host(server_id: &str, executable: &Path) -> bool {
+    server_id == ESLINT_SERVER_ID
+        || (server_id == INTELEPHENSE_SERVER_ID
+            && executable
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("js")))
 }
 
 fn uses_jdtls_java_host(server_id: &str, executable: &Path) -> bool {
@@ -1545,6 +1563,23 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(options, json!({"enable": true}));
+    }
+
+    #[test]
+    fn intelephense_disables_telemetry_and_hosts_only_js_entries_with_node() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let script = root.join("intelephense.js");
+        let shim = root.join("intelephense.cmd");
+        let options =
+            server_initialization_options(INTELEPHENSE_SERVER_ID, root, root, &script, None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(options, json!({"telemetry": {"enabled": false}}));
+        assert!(uses_node_host(INTELEPHENSE_SERVER_ID, &script));
+        assert!(!uses_node_host(INTELEPHENSE_SERVER_ID, &shim));
+        assert!(uses_node_host(ESLINT_SERVER_ID, &script));
+        assert!(!uses_node_host("typescript", &script));
     }
 
     #[test]

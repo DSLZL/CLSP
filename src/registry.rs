@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 23] = [
+const APPROVED_IDS: [&str; 24] = [
     "astro",
     "bash",
     "csharp",
@@ -19,6 +19,7 @@ const APPROVED_IDS: [&str; 23] = [
     "gleam",
     "gopls",
     "hls",
+    "intelephense",
     "jdtls",
     "julials",
     "kotlin-ls",
@@ -30,12 +31,12 @@ const APPROVED_IDS: [&str; 23] = [
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 54] = [
+const APPROVED_EXTENSIONS: [&str; 55] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
     "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs", "lua", "mjs",
-    "ml", "mli", "mts", "py", "pyi", "rs", "sh", "svelte", "ts", "tsx", "vue", "yaml", "yml",
-    "zsh",
+    "ml", "mli", "mts", "php", "py", "pyi", "rs", "sh", "svelte", "ts", "tsx", "vue", "yaml",
+    "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -309,9 +310,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_twenty_three_server_set() {
+    fn builtin_is_the_closed_twenty_four_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 23);
+        assert_eq!(registry.server.len(), 24);
         assert_eq!(
             registry
                 .server
@@ -429,6 +430,13 @@ mod tests {
                 vec!["ocaml-lsp"]
             );
         }
+        assert_eq!(
+            registry
+                .matching_extension(".PHP")
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["intelephense"]
+        );
     }
 
     #[test]
@@ -522,6 +530,34 @@ mod tests {
         assert!(hint.contains("GHCup"));
         assert!(hint.contains("[lsp.hls].executable"));
         assert!(hint.contains("haskell.haskell"));
+    }
+
+    #[test]
+    fn intelephense_uses_the_locked_opencode_contract() {
+        let registry = Registry::builtin().unwrap();
+        let intelephense = registry.server("intelephense").unwrap();
+        assert_eq!(intelephense.display_name, "PHP Intelephense");
+        assert_eq!(intelephense.language_id, "php");
+        assert_eq!(intelephense.version_req, ">=1.18.5, <2.0.0");
+        assert_eq!(intelephense.extensions, ["php"]);
+        assert_eq!(
+            intelephense.markers,
+            ["composer.json", "composer.lock", ".php-version"]
+        );
+        assert_eq!(intelephense.command, "intelephense");
+        assert_eq!(intelephense.args, ["--stdio"]);
+        assert!(intelephense.version_args.is_empty());
+        let InstallRecipe::Npm {
+            version,
+            package,
+            companions,
+        } = &intelephense.install
+        else {
+            panic!("Intelephense must use the npm recipe");
+        };
+        assert_eq!(version, "1.18.5");
+        assert_eq!(package, "intelephense");
+        assert!(companions.is_empty());
     }
 
     #[test]

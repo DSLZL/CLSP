@@ -37,6 +37,8 @@ const ESLINT_SERVER_ID: &str = "eslint";
 const FSHARP_SERVER_ID: &str = "fsharp";
 const FSHARP_LANGUAGE_SERVER_PACKAGE: &str = "fsautocomplete";
 const IONIDE_FSHARP_VERSION_REQ: &str = ">=7.31.1, <7.32.0";
+const INTELEPHENSE_SERVER_ID: &str = "intelephense";
+const INTELEPHENSE_EXTENSION_PREFIX: &str = "bmewburn.vscode-intelephense-client-";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JDTLS_EXTENSION_PREFIX: &str = "redhat.java-";
 const JDTLS_PLUGIN_ENTRY_LIMIT: usize = 512;
@@ -187,7 +189,10 @@ impl ServerResolver {
                 .await
                 .map_err(|error| error.for_server(&server.id))?;
         }
-        if server.id == ESLINT_SERVER_ID {
+        if matches!(
+            server.id.as_str(),
+            ESLINT_SERVER_ID | INTELEPHENSE_SERVER_ID
+        ) {
             self.require_program("node")
                 .await
                 .map_err(|error| error.for_server(&server.id))?;
@@ -214,6 +219,11 @@ impl ServerResolver {
         }
         if server.id == ESLINT_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_eslint(server, workspace).await
+        {
+            return Ok(resolution);
+        }
+        if server.id == INTELEPHENSE_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_intelephense(server).await
         {
             return Ok(resolution);
         }
@@ -498,6 +508,26 @@ impl ServerResolver {
             {
                 return Some(resolution);
             }
+        }
+        None
+    }
+
+    async fn resolve_vscode_intelephense(
+        &self,
+        server: &ServerDefinition,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_intelephense_candidates_from(home) {
+            let Ok(probe) = validate_vscode_intelephense_extension(&candidate, &server.version_req)
+            else {
+                continue;
+            };
+            return Some(ResolvedExecutable {
+                path: candidate,
+                version_output: probe.version_output,
+                source: ExecutableSource::VsCodeExtension,
+                npm_modules_root: Some(probe.modules_root),
+            });
         }
         None
     }
@@ -1752,6 +1782,14 @@ fn vscode_eslint_candidates_from(user_home: &Path) -> Vec<PathBuf> {
     )
 }
 
+fn vscode_intelephense_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    vscode_extension_candidates_from(
+        user_home,
+        INTELEPHENSE_EXTENSION_PREFIX,
+        Path::new("node_modules/intelephense/lib/intelephense.js"),
+    )
+}
+
 fn vscode_fsharp_candidates_from(user_home: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     for (_, root) in vscode_extension_roots_from(user_home, "ionide.ionide-fsharp-") {
@@ -2980,6 +3018,130 @@ fn validate_vscode_fsharp_extension(executable: &Path) -> Result<(), ClspError> 
     Ok(())
 }
 
+fn vscode_intelephense_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let name_is = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    if !executable.is_file() || !name_is(executable, "intelephense.js") {
+        return Err(server_error(
+            "Intelephense candidate is not the official intelephense.js entry",
+        ));
+    }
+    let lib = executable
+        .parent()
+        .filter(|path| name_is(path, "lib"))
+        .ok_or_else(|| server_error("Intelephense entry is outside intelephense/lib"))?;
+    let package = lib
+        .parent()
+        .filter(|path| name_is(path, "intelephense"))
+        .ok_or_else(|| server_error("Intelephense entry is outside intelephense/lib"))?;
+    let node_modules = package
+        .parent()
+        .filter(|path| name_is(path, "node_modules"))
+        .ok_or_else(|| server_error("Intelephense entry is outside node_modules"))?;
+    let extension_root = node_modules
+        .parent()
+        .ok_or_else(|| server_error("Intelephense entry has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let expected =
+        std::fs::canonicalize(extension_root.join("node_modules/intelephense/lib/intelephense.js"))
+            .map_err(server_error)?;
+    if executable != expected || !executable.starts_with(&extension_root) {
+        return Err(server_error(
+            "Intelephense entry escapes its extension root",
+        ));
+    }
+    Ok(extension_root)
+}
+
+fn read_intelephense_manifest(path: &Path, label: &str) -> Result<Vec<u8>, ClspError> {
+    let metadata = std::fs::metadata(path).map_err(server_error)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 1024 * 1024 {
+        return Err(server_error(format!(
+            "Intelephense {label} is not a bounded regular file"
+        )));
+    }
+    std::fs::read(path).map_err(server_error)
+}
+
+fn validate_vscode_intelephense_extension(
+    executable: &Path,
+    requirement: &str,
+) -> Result<NpmProbe, ClspError> {
+    let extension_root = vscode_intelephense_extension_root(executable)?;
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Intelephense extension root has no name"))?;
+    let directory_version = directory_name
+        .get(INTELEPHENSE_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..INTELEPHENSE_EXTENSION_PREFIX.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(INTELEPHENSE_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Intelephense is outside an official extension root"))?;
+
+    let extension_manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    let server_manifest =
+        std::fs::canonicalize(extension_root.join("node_modules/intelephense/package.json"))
+            .map_err(server_error)?;
+    for manifest in [&extension_manifest, &server_manifest] {
+        if !manifest.starts_with(&extension_root) || !manifest.is_file() {
+            return Err(server_error(
+                "Intelephense manifest escapes its extension root",
+            ));
+        }
+    }
+
+    let extension_bytes = read_intelephense_manifest(&extension_manifest, "extension manifest")?;
+    let extension: serde_json::Value =
+        serde_json::from_slice(&extension_bytes).map_err(server_error)?;
+    if extension.get("name").and_then(serde_json::Value::as_str)
+        != Some("vscode-intelephense-client")
+        || extension
+            .get("publisher")
+            .and_then(serde_json::Value::as_str)
+            != Some("bmewburn")
+    {
+        return Err(server_error(
+            "Intelephense is not from the official bmewburn.vscode-intelephense-client extension",
+        ));
+    }
+    let extension_version = extension
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Intelephense extension manifest version is invalid"))?;
+    if extension_version != directory_version {
+        return Err(server_error(
+            "Intelephense extension manifest version does not match its directory",
+        ));
+    }
+
+    let server_bytes = read_intelephense_manifest(&server_manifest, "server manifest")?;
+    let version_output = parse_npm_manifest_probe(&server_bytes, "intelephense", requirement)?;
+    if parse_version(&version_output).as_ref() != Some(&extension_version) {
+        return Err(server_error(
+            "Intelephense server version does not match its extension",
+        ));
+    }
+    let modules_root = server_manifest
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| server_error("Intelephense server has no node_modules root"))?
+        .to_path_buf();
+    Ok(NpmProbe {
+        version_output,
+        modules_root,
+    })
+}
+
 fn vscode_eslint_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
     let name_is = |path: &Path, expected: &str| {
         path.file_name()
@@ -3296,6 +3458,7 @@ pub(crate) fn resolution_fingerprint(
         ELIXIR_LS_SERVER_ID
             | ESLINT_SERVER_ID
             | FSHARP_SERVER_ID
+            | INTELEPHENSE_SERVER_ID
             | JDTLS_SERVER_ID
             | JULIALS_SERVER_ID
             | KOTLIN_LS_SERVER_ID
@@ -3314,6 +3477,9 @@ pub(crate) fn resolution_fingerprint(
                 ELIXIR_LS_SERVER_ID => candidates.extend(vscode_elixir_ls_candidates_from(&home)),
                 ESLINT_SERVER_ID => candidates.extend(vscode_eslint_candidates_from(&home)),
                 FSHARP_SERVER_ID => candidates.extend(vscode_fsharp_candidates_from(&home)),
+                INTELEPHENSE_SERVER_ID => {
+                    candidates.extend(vscode_intelephense_candidates_from(&home))
+                }
                 JDTLS_SERVER_ID => candidates.extend(vscode_jdtls_candidates_from(&home)),
                 JULIALS_SERVER_ID => {
                     candidates.extend(vscode_julials_environment_projects_from(&home))
@@ -3375,6 +3541,15 @@ pub(crate) fn resolution_fingerprint(
             hash_executable_candidate(
                 &mut digest,
                 candidate.with_file_name("fsautocomplete.runtimeconfig.json"),
+            );
+        }
+        if server.id == INTELEPHENSE_SERVER_ID
+            && let Ok(extension_root) = vscode_intelephense_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+            hash_executable_candidate(
+                &mut digest,
+                extension_root.join("node_modules/intelephense/package.json"),
             );
         }
         if server.id == JDTLS_SERVER_ID
@@ -3726,6 +3901,33 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"name": "eslint", "version": version})).unwrap(),
         )
         .unwrap();
+    }
+
+    fn write_intelephense_extension(extension_root: &Path, version: &str) -> PathBuf {
+        let root = extension_root.join(format!("{INTELEPHENSE_EXTENSION_PREFIX}{version}"));
+        let server = root.join("node_modules/intelephense/lib/intelephense.js");
+        std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+        std::fs::write(&server, b"server").unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "vscode-intelephense-client",
+                "publisher": "bmewburn",
+                "version": version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("node_modules/intelephense/package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "intelephense",
+                "version": version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        server
     }
 
     fn write_fsharp_extension(
@@ -4333,6 +4535,28 @@ mod tests {
     }
 
     #[test]
+    fn vscode_intelephense_candidates_are_newest_first_and_official() {
+        let root = tempfile::tempdir().unwrap();
+        let older = write_intelephense_extension(&root.path().join(".vscode/extensions"), "1.18.4");
+        let newer = write_intelephense_extension(
+            &root.path().join(".vscode-insiders/extensions"),
+            "1.18.5",
+        );
+        let fake = root.path().join(
+            ".vscode/extensions/not-official.vscode-intelephense-client-9.9.9/node_modules/intelephense/lib/intelephense.js",
+        );
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(fake, b"server").unwrap();
+
+        assert_eq!(
+            vscode_intelephense_candidates_from(root.path()),
+            [newer.clone(), older.clone()]
+        );
+        assert!(validate_vscode_intelephense_extension(&newer, ">=1.18.5, <2.0.0").is_ok());
+        assert!(validate_vscode_intelephense_extension(&older, ">=1.18.5, <2.0.0").is_err());
+    }
+
+    #[test]
     fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
         let root = tempfile::tempdir().unwrap();
         let older =
@@ -4765,6 +4989,70 @@ mod tests {
         assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
         assert_eq!(resolution.path, executable);
         assert_eq!(resolution.version_output, "vscode-eslint 3.0.34");
+    }
+
+    #[test]
+    fn intelephense_extension_probe_requires_official_matching_manifests() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = write_intelephense_extension(root.path(), "1.18.5");
+        let probe =
+            validate_vscode_intelephense_extension(&executable, ">=1.18.5, <2.0.0").unwrap();
+        assert_eq!(probe.version_output, "intelephense 1.18.5");
+        assert_eq!(
+            probe.modules_root,
+            std::fs::canonicalize(root.path().join(format!(
+                "{INTELEPHENSE_EXTENSION_PREFIX}1.18.5/node_modules"
+            )))
+            .unwrap()
+        );
+
+        let extension_root = vscode_intelephense_extension_root(&executable).unwrap();
+        std::fs::write(
+            extension_root.join("package.json"),
+            br#"{"name":"vscode-intelephense-client","publisher":"other","version":"1.18.5"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_intelephense_extension(&executable, ">=1.18.5, <2.0.0").is_err());
+
+        write_intelephense_extension(root.path(), "1.18.5");
+        std::fs::write(
+            extension_root.join("node_modules/intelephense/package.json"),
+            br#"{"name":"intelephense","version":"1.18.4"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_intelephense_extension(&executable, ">=1.18.5, <2.0.0").is_err());
+
+        write_intelephense_extension(root.path(), "1.18.5");
+        std::fs::write(
+            extension_root.join("package.json"),
+            vec![b' '; 1024 * 1024 + 1],
+        )
+        .unwrap();
+        assert!(validate_vscode_intelephense_extension(&executable, ">=1.18.5, <2.0.0").is_err());
+
+        write_intelephense_extension(root.path(), "1.18.5");
+        std::fs::remove_file(&executable).unwrap();
+        assert!(validate_vscode_intelephense_extension(&executable, ">=1.18.5, <2.0.0").is_err());
+    }
+
+    #[tokio::test]
+    async fn intelephense_reuses_the_official_vscode_server() {
+        let root = tempfile::tempdir().unwrap();
+        let executable =
+            write_intelephense_extension(&root.path().join(".vscode/extensions"), "1.18.5");
+        let mut resolver = test_resolver(root.path());
+        resolver.config.auto_install = false;
+        resolver.vscode_user_home = Some(root.path().to_path_buf());
+        let server = Registry::builtin()
+            .unwrap()
+            .server(INTELEPHENSE_SERVER_ID)
+            .unwrap()
+            .clone();
+
+        let resolution = resolver.resolve_vscode_intelephense(&server).await.unwrap();
+        assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+        assert_eq!(resolution.path, executable);
+        assert_eq!(resolution.version_output, "intelephense 1.18.5");
     }
 
     #[tokio::test]
@@ -5226,6 +5514,23 @@ mod tests {
         let server = registry.server(ESLINT_SERVER_ID).unwrap();
         let first = resolution_fingerprint(server, &workspace, Some(&executable));
         write_eslint_dependency(&workspace, "9.33.0");
+        let second = resolution_fingerprint(server, &workspace, Some(&executable));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn intelephense_manifest_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let executable = write_intelephense_extension(directory.path(), "1.18.5");
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(INTELEPHENSE_SERVER_ID).unwrap();
+        let manifest = vscode_intelephense_extension_root(&executable)
+            .unwrap()
+            .join("node_modules/intelephense/package.json");
+        let first = resolution_fingerprint(server, &workspace, Some(&executable));
+        std::fs::write(manifest, br#"{"name":"intelephense","version":"1.18.6"}"#).unwrap();
         let second = resolution_fingerprint(server, &workspace, Some(&executable));
         assert_ne!(first, second);
     }
