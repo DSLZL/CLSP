@@ -1042,6 +1042,51 @@ mod tests {
     }
 
     #[test]
+    fn oxlint_uses_the_nearest_opencode_marker_and_coexists_with_astro() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace_root = parent.path().join("workspace");
+        let project = workspace_root.join("apps/demo");
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(parent.path().join("package.json"), "{}").unwrap();
+        let script = source_dir.join("main.ts");
+        let astro = source_dir.join("page.astro");
+        fs::write(&script, "export const value = 1;").unwrap();
+        fs::write(&astro, "---\nconst value = 1;\n---").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&workspace_root).unwrap();
+        let oxlint = registry.server("oxlint").unwrap();
+
+        assert_eq!(
+            workspace
+                .matching_servers(&script, "ts", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["eslint", "typescript", "oxlint"]
+        );
+        assert_eq!(
+            workspace
+                .matching_servers(&astro, "astro", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["astro", "oxlint"]
+        );
+        assert_eq!(
+            workspace.root_for_file(&script, oxlint),
+            fs::canonicalize(&workspace_root).unwrap()
+        );
+
+        for marker in &oxlint.markers {
+            let marker = project.join(marker);
+            fs::write(&marker, "{}").unwrap();
+            assert_eq!(workspace.root_for_file(&script, oxlint), project);
+            fs::remove_file(marker).unwrap();
+        }
+    }
+
+    #[test]
     fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
         let root = tempfile::tempdir().unwrap();
         let deno_root = root.path().join("deno-app");
@@ -1068,7 +1113,7 @@ mod tests {
                 .into_iter()
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["deno", "eslint"]
+            vec!["deno", "eslint", "oxlint"]
         );
         assert_eq!(
             workspace
@@ -1076,7 +1121,7 @@ mod tests {
                 .into_iter()
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["deno", "eslint"]
+            vec!["deno", "eslint", "oxlint"]
         );
         assert_eq!(
             workspace.root_for_file(&deno_file, registry.server("deno").unwrap()),
@@ -1087,15 +1132,23 @@ mod tests {
             deno_root
         );
         assert_eq!(
+            workspace.root_for_file(&deno_file, registry.server("oxlint").unwrap()),
+            deno_root
+        );
+        assert_eq!(
             workspace
                 .matching_servers(&node_file, "ts", &registry)
                 .into_iter()
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["eslint", "typescript"]
+            vec!["eslint", "typescript", "oxlint"]
         );
         assert_eq!(
             workspace.root_for_file(&node_file, registry.server("eslint").unwrap()),
+            node_root
+        );
+        assert_eq!(
+            workspace.root_for_file(&node_file, registry.server("oxlint").unwrap()),
             node_root
         );
     }

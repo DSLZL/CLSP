@@ -28,6 +28,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `kotlin-ls` | Kotlin | `kotlin-lsp` or `intellij-server --stdio` | `>=262.4739.0, <264.0.0` | official `JetBrains.kotlin-server` extension or manual standalone server |
 | `lua-ls` | Lua | `lua-language-server` | `>=3.19.0, <4.0.0` | official `sumneko.lua` extension or manual standalone server |
 | `ocaml-lsp` | OCaml | `ocamllsp` | `>=1.4.1, <2.0.0` | manual `ocaml-lsp-server` opam package |
+| `oxlint` | JavaScript / TypeScript / Vue / Astro / Svelte | `oxlint --lsp` | `>=1.78.0, <2.0.0` | project-local package or manual executable |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
 
@@ -210,6 +211,21 @@ executable = "C:/Users/you/AppData/Local/opam/5.5.0/bin/ocamllsp.exe"
 
 CLSP starts the bare `ocamllsp` stdio command for `.ml` and `.mli` files. The nearest `dune-project`, `dune-workspace`, `.merlin`, or `opam` selects the root; otherwise the workspace root is used. CLSP does not install the toolchain or scan `ocamllabs.ocaml-platform`, because the official extension also resolves an external server from its selected sandbox. Its Problems remain available through the existing IDE bridge. Use only trusted project build configuration.
 
+### Oxlint
+
+Add a compatible Oxlint to the project with your normal package manager. The current validation baseline is:
+
+```powershell
+bun add --dev --exact oxlint@1.78.0
+bunx oxlint --version
+```
+
+CLSP starts `oxlint --lsp` for `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, `.vue`, `.astro`, and `.svelte`. It first checks the selected root's `node_modules/.bin`, then `[lsp.oxlint].executable` and `PATH`; it accepts versions `>=1.78.0, <2.0.0` and does not install or update the package.
+
+The nearest `.oxlintrc.json`, `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, or `package.json` selects the root, with the workspace root as the fallback. The official `oxc.oxc-vscode` extension independently resolves the same external project tool and can publish Problems through the IDE bridge; it is not a server source for CLSP.
+
+CLSP sends no extension-private `oxc.*` settings. Keep lint behavior in the project's Oxlint configuration. Configuration and JavaScript plugins can execute project code, so use Oxlint only in trusted workspaces.
+
 ### C#
 
 CLSP uses the existing `dotnet` CLI and the pinned global tool:
@@ -380,6 +396,7 @@ Examples:
 - F#: `.fs`, `.fsi`, `.fsx`, or `.fsscript` below the nearest solution, `*.fsproj`, or `global.json`
 - Gleam: `.gleam` below the nearest `gleam.toml`, with workspace-root fallback
 - OCaml: `.ml` or `.mli` below the nearest `dune-project`, `dune-workspace`, `.merlin`, or `opam`, with workspace-root fallback
+- Oxlint: JS/TS and supported framework files below the nearest Oxlint config, package-manager lockfile, or `package.json`, with workspace-root fallback
 
 The registry is deliberately bounded rather than accepting arbitrary server recipes from workspace configuration.
 

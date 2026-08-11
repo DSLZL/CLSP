@@ -363,6 +363,7 @@ julials
 kotlin-ls
 lua-ls
 ocaml-lsp
+oxlint
 pyright
 rust
 typescript

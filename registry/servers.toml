@@ -239,6 +239,18 @@ version_args = ["--version"]
 install = { kind = "manual", version = "1.27.0", hint = "Install ocaml-lsp-server compatible with the OCaml switch used by this project (validated with OCaml 5.5.0 and ocaml-lsp-server 1.27.0), then ensure that switch's ocamllsp is on PATH or set [lsp.ocaml-lsp].executable; the official ocamllabs.ocaml-platform VS Code extension uses the same external server" }
 
 [[server]]
+id = "oxlint"
+display_name = "Oxlint"
+language_id = "javascript"
+version_req = ">=1.78.0, <2.0.0"
+extensions = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue", "astro", "svelte"]
+markers = [".oxlintrc.json", "package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "package.json"]
+command = "oxlint"
+args = ["--lsp"]
+version_args = ["--version"]
+install = { kind = "manual", version = "1.78.0", hint = "Add oxlint 1.78.0 or newer 1.x to this project (for example bun add --dev --exact oxlint@1.78.0), ensure oxlint is on PATH, or set [lsp.oxlint].executable; the official oxc.oxc-vscode extension uses the same external project tool" }
+
+[[server]]
 id = "clangd"
 display_name = "clangd"
 language_id = "cpp"

@@ -5166,6 +5166,15 @@ mod tests {
     }
 
     #[test]
+    fn oxlint_version_output_is_supported() {
+        assert_eq!(
+            parse_version("Version: 1.78.0"),
+            Some(Version::new(1, 78, 0))
+        );
+        assert!(validate_version_output("Version: 1.78.0", ">=1.78.0, <2.0.0").is_ok());
+    }
+
+    #[test]
     fn executable_identity_changes_the_resolution_fingerprint() {
         let directory = tempfile::tempdir().unwrap();
         let bin = directory.path().join("bin");

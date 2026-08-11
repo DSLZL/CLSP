@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 22] = [
+const APPROVED_IDS: [&str; 23] = [
     "astro",
     "bash",
     "csharp",
@@ -24,16 +24,18 @@ const APPROVED_IDS: [&str; 22] = [
     "kotlin-ls",
     "lua-ls",
     "ocaml-lsp",
+    "oxlint",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 53] = [
+const APPROVED_EXTENSIONS: [&str; 54] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
     "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs", "lua", "mjs",
-    "ml", "mli", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "ml", "mli", "mts", "py", "pyi", "rs", "sh", "svelte", "ts", "tsx", "vue", "yaml", "yml",
+    "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -307,9 +309,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_twenty_two_server_set() {
+    fn builtin_is_the_closed_twenty_three_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 22);
+        assert_eq!(registry.server.len(), 23);
         assert_eq!(
             registry
                 .server
@@ -328,7 +330,7 @@ mod tests {
                 .matching_extension(".astro")
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["astro"]
+            vec!["astro", "oxlint"]
         );
         assert_eq!(
             registry.matching_extension(".rs").next().unwrap().id,
@@ -367,7 +369,7 @@ mod tests {
                 .matching_extension(".VUE")
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["eslint"]
+            vec!["eslint", "oxlint"]
         );
         assert_eq!(
             registry
@@ -665,6 +667,51 @@ mod tests {
         assert!(hint.contains("OCaml 5.5.0"));
         assert!(hint.contains("[lsp.ocaml-lsp].executable"));
         assert!(hint.contains("ocamllabs.ocaml-platform"));
+    }
+
+    #[test]
+    fn oxlint_uses_the_opencode_contract_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let oxlint = registry.server("oxlint").unwrap();
+        assert_eq!(oxlint.language_id, "javascript");
+        assert_eq!(oxlint.version_req, ">=1.78.0, <2.0.0");
+        assert_eq!(
+            oxlint.extensions,
+            [
+                "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue", "astro", "svelte",
+            ]
+        );
+        assert_eq!(
+            oxlint.markers,
+            [
+                ".oxlintrc.json",
+                "package-lock.json",
+                "bun.lockb",
+                "bun.lock",
+                "pnpm-lock.yaml",
+                "yarn.lock",
+                "package.json",
+            ]
+        );
+        assert_eq!(oxlint.command, "oxlint");
+        assert_eq!(oxlint.args, ["--lsp"]);
+        assert_eq!(oxlint.version_args, ["--version"]);
+        let InstallRecipe::Manual { version, hint } = &oxlint.install else {
+            panic!("Oxlint must use a manual recipe");
+        };
+        assert_eq!(version, "1.78.0");
+        assert!(hint.contains("bun add --dev --exact oxlint@1.78.0"));
+        assert!(hint.contains("[lsp.oxlint].executable"));
+        assert!(hint.contains("oxc.oxc-vscode"));
+
+        for extension in &oxlint.extensions {
+            assert!(
+                registry
+                    .matching_extension(extension)
+                    .any(|server| server.id == "oxlint"),
+                "Oxlint must match .{extension}"
+            );
+        }
     }
 
     #[test]

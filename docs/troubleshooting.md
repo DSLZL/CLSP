@@ -356,6 +356,28 @@ executable = "C:/Users/you/AppData/Local/opam/5.5.0/bin/ocamllsp.exe"
 
 The registry accepts `ocamllsp >=1.4.1, <2.0.0`; the current validation baseline is `1.27.0`. The official `ocamllabs.ocaml-platform` extension selects an external opam/esy/Global/Dune/Custom sandbox independently and does not bundle a server for CLSP to scan. Configure both clients for the same switch when `PATH` is insufficient.
 
+## Oxlint cannot be resolved or returns no diagnostics
+
+CLSP does not install Oxlint or the VS Code extension. Check the selected project root:
+
+```powershell
+Get-ChildItem node_modules/.bin/oxlint*
+bunx oxlint --version
+bunx oxlint --help | Select-String -SimpleMatch -Pattern '--lsp'
+code --list-extensions --show-versions | Select-String oxc.oxc-vscode
+```
+
+The registry accepts `oxlint >=1.78.0, <2.0.0`. Install it as a project development dependency, expose a compatible executable through `PATH`, or configure it directly:
+
+```toml
+[lsp.oxlint]
+executable = "C:/tools/oxlint.exe"
+```
+
+The nearest `.oxlintrc.json`, package-manager lockfile, or `package.json` selects the server root. The official `oxc.oxc-vscode` extension independently resolves the same external project tool; installing the extension alone does not give CLSP an Oxlint executable. CLSP does not translate `oxc.*` settings, so keep rules and type-aware options in the project's Oxlint configuration.
+
+Only run Oxlint in a trusted project. Configuration and JavaScript plugins may execute project code.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.
