@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 24] = [
+const APPROVED_IDS: [&str; 25] = [
     "astro",
     "bash",
     "csharp",
@@ -26,17 +26,18 @@ const APPROVED_IDS: [&str; 24] = [
     "lua-ls",
     "ocaml-lsp",
     "oxlint",
+    "prisma",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 55] = [
+const APPROVED_EXTENSIONS: [&str; 56] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
     "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs", "lua", "mjs",
-    "ml", "mli", "mts", "php", "py", "pyi", "rs", "sh", "svelte", "ts", "tsx", "vue", "yaml",
-    "yml", "zsh",
+    "ml", "mli", "mts", "php", "prisma", "py", "pyi", "rs", "sh", "svelte", "ts", "tsx", "vue",
+    "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -310,9 +311,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_twenty_four_server_set() {
+    fn builtin_is_the_closed_twenty_five_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 24);
+        assert_eq!(registry.server.len(), 25);
         assert_eq!(
             registry
                 .server
@@ -557,6 +558,34 @@ mod tests {
         };
         assert_eq!(version, "1.18.5");
         assert_eq!(package, "intelephense");
+        assert!(companions.is_empty());
+    }
+
+    #[test]
+    fn prisma_uses_the_verified_official_contract() {
+        let registry = Registry::builtin().unwrap();
+        let prisma = registry.server("prisma").unwrap();
+        assert_eq!(prisma.display_name, "Prisma Language Server");
+        assert_eq!(prisma.language_id, "prisma");
+        assert_eq!(prisma.version_req, ">=6.19.0, <32.0.0");
+        assert_eq!(prisma.extensions, ["prisma"]);
+        assert_eq!(
+            prisma.markers,
+            ["schema.prisma", "prisma/schema.prisma", "prisma"]
+        );
+        assert_eq!(prisma.command, "prisma-language-server");
+        assert_eq!(prisma.args, ["--stdio"]);
+        assert!(prisma.version_args.is_empty());
+        let InstallRecipe::Npm {
+            version,
+            package,
+            companions,
+        } = &prisma.install
+        else {
+            panic!("Prisma must use the npm recipe");
+        };
+        assert_eq!(version, "31.11.0");
+        assert_eq!(package, "@prisma/language-server");
         assert!(companions.is_empty());
     }
 

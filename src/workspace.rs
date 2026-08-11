@@ -1076,6 +1076,55 @@ mod tests {
     }
 
     #[test]
+    fn prisma_files_use_the_nearest_schema_root_within_the_workspace() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace_root = parent.path().join("workspace");
+        let project = workspace_root.join("apps/demo");
+        let source_dir = project.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(parent.path().join("package.json"), "{}").unwrap();
+        fs::write(project.join("package.json"), "{}").unwrap();
+        let file = source_dir.join("model.prisma");
+        fs::write(&file, "model User { id Int @id }").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&workspace_root).unwrap();
+        let prisma = registry.server("prisma").unwrap();
+
+        assert_eq!(
+            workspace
+                .matching_servers(&file, "prisma", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["prisma"]
+        );
+        assert_eq!(
+            workspace.root_for_file(&file, prisma),
+            fs::canonicalize(&workspace_root).unwrap()
+        );
+
+        let schema = project.join("prisma/schema.prisma");
+        fs::create_dir_all(schema.parent().unwrap()).unwrap();
+        fs::write(&schema, "datasource db { provider = \"sqlite\" }").unwrap();
+        assert_eq!(workspace.root_for_file(&file, prisma), project);
+
+        let nested = project.join("prisma/models/user.prisma");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, "model User { id Int @id }").unwrap();
+        assert_eq!(
+            workspace.root_for_file(&nested, prisma),
+            project.join("prisma")
+        );
+        fs::remove_file(project.join("prisma/schema.prisma")).unwrap();
+        assert_eq!(workspace.root_for_file(&nested, prisma), project);
+        fs::write(project.join("prisma/schema.prisma"), "").unwrap();
+        assert_eq!(
+            workspace.root_for_file(&nested, prisma),
+            project.join("prisma")
+        );
+    }
+
+    #[test]
     fn oxlint_uses_the_nearest_opencode_marker_and_coexists_with_astro() {
         let parent = tempfile::tempdir().unwrap();
         let workspace_root = parent.path().join("workspace");

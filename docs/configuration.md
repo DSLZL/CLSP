@@ -365,6 +365,7 @@ kotlin-ls
 lua-ls
 ocaml-lsp
 oxlint
+prisma
 pyright
 rust
 typescript

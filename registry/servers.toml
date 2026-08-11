@@ -191,6 +191,18 @@ version_args = []
 install = { kind = "npm", version = "1.18.5", package = "intelephense", companions = [] }
 
 [[server]]
+id = "prisma"
+display_name = "Prisma Language Server"
+language_id = "prisma"
+version_req = ">=6.19.0, <32.0.0"
+extensions = ["prisma"]
+markers = ["schema.prisma", "prisma/schema.prisma", "prisma"]
+command = "prisma-language-server"
+args = ["--stdio"]
+version_args = []
+install = { kind = "npm", version = "31.11.0", package = "@prisma/language-server", companions = [] }
+
+[[server]]
 id = "jdtls"
 display_name = "Eclipse JDT Language Server"
 language_id = "java"

@@ -40,6 +40,7 @@ const DENO_SERVER_ID: &str = "deno";
 const ESLINT_SERVER_ID: &str = "eslint";
 const FSHARP_SERVER_ID: &str = "fsharp";
 const INTELEPHENSE_SERVER_ID: &str = "intelephense";
+const PRISMA_SERVER_ID: &str = "prisma";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JULIALS_SERVER_ID: &str = "julials";
 const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
@@ -293,10 +294,11 @@ impl LspClient {
         {
             julials_extension_command(options.executable)?
         } else if uses_node_host(options.server_id, options.executable) {
-            let name = if options.server_id == ESLINT_SERVER_ID {
-                "ESLint Language Server"
-            } else {
-                "PHP Intelephense"
+            let name = match options.server_id {
+                ESLINT_SERVER_ID => "ESLint Language Server",
+                INTELEPHENSE_SERVER_ID => "PHP Intelephense",
+                PRISMA_SERVER_ID => "Prisma Language Server",
+                _ => unreachable!(),
             };
             let node = which::which("node")
                 .map_err(|_| runtime_error(format!("{name} requires Node.js")))?;
@@ -903,6 +905,8 @@ fn server_request_response(
                     });
                     count
                 ]))
+            } else if server_id == PRISMA_SERVER_ID {
+                Ok(Value::Array(vec![json!({}); count]))
             } else {
                 Ok(Value::Array(vec![Value::Null; count]))
             }
@@ -1213,7 +1217,7 @@ fn uses_dotnet_host(server_id: &str, executable: &Path) -> bool {
 
 fn uses_node_host(server_id: &str, executable: &Path) -> bool {
     server_id == ESLINT_SERVER_ID
-        || (server_id == INTELEPHENSE_SERVER_ID
+        || (matches!(server_id, INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID)
             && executable
                 .extension()
                 .and_then(|extension| extension.to_str())
@@ -1294,7 +1298,7 @@ fn diagnostic_version(
     open_version: Option<i32>,
 ) -> Option<i32> {
     reported_version.or_else(|| {
-        (server_id == FSHARP_SERVER_ID)
+        (matches!(server_id, FSHARP_SERVER_ID | PRISMA_SERVER_ID))
             .then_some(open_version)
             .flatten()
     })
@@ -1583,6 +1587,26 @@ mod tests {
     }
 
     #[test]
+    fn prisma_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let script = root.join("bin.js");
+        let shim = root.join("prisma-language-server.cmd");
+        assert!(
+            server_initialization_options(PRISMA_SERVER_ID, root, root, &script, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(uses_node_host(PRISMA_SERVER_ID, &script));
+        assert!(!uses_node_host(PRISMA_SERVER_ID, &shim));
+        assert_eq!(diagnostic_version(PRISMA_SERVER_ID, None, Some(2)), Some(2));
+        assert_eq!(
+            diagnostic_version(PRISMA_SERVER_ID, Some(1), Some(2)),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn fsharp_initialization_and_dll_host_are_explicit() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -1720,7 +1744,7 @@ mod tests {
     }
 
     #[test]
-    fn eslint_configuration_enables_validation_without_changing_other_servers() {
+    fn server_configuration_is_scoped_to_eslint_and_prisma() {
         let params = json!({"items": [{}, {}]});
         let eslint = server_request_response(
             ESLINT_SERVER_ID,
@@ -1742,6 +1766,17 @@ mod tests {
                     "workspaceFolder": {"uri": "file:///workspace", "name": "workspace"}
                 }
             ])
+        );
+        assert_eq!(
+            server_request_response(
+                PRISMA_SERVER_ID,
+                "workspace/configuration",
+                Some(&params),
+                "file:///workspace",
+                "workspace",
+            )
+            .unwrap(),
+            json!([{}, {}])
         );
         assert_eq!(
             server_request_response(

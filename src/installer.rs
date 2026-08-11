@@ -39,6 +39,8 @@ const FSHARP_LANGUAGE_SERVER_PACKAGE: &str = "fsautocomplete";
 const IONIDE_FSHARP_VERSION_REQ: &str = ">=7.31.1, <7.32.0";
 const INTELEPHENSE_SERVER_ID: &str = "intelephense";
 const INTELEPHENSE_EXTENSION_PREFIX: &str = "bmewburn.vscode-intelephense-client-";
+const PRISMA_SERVER_ID: &str = "prisma";
+const PRISMA_EXTENSION_PREFIX: &str = "prisma.prisma-";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JDTLS_EXTENSION_PREFIX: &str = "redhat.java-";
 const JDTLS_PLUGIN_ENTRY_LIMIT: usize = 512;
@@ -185,17 +187,20 @@ impl ServerResolver {
         Fut: std::future::Future<Output = ()>,
     {
         if server.id == ELIXIR_LS_SERVER_ID {
-            self.require_program("elixir")
+            self.require_program("elixir", None)
                 .await
                 .map_err(|error| error.for_server(&server.id))?;
         }
         if matches!(
             server.id.as_str(),
-            ESLINT_SERVER_ID | INTELEPHENSE_SERVER_ID
+            ESLINT_SERVER_ID | INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID
         ) {
-            self.require_program("node")
-                .await
-                .map_err(|error| error.for_server(&server.id))?;
+            self.require_program(
+                "node",
+                (server.id == PRISMA_SERVER_ID).then_some(">=20.0.0"),
+            )
+            .await
+            .map_err(|error| error.for_server(&server.id))?;
         }
         if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
             return Ok(resolution);
@@ -224,6 +229,11 @@ impl ServerResolver {
         }
         if server.id == INTELEPHENSE_SERVER_ID
             && let Some(resolution) = self.resolve_vscode_intelephense(server).await
+        {
+            return Ok(resolution);
+        }
+        if server.id == PRISMA_SERVER_ID
+            && let Some(resolution) = self.resolve_vscode_prisma(server).await
         {
             return Ok(resolution);
         }
@@ -269,7 +279,7 @@ impl ServerResolver {
 
         if let InstallRecipe::Command { program, .. } = &server.install {
             let program = self
-                .require_program(program)
+                .require_program(program, None)
                 .await
                 .map_err(|error| error.for_server(&server.id))?;
             if let Some(resolution) = self
@@ -351,7 +361,7 @@ impl ServerResolver {
             }
             InstallRecipe::Command { program, args, .. } => {
                 let program = self
-                    .require_program(program)
+                    .require_program(program, None)
                     .await
                     .map_err(|error| error.for_server(&server.id))?;
                 if let Some(resolution) = self
@@ -527,6 +537,24 @@ impl ServerResolver {
                 version_output: probe.version_output,
                 source: ExecutableSource::VsCodeExtension,
                 npm_modules_root: Some(probe.modules_root),
+            });
+        }
+        None
+    }
+
+    async fn resolve_vscode_prisma(&self, server: &ServerDefinition) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_prisma_candidates_from(home) {
+            let Ok(version_output) =
+                validate_vscode_prisma_extension(&candidate, &server.version_req)
+            else {
+                continue;
+            };
+            return Some(ResolvedExecutable {
+                path: candidate,
+                version_output,
+                source: ExecutableSource::VsCodeExtension,
+                npm_modules_root: None,
             });
         }
         None
@@ -962,7 +990,11 @@ impl ServerResolver {
         Ok(NpmRoots { bin, modules })
     }
 
-    async fn require_program(&self, program: &str) -> Result<PathBuf, ClspError> {
+    async fn require_program(
+        &self,
+        program: &str,
+        requirement: Option<&str>,
+    ) -> Result<PathBuf, ClspError> {
         let executable = which::which(program).map_err(|_| {
             runtime_error(format!(
                 "{program} is required locally; CLSP does not install prerequisite toolchains"
@@ -988,6 +1020,16 @@ impl ServerResolver {
                 "{program} version probe failed: {}",
                 command_output_detail(&output)
             )));
+        }
+        if let Some(requirement) = requirement {
+            validate_version_output(&command_output_detail(&output), requirement).map_err(
+                |_| {
+                    runtime_error(format!(
+                        "{program} version does not satisfy {requirement}: {}",
+                        command_output_detail(&output)
+                    ))
+                },
+            )?;
         }
         Ok(executable)
     }
@@ -1274,7 +1316,7 @@ impl ServerResolver {
             if !executable.is_file() {
                 return Err(server_error("FsAutoComplete DLL candidate is not a file"));
             }
-            let dotnet = self.require_program("dotnet").await?;
+            let dotnet = self.require_program("dotnet", None).await?;
             let mut args = vec![executable.to_string_lossy().into_owned()];
             args.extend(server.version_args.iter().cloned());
             let version_output = self
@@ -1787,6 +1829,14 @@ fn vscode_intelephense_candidates_from(user_home: &Path) -> Vec<PathBuf> {
         user_home,
         INTELEPHENSE_EXTENSION_PREFIX,
         Path::new("node_modules/intelephense/lib/intelephense.js"),
+    )
+}
+
+fn vscode_prisma_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    vscode_extension_candidates_from(
+        user_home,
+        PRISMA_EXTENSION_PREFIX,
+        Path::new("dist/language-server/bin.js"),
     )
 }
 
@@ -3057,11 +3107,11 @@ fn vscode_intelephense_extension_root(executable: &Path) -> Result<PathBuf, Clsp
     Ok(extension_root)
 }
 
-fn read_intelephense_manifest(path: &Path, label: &str) -> Result<Vec<u8>, ClspError> {
+fn read_bounded_manifest(path: &Path, label: &str) -> Result<Vec<u8>, ClspError> {
     let metadata = std::fs::metadata(path).map_err(server_error)?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 1024 * 1024 {
         return Err(server_error(format!(
-            "Intelephense {label} is not a bounded regular file"
+            "{label} is not a bounded regular file"
         )));
     }
     std::fs::read(path).map_err(server_error)
@@ -3099,7 +3149,8 @@ fn validate_vscode_intelephense_extension(
         }
     }
 
-    let extension_bytes = read_intelephense_manifest(&extension_manifest, "extension manifest")?;
+    let extension_bytes =
+        read_bounded_manifest(&extension_manifest, "Intelephense extension manifest")?;
     let extension: serde_json::Value =
         serde_json::from_slice(&extension_bytes).map_err(server_error)?;
     if extension.get("name").and_then(serde_json::Value::as_str)
@@ -3124,7 +3175,7 @@ fn validate_vscode_intelephense_extension(
         ));
     }
 
-    let server_bytes = read_intelephense_manifest(&server_manifest, "server manifest")?;
+    let server_bytes = read_bounded_manifest(&server_manifest, "Intelephense server manifest")?;
     let version_output = parse_npm_manifest_probe(&server_bytes, "intelephense", requirement)?;
     if parse_version(&version_output).as_ref() != Some(&extension_version) {
         return Err(server_error(
@@ -3140,6 +3191,94 @@ fn validate_vscode_intelephense_extension(
         version_output,
         modules_root,
     })
+}
+
+fn vscode_prisma_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let name_is = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    if !executable.is_file() || !name_is(executable, "bin.js") {
+        return Err(server_error(
+            "Prisma candidate is not the official language-server/bin.js entry",
+        ));
+    }
+    let language_server = executable
+        .parent()
+        .filter(|path| name_is(path, "language-server"))
+        .ok_or_else(|| server_error("Prisma entry is outside dist/language-server"))?;
+    let dist = language_server
+        .parent()
+        .filter(|path| name_is(path, "dist"))
+        .ok_or_else(|| server_error("Prisma entry is outside dist/language-server"))?;
+    let extension_root = dist
+        .parent()
+        .ok_or_else(|| server_error("Prisma entry has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let expected = std::fs::canonicalize(extension_root.join("dist/language-server/bin.js"))
+        .map_err(server_error)?;
+    if executable != expected || !executable.starts_with(&extension_root) {
+        return Err(server_error("Prisma entry escapes its extension root"));
+    }
+    Ok(extension_root)
+}
+
+fn validate_vscode_prisma_extension(
+    executable: &Path,
+    requirement: &str,
+) -> Result<String, ClspError> {
+    let extension_root = vscode_prisma_extension_root(executable)?;
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Prisma extension root has no name"))?;
+    let directory_version = directory_name
+        .get(PRISMA_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..PRISMA_EXTENSION_PREFIX.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PRISMA_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Prisma is outside an official extension root"))?;
+
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    let wasm = std::fs::canonicalize(
+        extension_root.join("dist/language-server/prisma_schema_build_bg.wasm"),
+    )
+    .map_err(server_error)?;
+    if !manifest.starts_with(&extension_root) || !wasm.starts_with(&extension_root) {
+        return Err(server_error("Prisma extension files escape their root"));
+    }
+    let wasm_metadata = std::fs::metadata(&wasm).map_err(server_error)?;
+    if !wasm_metadata.is_file() || wasm_metadata.len() == 0 {
+        return Err(server_error("Prisma schema WASM is not a regular file"));
+    }
+
+    let bytes = read_bounded_manifest(&manifest, "Prisma extension manifest")?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some("prisma")
+        || value.get("publisher").and_then(serde_json::Value::as_str) != Some("Prisma")
+    {
+        return Err(server_error(
+            "Prisma server is not from the official Prisma.prisma extension",
+        ));
+    }
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| server_error("Prisma extension manifest has no version"))?;
+    let manifest_version = Version::parse(version).map_err(server_error)?;
+    if manifest_version != directory_version {
+        return Err(server_error(
+            "Prisma extension manifest version does not match its directory",
+        ));
+    }
+    validate_version_output(version, requirement)?;
+    Ok(format!("@prisma/language-server {version}"))
 }
 
 fn vscode_eslint_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
@@ -3459,6 +3598,7 @@ pub(crate) fn resolution_fingerprint(
             | ESLINT_SERVER_ID
             | FSHARP_SERVER_ID
             | INTELEPHENSE_SERVER_ID
+            | PRISMA_SERVER_ID
             | JDTLS_SERVER_ID
             | JULIALS_SERVER_ID
             | KOTLIN_LS_SERVER_ID
@@ -3480,6 +3620,7 @@ pub(crate) fn resolution_fingerprint(
                 INTELEPHENSE_SERVER_ID => {
                     candidates.extend(vscode_intelephense_candidates_from(&home))
                 }
+                PRISMA_SERVER_ID => candidates.extend(vscode_prisma_candidates_from(&home)),
                 JDTLS_SERVER_ID => candidates.extend(vscode_jdtls_candidates_from(&home)),
                 JULIALS_SERVER_ID => {
                     candidates.extend(vscode_julials_environment_projects_from(&home))
@@ -3550,6 +3691,15 @@ pub(crate) fn resolution_fingerprint(
             hash_executable_candidate(
                 &mut digest,
                 extension_root.join("node_modules/intelephense/package.json"),
+            );
+        }
+        if server.id == PRISMA_SERVER_ID
+            && let Ok(extension_root) = vscode_prisma_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+            hash_executable_candidate(
+                &mut digest,
+                extension_root.join("dist/language-server/prisma_schema_build_bg.wasm"),
             );
         }
         if server.id == JDTLS_SERVER_ID
@@ -3922,6 +4072,29 @@ mod tests {
             root.join("node_modules/intelephense/package.json"),
             serde_json::to_vec(&serde_json::json!({
                 "name": "intelephense",
+                "version": version,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        server
+    }
+
+    fn write_prisma_extension(extension_root: &Path, version: &str) -> PathBuf {
+        let root = extension_root.join(format!("{PRISMA_EXTENSION_PREFIX}{version}"));
+        let server = root.join("dist/language-server/bin.js");
+        std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+        std::fs::write(&server, b"server").unwrap();
+        std::fs::write(
+            root.join("dist/language-server/prisma_schema_build_bg.wasm"),
+            b"wasm",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "name": "prisma",
+                "publisher": "Prisma",
                 "version": version,
             }))
             .unwrap(),
@@ -4557,6 +4730,26 @@ mod tests {
     }
 
     #[test]
+    fn vscode_prisma_candidates_are_newest_first_and_official() {
+        let root = tempfile::tempdir().unwrap();
+        let older = write_prisma_extension(&root.path().join(".vscode/extensions"), "6.19.0");
+        let newer =
+            write_prisma_extension(&root.path().join(".vscode-insiders/extensions"), "31.11.0");
+        let fake = root
+            .path()
+            .join(".vscode/extensions/not-official.prisma-99.0.0/dist/language-server/bin.js");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(fake, b"server").unwrap();
+
+        assert_eq!(
+            vscode_prisma_candidates_from(root.path()),
+            [newer.clone(), older.clone()]
+        );
+        assert!(validate_vscode_prisma_extension(&newer, ">=6.19.0, <32.0.0").is_ok());
+        assert!(validate_vscode_prisma_extension(&older, ">=7.0.0, <32.0.0").is_err());
+    }
+
+    #[test]
     fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
         let root = tempfile::tempdir().unwrap();
         let older =
@@ -5055,6 +5248,63 @@ mod tests {
         assert_eq!(resolution.version_output, "intelephense 1.18.5");
     }
 
+    #[test]
+    fn prisma_extension_probe_requires_official_manifest_and_wasm() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = write_prisma_extension(root.path(), "31.11.0");
+        assert_eq!(
+            validate_vscode_prisma_extension(&executable, ">=6.19.0, <32.0.0").unwrap(),
+            "@prisma/language-server 31.11.0"
+        );
+
+        let extension_root = vscode_prisma_extension_root(&executable).unwrap();
+        std::fs::write(
+            extension_root.join("package.json"),
+            br#"{"name":"prisma","publisher":"other","version":"31.11.0"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_prisma_extension(&executable, ">=6.19.0, <32.0.0").is_err());
+
+        write_prisma_extension(root.path(), "31.11.0");
+        std::fs::write(
+            extension_root.join("package.json"),
+            br#"{"name":"prisma","publisher":"Prisma","version":"31.10.0"}"#,
+        )
+        .unwrap();
+        assert!(validate_vscode_prisma_extension(&executable, ">=6.19.0, <32.0.0").is_err());
+
+        write_prisma_extension(root.path(), "31.11.0");
+        std::fs::remove_file(
+            extension_root.join("dist/language-server/prisma_schema_build_bg.wasm"),
+        )
+        .unwrap();
+        assert!(validate_vscode_prisma_extension(&executable, ">=6.19.0, <32.0.0").is_err());
+
+        write_prisma_extension(root.path(), "31.11.0");
+        std::fs::remove_file(&executable).unwrap();
+        assert!(validate_vscode_prisma_extension(&executable, ">=6.19.0, <32.0.0").is_err());
+    }
+
+    #[tokio::test]
+    async fn prisma_reuses_the_official_vscode_server() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = write_prisma_extension(&root.path().join(".vscode/extensions"), "31.11.0");
+        let mut resolver = test_resolver(root.path());
+        resolver.config.auto_install = false;
+        resolver.vscode_user_home = Some(root.path().to_path_buf());
+        let server = Registry::builtin()
+            .unwrap()
+            .server(PRISMA_SERVER_ID)
+            .unwrap()
+            .clone();
+
+        let resolution = resolver.resolve_vscode_prisma(&server).await.unwrap();
+        assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+        assert_eq!(resolution.path, executable);
+        assert_eq!(resolution.version_output, "@prisma/language-server 31.11.0");
+        assert!(resolution.npm_modules_root.is_none());
+    }
+
     #[tokio::test]
     async fn github_zip_resolution_prefers_vscode_then_cache() {
         let root = tempfile::tempdir().unwrap();
@@ -5435,6 +5685,8 @@ mod tests {
         }
         assert!(validate_version_output("tool v1.4.0", ">=1.0.0, <2.0.0").is_ok());
         assert!(validate_version_output("tool v2.0.0", ">=1.0.0, <2.0.0").is_err());
+        assert!(validate_version_output("v20.0.0", ">=20.0.0").is_ok());
+        assert!(validate_version_output("v19.9.0", ">=20.0.0").is_err());
         assert!(
             validate_version_output("clojure-lsp 2026.07.06-14.34.19", ">=2026.7.6, <2027.0.0")
                 .is_ok()
@@ -5531,6 +5783,23 @@ mod tests {
             .join("node_modules/intelephense/package.json");
         let first = resolution_fingerprint(server, &workspace, Some(&executable));
         std::fs::write(manifest, br#"{"name":"intelephense","version":"1.18.6"}"#).unwrap();
+        let second = resolution_fingerprint(server, &workspace, Some(&executable));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn prisma_wasm_identity_changes_the_resolution_fingerprint() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let executable = write_prisma_extension(directory.path(), "31.11.0");
+        let registry = Registry::builtin().unwrap();
+        let server = registry.server(PRISMA_SERVER_ID).unwrap();
+        let wasm = vscode_prisma_extension_root(&executable)
+            .unwrap()
+            .join("dist/language-server/prisma_schema_build_bg.wasm");
+        let first = resolution_fingerprint(server, &workspace, Some(&executable));
+        std::fs::write(wasm, b"different-wasm").unwrap();
         let second = resolution_fingerprint(server, &workspace, Some(&executable));
         assert_ne!(first, second);
     }

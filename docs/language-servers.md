@@ -24,6 +24,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
+| `prisma` | Prisma | `prisma-language-server --stdio` | `>=6.19.0, <32.0.0` | official VS Code extension or `@prisma/language-server@31.11.0` |
 | `jdtls` | Java | `jdtls` or Java + Equinox launcher | `>=1.30.0, <2.0.0` | official `redhat.java` extension or manual JDTLS |
 | `julials` | Julia | `julia ... using LanguageServer; runserver()` | `>=5.0.0, <6.0.0` | active Julia environment or official `julialang.language-julia` extension |
 | `kotlin-ls` | Kotlin | `kotlin-lsp` or `intellij-server --stdio` | `>=262.4739.0, <264.0.0` | official `JetBrains.kotlin-server` extension or manual standalone server |
@@ -53,6 +54,7 @@ Some server types then have an additional reuse path before installation:
 - ESLint: `server/out/eslintServer.js` from the official `dbaeumer.vscode-eslint` Stable/Insiders extension
 - F#: `bin/net*/fsautocomplete.dll` from the official `Ionide.Ionide-fsharp` Stable/Insiders extension, then the exact global .NET tool
 - Intelephense: `node_modules/intelephense/lib/intelephense.js` from the official `bmewburn.vscode-intelephense-client` Stable/Insiders extension, then the selected package manager's global installation
+- Prisma: `dist/language-server/bin.js` plus its schema WASM from the official `Prisma.prisma` Stable/Insiders extension, then the selected package manager's global installation
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
@@ -240,6 +242,19 @@ executable = "C:/tools/vscode-intelephense/node_modules/intelephense/lib/intelep
 ```
 
 CLSP starts `intelephense --stdio` for `.php` files. The nearest `composer.json`, `composer.lock`, or `.php-version` selects the root, otherwise the workspace root is used. Initialization contains only `{"telemetry":{"enabled":false}}`. The server is proprietary/freemium; premium activation remains Intelephense's responsibility through `%USERPROFILE%/intelephense/licence.txt`, and CLSP does not read, copy, or manage that file or its key.
+
+### Prisma
+
+Prisma Language Server requires Node.js 20 or newer. OpenCode's current built-in entry requires the `prisma` CLI; CLSP instead targets the official standalone language-server package and VS Code extension, and does not exclude a project merely because it contains `package.json`. CLSP first checks the selected project's `node_modules/.bin`, `[lsp.prisma].executable`, and `PATH`. It then scans only the standard Stable/Insiders directories for the official `Prisma.prisma` extension and validates its identity, version, bundled `dist/language-server/bin.js`, schema WASM, and extension-root containment.
+
+If no compatible existing source is found, CLSP checks the selected package manager's global root and, when automatic installation is enabled, installs the exact `@prisma/language-server@31.11.0` package. A custom entry can be configured directly:
+
+```toml
+[lsp.prisma]
+executable = "C:/tools/prisma/dist/language-server/bin.js"
+```
+
+CLSP starts the server with `--stdio` for `.prisma` files and sends no extension-private settings or Prisma-specific initialization options. It answers each standard `workspace/configuration` item with an empty object so diagnostics remain enabled. Prisma omits the optional diagnostic version, so CLSP correlates a push only to the current version of an already-open document; an explicit server version always wins. The nearest `schema.prisma`, `prisma/schema.prisma`, or `prisma` directory selects the root, otherwise the workspace root is used. `package.json` does not disable Prisma detection. Prisma configuration files may execute project code, so use the server only in trusted workspaces.
 
 ### C#
 

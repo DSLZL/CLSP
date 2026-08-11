@@ -400,6 +400,28 @@ executable = "C:/tools/vscode-intelephense/node_modules/intelephense/lib/intelep
 
 If a premium feature remains unavailable, manage the official `%USERPROFILE%/intelephense/licence.txt` file yourself. CLSP neither reads nor forwards licence contents; it only disables telemetry in initialization options.
 
+## Prisma Language Server cannot be resolved
+
+Prisma Language Server requires Node.js 20 or newer. Check the runtime and supported existing sources:
+
+```powershell
+node --version
+Get-ChildItem node_modules/.bin/prisma-language-server*
+(Get-Content node_modules/@prisma/language-server/package.json | ConvertFrom-Json).version
+code --list-extensions --show-versions | Select-String Prisma.prisma
+```
+
+CLSP accepts `@prisma/language-server >=6.19.0, <32.0.0`. It checks project, explicit, and `PATH` candidates first, then the official Stable/Insiders extension, then a compatible package-manager global root. With automatic installation enabled, it installs `@prisma/language-server@31.11.0` using the first available manager in `bun > pnpm > npm` order.
+
+For an official extension outside the standard directories, configure its server entry directly:
+
+```toml
+[lsp.prisma]
+executable = "C:/tools/prisma/dist/language-server/bin.js"
+```
+
+If resolution still fails, verify that the extension contains both `dist/language-server/bin.js` and `dist/language-server/prisma_schema_build_bg.wasm`. Use only trusted workspaces because Prisma configuration can execute project code.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.
