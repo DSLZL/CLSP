@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 21] = [
+const APPROVED_IDS: [&str; 22] = [
     "astro",
     "bash",
     "csharp",
@@ -23,16 +23,17 @@ const APPROVED_IDS: [&str; 21] = [
     "julials",
     "kotlin-ls",
     "lua-ls",
+    "ocaml-lsp",
     "pyright",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 51] = [
+const APPROVED_EXTENSIONS: [&str; 53] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
     "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs", "lua", "mjs",
-    "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "ml", "mli", "mts", "py", "pyi", "rs", "sh", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -306,9 +307,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_twenty_one_server_set() {
+    fn builtin_is_the_closed_twenty_two_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 21);
+        assert_eq!(registry.server.len(), 22);
         assert_eq!(
             registry
                 .server
@@ -417,6 +418,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["lua-ls"]
         );
+        for extension in [".ML", ".MLI"] {
+            assert_eq!(
+                registry
+                    .matching_extension(extension)
+                    .map(|server| server.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["ocaml-lsp"]
+            );
+        }
     }
 
     #[test]
@@ -632,6 +642,29 @@ mod tests {
         assert_eq!(version, "3.19.0");
         assert!(hint.contains("[lsp.lua-ls].executable"));
         assert!(hint.contains("sumneko.lua"));
+    }
+
+    #[test]
+    fn ocaml_lsp_uses_the_opencode_contract_and_manual_recipe() {
+        let registry = Registry::builtin().unwrap();
+        let ocaml = registry.server("ocaml-lsp").unwrap();
+        assert_eq!(ocaml.language_id, "ocaml");
+        assert_eq!(ocaml.version_req, ">=1.4.1, <2.0.0");
+        assert_eq!(ocaml.extensions, ["ml", "mli"]);
+        assert_eq!(
+            ocaml.markers,
+            ["dune-project", "dune-workspace", ".merlin", "opam"]
+        );
+        assert_eq!(ocaml.command, "ocamllsp");
+        assert!(ocaml.args.is_empty());
+        assert_eq!(ocaml.version_args, ["--version"]);
+        let InstallRecipe::Manual { version, hint } = &ocaml.install else {
+            panic!("OCaml LSP must use a manual recipe");
+        };
+        assert_eq!(version, "1.27.0");
+        assert!(hint.contains("OCaml 5.5.0"));
+        assert!(hint.contains("[lsp.ocaml-lsp].executable"));
+        assert!(hint.contains("ocamllabs.ocaml-platform"));
     }
 
     #[test]

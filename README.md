@@ -76,6 +76,7 @@ After setup:
 | Julia | Julia Language Server | Reuse active Julia environment or official `julialang.language-julia` extension |
 | Kotlin | Kotlin Language Server | Reuse standalone server or official `JetBrains.kotlin-server` extension |
 | Lua | Lua Language Server | Reuse standalone LuaLS or official `sumneko.lua` extension |
+| OCaml | OCaml Language Server | Manual opam switch package |
 | Python | Pyright | npm-compatible manager |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
@@ -108,6 +109,8 @@ Julia support covers `.jl` files below the nearest `Project.toml`, `Manifest.tom
 Kotlin support covers `.kt` and `.kts` files in Gradle or Maven projects. CLSP reuses a compatible standalone Kotlin Language Server or the server and JBR 25 bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension, and isolates server indexes per project root. CLSP installs none of these components; use it only in trusted projects because Gradle and Maven imports may execute build logic.
 
 Lua support covers `.lua` files below the nearest OpenCode-compatible Lua configuration marker, with the workspace root as the fallback. CLSP first reuses a compatible LuaLS `3.x` executable, then the complete server bundled with the official `sumneko.lua` Stable/Insiders extension. CLSP installs neither source; use trusted project configuration because LuaLS plugins may execute code.
+
+OCaml support covers `.ml` and `.mli` files below the nearest `dune-project`, `dune-workspace`, `.merlin`, or `opam`, with the workspace root as the fallback. CLSP reuses a compatible `ocamllsp` from `PATH` or `[lsp.ocaml-lsp].executable`; it does not install opam, OCaml, Dune, the server, or the official `ocamllabs.ocaml-platform` extension. The extension is an independent client of the same external server and can publish Problems through the IDE bridge.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

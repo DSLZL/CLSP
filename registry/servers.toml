@@ -227,6 +227,18 @@ version_args = ["--version"]
 install = { kind = "manual", version = "3.19.0", hint = "Install LuaLS 3.x and ensure lua-language-server is on PATH or set [lsp.lua-ls].executable; CLSP also supports the bundled server in the official sumneko.lua VS Code extension" }
 
 [[server]]
+id = "ocaml-lsp"
+display_name = "OCaml Language Server"
+language_id = "ocaml"
+version_req = ">=1.4.1, <2.0.0"
+extensions = ["ml", "mli"]
+markers = ["dune-project", "dune-workspace", ".merlin", "opam"]
+command = "ocamllsp"
+args = []
+version_args = ["--version"]
+install = { kind = "manual", version = "1.27.0", hint = "Install ocaml-lsp-server compatible with the OCaml switch used by this project (validated with OCaml 5.5.0 and ocaml-lsp-server 1.27.0), then ensure that switch's ocamllsp is on PATH or set [lsp.ocaml-lsp].executable; the official ocamllabs.ocaml-platform VS Code extension uses the same external server" }
+
+[[server]]
 id = "clangd"
 display_name = "clangd"
 language_id = "cpp"

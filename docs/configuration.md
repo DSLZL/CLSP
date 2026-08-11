@@ -362,6 +362,7 @@ jdtls
 julials
 kotlin-ls
 lua-ls
+ocaml-lsp
 pyright
 rust
 typescript

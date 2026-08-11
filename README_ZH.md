@@ -74,6 +74,7 @@ clsp setup --workspace .
 | Julia | Julia Language Server | 复用当前 Julia 环境或官方 `julialang.language-julia` 扩展 |
 | Kotlin | Kotlin Language Server | 复用独立服务端或官方 `JetBrains.kotlin-server` 扩展 |
 | Lua | Lua Language Server | 复用独立 LuaLS 或官方 `sumneko.lua` 扩展 |
+| OCaml | OCaml Language Server | 手动安装到 opam switch |
 | Python | Pyright | npm 兼容包管理器 |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
@@ -106,6 +107,8 @@ Julia 支持 `.jl` 文件，根目录取最近的 `Project.toml`、`Manifest.tom
 Kotlin 支持 Gradle 或 Maven 项目中的 `.kt` 与 `.kts` 文件。CLSP 会复用兼容的独立 Kotlin Language Server，或官方 `JetBrains.kotlin-server` Stable/Insiders 扩展内置的服务端与 JBR 25，并按项目根隔离索引。CLSP 不安装这些组件；Gradle/Maven 导入可能执行构建逻辑，因此只应在可信项目中使用。
 
 Lua 支持 `.lua` 文件，根目录取最近的 OpenCode 兼容 Lua 配置标记，找不到时回退到 workspace 根。CLSP 先复用兼容的 LuaLS `3.x` 可执行文件，再尝试官方 `sumneko.lua` Stable/Insiders 扩展内置的完整服务端；两者都不会由 CLSP 安装。LuaLS 插件可能执行代码，因此只应使用可信的项目配置。
+
+OCaml 支持 `.ml` 与 `.mli` 文件，根目录取最近的 `dune-project`、`dune-workspace`、`.merlin` 或 `opam`，找不到时回退到 workspace 根。CLSP 复用 `PATH` 或 `[lsp.ocaml-lsp].executable` 中兼容的 `ocamllsp`；不会安装 opam、OCaml、Dune、服务端或官方 `ocamllabs.ocaml-platform` 扩展。该扩展是同一外部服务端的独立客户端，可通过现有 IDE Bridge 提供 Problems。
 
 如果你需要精确的版本范围、查找顺序和安装策略，请查看 [Language Servers](docs/language-servers.md)。
 

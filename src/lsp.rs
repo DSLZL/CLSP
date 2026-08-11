@@ -657,6 +657,7 @@ impl LspClient {
     }
 
     async fn write(&self, value: Value) -> Result<(), ClspError> {
+        let value = normalize_outgoing_message(value);
         let mut writer = self.writer.lock().await;
         write_frame(&mut *writer, &value, self.max_message_bytes).await
     }
@@ -1313,6 +1314,16 @@ fn astro_typescript_sdk(
         .and_then(typescript_sdk_in)
 }
 
+fn normalize_outgoing_message(mut value: Value) -> Value {
+    if value.get("params").is_some_and(Value::is_null) {
+        value
+            .as_object_mut()
+            .expect("JSON-RPC messages are objects")
+            .remove("params");
+    }
+    value
+}
+
 fn typescript_sdk_in(node_modules: &Path) -> Option<PathBuf> {
     let tsdk = node_modules.join("typescript").join("lib");
     tsdk.join("tsserver.js").is_file().then_some(tsdk)
@@ -1360,6 +1371,20 @@ mod tests {
             .await
             .unwrap();
         assert!(read_frame(&mut reader, 32).await.is_err());
+    }
+
+    #[test]
+    fn outbound_json_rpc_omits_null_params() {
+        for message in [
+            json!({"jsonrpc": "2.0", "id": 1, "method": "shutdown", "params": null}),
+            json!({"jsonrpc": "2.0", "method": "exit", "params": null}),
+        ] {
+            assert!(normalize_outgoing_message(message).get("params").is_none());
+        }
+        assert_eq!(
+            normalize_outgoing_message(json!({"jsonrpc": "2.0", "id": 1, "result": null})),
+            json!({"jsonrpc": "2.0", "id": 1, "result": null})
+        );
     }
 
     #[test]

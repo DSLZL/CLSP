@@ -27,6 +27,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `julials` | Julia | `julia ... using LanguageServer; runserver()` | `>=5.0.0, <6.0.0` | active Julia environment or official `julialang.language-julia` extension |
 | `kotlin-ls` | Kotlin | `kotlin-lsp` or `intellij-server --stdio` | `>=262.4739.0, <264.0.0` | official `JetBrains.kotlin-server` extension or manual standalone server |
 | `lua-ls` | Lua | `lua-language-server` | `>=3.19.0, <4.0.0` | official `sumneko.lua` extension or manual standalone server |
+| `ocaml-lsp` | OCaml | `ocamllsp` | `>=1.4.1, <2.0.0` | manual `ocaml-lsp-server` opam package |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
 
@@ -190,6 +191,24 @@ executable = "C:/tools/lua-language-server/bin/lua-language-server.exe"
 ```
 
 Root selection follows OpenCode: the nearest `.luarc.json`, `.luarc.jsonc`, `.luacheckrc`, `.stylua.toml`, `stylua.toml`, `selene.toml`, or `selene.yml` wins; otherwise CLSP uses the workspace root. LuaLS receives no extension-private initialization options. Project configuration can enable executable LuaLS plugins, so use only trusted projects.
+
+### OCaml
+
+Install `ocaml-lsp-server` into the same opam switch as the project toolchain. The current validation baseline is OCaml `5.5.0` with `ocaml-lsp-server` `1.27.0`:
+
+```powershell
+opam install ocaml-lsp-server.1.27.0
+opam exec -- ocamllsp --version
+```
+
+Expose that switch's `ocamllsp` through `PATH`, or configure it directly:
+
+```toml
+[lsp.ocaml-lsp]
+executable = "C:/Users/you/AppData/Local/opam/5.5.0/bin/ocamllsp.exe"
+```
+
+CLSP starts the bare `ocamllsp` stdio command for `.ml` and `.mli` files. The nearest `dune-project`, `dune-workspace`, `.merlin`, or `opam` selects the root; otherwise the workspace root is used. CLSP does not install the toolchain or scan `ocamllabs.ocaml-platform`, because the official extension also resolves an external server from its selected sandbox. Its Problems remain available through the existing IDE bridge. Use only trusted project build configuration.
 
 ### C#
 
@@ -360,6 +379,7 @@ Examples:
 - Elixir: `.ex` or `.exs` below the nearest `mix.exs` or `mix.lock`
 - F#: `.fs`, `.fsi`, `.fsx`, or `.fsscript` below the nearest solution, `*.fsproj`, or `global.json`
 - Gleam: `.gleam` below the nearest `gleam.toml`, with workspace-root fallback
+- OCaml: `.ml` or `.mli` below the nearest `dune-project`, `dune-workspace`, `.merlin`, or `opam`, with workspace-root fallback
 
 The registry is deliberately bounded rather than accepting arbitrary server recipes from workspace configuration.
 

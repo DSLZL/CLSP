@@ -5141,6 +5141,7 @@ mod tests {
             ("LS-262.9593.0", Version::new(262, 9593, 0)),
             ("ILS-263.2689.0", Version::new(263, 2689, 0)),
             ("2.14.0.0", Version::new(2, 14, 0)),
+            ("1.27.0", Version::new(1, 27, 0)),
         ] {
             assert_eq!(parse_version(output), Some(expected));
         }

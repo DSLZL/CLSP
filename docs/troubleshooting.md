@@ -335,6 +335,27 @@ executable = "C:/tools/lua-language-server/bin/lua-language-server.exe"
 
 The registry accepts LuaLS `>=3.19.0, <4.0.0`. Add one of the documented Lua project markers when a nested project needs its own root; otherwise the workspace root is used. Project configuration can enable executable plugins, so use only trusted projects.
 
+## OCaml Language Server cannot be resolved
+
+CLSP does not install opam, OCaml, Dune, `ocaml-lsp-server`, or the VS Code extension. Check the switch used by the project:
+
+```powershell
+where.exe opam
+opam --version
+opam switch show
+opam exec -- ocamllsp --version
+code --list-extensions --show-versions | Select-String ocamllabs.ocaml-platform
+```
+
+Install a compatible server into that switch, then expose its `bin` directory through `PATH` or configure the executable returned by `opam var bin`:
+
+```toml
+[lsp.ocaml-lsp]
+executable = "C:/Users/you/AppData/Local/opam/5.5.0/bin/ocamllsp.exe"
+```
+
+The registry accepts `ocamllsp >=1.4.1, <2.0.0`; the current validation baseline is `1.27.0`. The official `ocamllabs.ocaml-platform` extension selects an external opam/esy/Global/Dune/Custom sandbox independently and does not bundle a server for CLSP to scan. Configure both clients for the same switch when `PATH` is insufficient.
+
 ## C# server cannot be resolved
 
 CLSP does not install the .NET SDK.

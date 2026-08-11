@@ -998,6 +998,50 @@ mod tests {
     }
 
     #[test]
+    fn ocaml_files_use_the_nearest_opencode_marker_within_the_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = root.path().join("workspace");
+        let project = workspace_root.join("packages/demo");
+        let source_dir = project.join("lib");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(root.path().join("opam"), "").unwrap();
+        fs::write(workspace_root.join("dune-project"), "(lang dune 3.0)").unwrap();
+        fs::write(project.join(".merlin"), "B _build/default").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&workspace_root).unwrap();
+        let ocaml = registry.server("ocaml-lsp").unwrap();
+
+        for name in ["demo.ml", "demo.mli"] {
+            let file = source_dir.join(name);
+            fs::write(&file, "let value = 1").unwrap();
+            assert_eq!(
+                workspace
+                    .matching_servers(
+                        &file,
+                        file.extension().unwrap().to_str().unwrap(),
+                        &registry
+                    )
+                    .into_iter()
+                    .map(|server| server.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["ocaml-lsp"]
+            );
+            assert_eq!(workspace.root_for_file(&file, ocaml), project);
+        }
+
+        fs::remove_file(project.join(".merlin")).unwrap();
+        assert_eq!(
+            workspace.root_for_file(&source_dir.join("demo.ml"), ocaml),
+            workspace_root
+        );
+        fs::remove_file(workspace_root.join("dune-project")).unwrap();
+        assert_eq!(
+            workspace.root_for_file(&source_dir.join("demo.ml"), ocaml),
+            fs::canonicalize(&workspace_root).unwrap()
+        );
+    }
+
+    #[test]
     fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
         let root = tempfile::tempdir().unwrap();
         let deno_root = root.path().join("deno-app");
