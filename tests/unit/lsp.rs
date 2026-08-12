@@ -1,9 +1,11 @@
 use super::*;
 
+use crate::test_support as support;
+
 fn write_typescript_sdk(root: &Path) -> PathBuf {
     let tsdk = root.join("node_modules").join("typescript").join("lib");
-    std::fs::create_dir_all(&tsdk).unwrap();
-    std::fs::write(tsdk.join("tsserver.js"), "").unwrap();
+    support::create_dir_all(&tsdk).unwrap();
+    support::write(tsdk.join("tsserver.js"), "").unwrap();
     tsdk
 }
 
@@ -143,10 +145,10 @@ async fn truncated_lsp_diagnostics_are_not_fresh_or_new_errors() {
 
 #[test]
 fn astro_initialization_prefers_nearest_project_typescript() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path();
     let root = workspace.join("packages").join("site");
-    std::fs::create_dir_all(&root).unwrap();
+    support::create_dir_all(&root).unwrap();
     write_typescript_sdk(workspace);
     let nearest = write_typescript_sdk(&root);
 
@@ -167,10 +169,10 @@ fn astro_initialization_prefers_nearest_project_typescript() {
 
 #[test]
 fn astro_initialization_uses_manager_typescript() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     let root = workspace.join("site");
-    std::fs::create_dir_all(&root).unwrap();
+    support::create_dir_all(&root).unwrap();
     let manager = directory.path().join("manager");
     let installed = write_typescript_sdk(&manager);
 
@@ -203,7 +205,7 @@ fn astro_initialization_uses_manager_typescript() {
 
 #[test]
 fn only_astro_requires_typescript_initialization() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let root = directory.path();
     let executable = root.join("astro-ls.cmd");
     assert!(
@@ -223,7 +225,7 @@ fn only_astro_requires_typescript_initialization() {
 
 #[test]
 fn deno_initialization_enables_the_server() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let root = directory.path();
     let options =
         server_initialization_options(DENO_SERVER_ID, root, root, &root.join("deno.exe"), None)
@@ -234,7 +236,7 @@ fn deno_initialization_enables_the_server() {
 
 #[test]
 fn intelephense_disables_telemetry_and_hosts_only_js_entries_with_node() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let root = directory.path();
     let script = root.join("intelephense.js");
     let shim = root.join("intelephense.cmd");
@@ -250,7 +252,7 @@ fn intelephense_disables_telemetry_and_hosts_only_js_entries_with_node() {
 
 #[test]
 fn prisma_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let root = directory.path();
     let script = root.join("bin.js");
     let shim = root.join("prisma-language-server.cmd");
@@ -270,7 +272,7 @@ fn prisma_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
 
 #[test]
 fn pyright_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let root = directory.path();
     let script = root.join("server.js");
     let shim = root.join("pyright-langserver.cmd");
@@ -285,7 +287,7 @@ fn pyright_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
 
 #[test]
 fn fsharp_initialization_and_dll_host_are_explicit() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let root = directory.path();
     let dll = root.join("fsautocomplete.DLL");
     let options = server_initialization_options(FSHARP_SERVER_ID, root, root, &dll, None)
@@ -310,9 +312,9 @@ fn fsharp_initialization_and_dll_host_are_explicit() {
 
 #[test]
 fn jdtls_initialization_names_the_server_root() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let root = directory.path().join("java-project");
-    std::fs::create_dir(&root).unwrap();
+    support::create_dir(&root).unwrap();
     let options = server_initialization_options(
         JDTLS_SERVER_ID,
         &root,
@@ -416,9 +418,9 @@ fn julials_extension_uses_its_project_without_initialization_options() {
 #[cfg(windows)]
 #[test]
 fn fsharp_diagnostic_uri_round_trips_an_encoded_lowercase_drive() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let file = directory.path().join("Program.fs");
-    std::fs::write(&file, "module Demo").unwrap();
+    support::write(&file, "module Demo").unwrap();
     let workspace = Workspace::open(directory.path()).unwrap();
     let canonical = std::fs::canonicalize(&file).unwrap();
     assert!(!path_to_uri(workspace.root()).unwrap().contains("%3F"));

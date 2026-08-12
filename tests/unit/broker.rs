@@ -1,7 +1,9 @@
 use super::*;
 
-fn test_broker() -> (tempfile::TempDir, Arc<Broker>, PathBuf) {
-    let directory = tempfile::tempdir().unwrap();
+use crate::test_support as support;
+
+fn test_broker() -> (support::TempDir, Arc<Broker>, PathBuf) {
+    let directory = support::tempdir().unwrap();
     let workspace_root = directory.path().join("workspace");
     let state = directory.path().join("state");
     let paths = StatePaths {
@@ -9,9 +11,9 @@ fn test_broker() -> (tempfile::TempDir, Arc<Broker>, PathBuf) {
         artifacts: directory.path().join("artifacts"),
         workspace_state: state,
     };
-    fs::create_dir_all(&workspace_root).unwrap();
+    support::create_dir_all(&workspace_root).unwrap();
     for path in [&paths.logs, &paths.workspace_state, &paths.artifacts] {
-        fs::create_dir_all(path).unwrap();
+        support::create_dir_all(path).unwrap();
     }
     let workspace = Workspace::open(&workspace_root).unwrap();
     let mut config = Config::default();
@@ -181,7 +183,7 @@ async fn sync_with_ide_diagnostics(
 
 #[test]
 fn fsharp_start_args_use_a_root_specific_state_directory() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let state = directory.path().join("state");
     let root = directory.path().join("workspace/project");
     let args = lsp_start_args(FSHARP_SERVER_ID, &["existing".into()], &root, &state).unwrap();
@@ -208,7 +210,7 @@ fn fsharp_start_args_use_a_root_specific_state_directory() {
 
 #[test]
 fn jdtls_start_args_use_a_root_specific_data_directory() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let state = directory.path().join("state");
     let root = directory.path().join("workspace/project");
     let args = lsp_start_args(JDTLS_SERVER_ID, &[], &root, &state).unwrap();
@@ -230,7 +232,7 @@ fn jdtls_start_args_use_a_root_specific_data_directory() {
 
 #[test]
 fn kotlin_start_args_use_a_root_specific_system_path() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let state = directory.path().join("state");
     let root = directory.path().join("workspace/project");
     let args = lsp_start_args(KOTLIN_LS_SERVER_ID, &["--stdio".into()], &root, &state).unwrap();
@@ -417,7 +419,7 @@ async fn watcher_reuse_requires_a_live_ide_session() {
 async fn ide_problems_baseline_reports_only_new_errors() {
     let (_directory, broker, root) = test_broker();
     let file = root.join("main.rs");
-    fs::write(&file, "a😀b\n").unwrap();
+    support::write(&file, "a😀b\n").unwrap();
     let session_id = "c".repeat(IDE_SESSION_ID_HEX_LEN);
     register_test_ide(&broker, &root, &session_id).await;
     let old = ide_error(&file, "old", 0, 1);
@@ -480,7 +482,7 @@ async fn ide_problems_baseline_reports_only_new_errors() {
 async fn truncated_ide_baseline_is_never_injected() {
     let (_directory, broker, root) = test_broker();
     let file = root.join("main.rs");
-    fs::write(&file, "fn main() {}\n").unwrap();
+    support::write(&file, "fn main() {}\n").unwrap();
     let session_id = "d".repeat(IDE_SESSION_ID_HEX_LEN);
     register_test_ide(&broker, &root, &session_id).await;
     prepare_with_baseline(
@@ -518,7 +520,7 @@ async fn truncated_ide_baseline_is_never_injected() {
 async fn ide_payload_round_trip_never_enters_public_events() {
     let (_directory, broker, root) = test_broker();
     let file = root.join("main.rs");
-    fs::write(&file, "fn main() {}\n").unwrap();
+    support::write(&file, "fn main() {}\n").unwrap();
     let session_id = "a".repeat(IDE_SESSION_ID_HEX_LEN);
     register_test_ide(&broker, &root, &session_id).await;
 
@@ -649,9 +651,9 @@ async fn ide_review_correlates_and_builds_add_update_delete_move_pairs() {
     let move_from = root.join("move_from.rs");
     let move_to = root.join("move_to.rs");
     let add = root.join("add.rs");
-    fs::write(&update, "old update\n").unwrap();
-    fs::write(&delete, "old delete\n").unwrap();
-    fs::write(&move_from, "old move\n").unwrap();
+    support::write(&update, "old update\n").unwrap();
+    support::write(&delete, "old delete\n").unwrap();
+    support::write(&move_from, "old move\n").unwrap();
     let session_id = "b".repeat(IDE_SESSION_ID_HEX_LEN);
     register_test_ide(&broker, &root, &session_id).await;
     let targets = vec![
@@ -682,10 +684,10 @@ async fn ide_review_correlates_and_builds_add_update_delete_move_pairs() {
             .unwrap(),
         (true, false)
     );
-    fs::write(&update, "new update\n").unwrap();
+    support::write(&update, "new update\n").unwrap();
     fs::remove_file(&delete).unwrap();
     fs::rename(&move_from, &move_to).unwrap();
-    fs::write(&add, "new add\n").unwrap();
+    support::write(&add, "new add\n").unwrap();
 
     let request = {
         let broker = Arc::clone(&broker);
@@ -752,4 +754,21 @@ async fn ide_review_correlates_and_builds_add_update_delete_move_pairs() {
     );
     assert!(broker.events.lock().await.is_empty());
     assert!(!broker.event_log.exists());
+}
+
+#[tokio::test]
+async fn broker_owned_tasks_are_cancelled_and_joined() {
+    let (_directory, broker, _) = test_broker();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    broker
+        .spawn_owned(async move {
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        })
+        .await;
+    started_rx.await.unwrap();
+    assert_eq!(broker.tasks.lock().await.len(), 1);
+
+    broker.stop_owned_tasks().await;
+    assert!(broker.tasks.lock().await.is_empty());
 }

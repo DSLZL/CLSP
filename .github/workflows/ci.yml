@@ -22,6 +22,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify Rust toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expected = "1.97.1"
+          $actual = (& rustc --version) -join [Environment]::NewLine
+          if ($LASTEXITCODE -ne 0 -or $actual.Trim() -notmatch "^rustc $expected ") {
+              throw "Rust $expected is required; got '$($actual.Trim())'"
+          }
+          (& cargo --version) | Out-Host
+
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
@@ -62,6 +73,17 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Verify Rust toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expected = "1.97.1"
+          $actual = (& rustc --version) -join [Environment]::NewLine
+          if ($LASTEXITCODE -ne 0 -or $actual.Trim() -notmatch "^rustc $expected ") {
+              throw "Rust $expected is required; got '$($actual.Trim())'"
+          }
+          (& cargo --version) | Out-Host
 
       - name: Setup Node.js
         uses: actions/setup-node@v7

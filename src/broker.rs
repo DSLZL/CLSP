@@ -18,6 +18,7 @@ use tokio::{
     io::AsyncWriteExt,
     net::windows::named_pipe::NamedPipeServer,
     sync::{Mutex, Notify, RwLock, broadcast, oneshot},
+    task::JoinHandle,
 };
 
 use crate::{
@@ -214,6 +215,7 @@ pub struct Broker {
     hook_last_seen_ms: AtomicU64,
     shutting_down: AtomicBool,
     shutdown: Notify,
+    tasks: Mutex<Vec<JoinHandle<()>>>,
     config_digest: String,
     event_log: PathBuf,
 }
@@ -253,6 +255,7 @@ impl Broker {
             hook_last_seen_ms: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
             shutdown: Notify::new(),
+            tasks: Mutex::new(Vec::new()),
             config_digest,
             event_log,
         }))
@@ -262,15 +265,36 @@ impl Broker {
         self.resolver.paths()
     }
 
+    async fn spawn_owned<F>(self: &Arc<Self>, task: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.tasks.lock().await;
+        if self.shutting_down.load(Ordering::Relaxed) {
+            return;
+        }
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(tokio::spawn(task));
+    }
+
+    async fn stop_owned_tasks(&self) {
+        let tasks = std::mem::take(&mut *self.tasks.lock().await);
+        for task in tasks {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
     pub async fn handle(self: &Arc<Self>, request: RpcRequest) -> Result<RpcResponse, ClspError> {
         self.touch();
         match request {
             RpcRequest::AcquireLease { session_id } => {
                 self.renew_lease(session_id.clone()).await?;
                 let broker = Arc::clone(self);
-                tokio::spawn(async move {
+                self.spawn_owned(async move {
                     let _ = broker.discover_and_register(broker.config.prewarm).await;
-                });
+                })
+                .await;
                 Ok(RpcResponse::Ack)
             }
             RpcRequest::RenewLease { session_id } => {
@@ -284,9 +308,10 @@ impl Broker {
             }
             RpcRequest::Discover => {
                 let broker = Arc::clone(self);
-                tokio::spawn(async move {
+                self.spawn_owned(async move {
                     let _ = broker.discover_and_register(broker.config.prewarm).await;
-                });
+                })
+                .await;
                 Ok(RpcResponse::Ack)
             }
             RpcRequest::EnsureFile { path } => {
@@ -1284,14 +1309,15 @@ impl Broker {
         }
         if !result.complete {
             let broker = Arc::clone(self);
-            tokio::spawn(async move {
+            self.spawn_owned(async move {
                 let mut config = broker.config.discovery.clone();
                 config.max_initial_ms = config.max_initial_ms.max(30_000);
                 let result = broker.workspace.discover(&broker.registry, &config);
                 for detection in result.matches {
                     let _ = broker.register_detection(&detection).await;
                 }
-            });
+            })
+            .await;
         }
         if prewarm {
             for detection in detections {
@@ -1699,9 +1725,10 @@ impl Broker {
                         continue;
                     }
                     let broker = Arc::clone(self);
-                    tokio::spawn(async move {
+                    self.spawn_owned(async move {
                         let _ = broker.ensure_detection(&detection).await;
-                    });
+                    })
+                    .await;
                     fresh = false;
                     baseline_available = false;
                     continue;
@@ -2043,25 +2070,29 @@ pub async fn run(workspace_path: &Path, prewarm_on_start: bool) -> Result<(), Cl
     let metadata = BrokerMetadata::new(name.clone(), workspace.root().to_path_buf())?;
     publish_metadata(&metadata_path, &metadata).await?;
     apply_user_system_dacl(&broker.paths().logs, true)?;
-    let _watcher = start_watcher(Arc::clone(&broker))?;
+    let _watcher = start_watcher(Arc::clone(&broker)).await?;
 
     let discovery = Arc::clone(&broker);
-    tokio::spawn(async move {
-        let _ = discovery
-            .discover_and_register(prewarm_on_start && discovery.config.prewarm)
-            .await;
-    });
+    broker
+        .spawn_owned(async move {
+            let _ = discovery
+                .discover_and_register(prewarm_on_start && discovery.config.prewarm)
+                .await;
+        })
+        .await;
     let lifecycle = Arc::clone(&broker);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            interval.tick().await;
-            lifecycle.sweep().await;
-            if lifecycle.shutting_down.load(Ordering::Relaxed) {
-                return;
+    broker
+        .spawn_owned(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                lifecycle.sweep().await;
+                if lifecycle.shutting_down.load(Ordering::Relaxed) {
+                    return;
+                }
             }
-        }
-    });
+        })
+        .await;
 
     loop {
         tokio::select! {
@@ -2071,20 +2102,26 @@ pub async fn run(workspace_path: &Path, prewarm_on_start: bool) -> Result<(), Cl
                 listener = create_pipe_server(&name, false)?;
                 let broker = Arc::clone(&broker);
                 let token = metadata.token.clone();
-                tokio::spawn(async move {
-                    handle_connection(broker, connected, token).await;
-                });
+                broker
+                    .clone()
+                    .spawn_owned(async move {
+                        handle_connection(broker, connected, token).await;
+                    })
+                    .await;
             }
             _ = broker.shutdown.notified() => break,
             _ = tokio::signal::ctrl_c() => break,
         }
     }
+    broker.shutting_down.store(true, Ordering::Relaxed);
+    broker.shutdown.notify_waiters();
     broker.stop_all().await;
+    broker.stop_owned_tasks().await;
     let _ = tokio::fs::remove_file(metadata_path).await;
     Ok(())
 }
 
-fn start_watcher(broker: Arc<Broker>) -> Result<RecommendedWatcher, ClspError> {
+async fn start_watcher(broker: Arc<Broker>) -> Result<RecommendedWatcher, ClspError> {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         let _ = sender.send(result);
@@ -2093,29 +2130,33 @@ fn start_watcher(broker: Arc<Broker>) -> Result<RecommendedWatcher, ClspError> {
     watcher
         .watch(broker.workspace.root(), RecursiveMode::Recursive)
         .map_err(broker_error)?;
-    tokio::spawn(async move {
-        while let Some(result) = receiver.recv().await {
-            let Ok(event) = result else { continue };
-            if event.paths.iter().any(|path| {
-                path.file_name()
-                    .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(".clsp.toml"))
-            }) {
-                if !broker.shutting_down.swap(true, Ordering::Relaxed) {
-                    broker.shutdown.notify_waiters();
+    let watcher_broker = Arc::clone(&broker);
+    broker
+        .spawn_owned(async move {
+            while let Some(result) = receiver.recv().await {
+                let Ok(event) = result else { continue };
+                if event.paths.iter().any(|path| {
+                    path.file_name().is_some_and(|name| {
+                        name.to_string_lossy().eq_ignore_ascii_case(".clsp.toml")
+                    })
+                }) {
+                    if !watcher_broker.shutting_down.swap(true, Ordering::Relaxed) {
+                        watcher_broker.shutdown.notify_waiters();
+                    }
+                    return;
                 }
-                return;
+                let paths: Vec<_> = event
+                    .paths
+                    .into_iter()
+                    .take(watcher_broker.config.diagnostics.max_files)
+                    .collect();
+                if !paths.is_empty() {
+                    watcher_broker.note_watcher_changes(&paths).await;
+                    let _ = watcher_broker.sync_files(&paths, true).await;
+                }
             }
-            let paths: Vec<_> = event
-                .paths
-                .into_iter()
-                .take(broker.config.diagnostics.max_files)
-                .collect();
-            if !paths.is_empty() {
-                broker.note_watcher_changes(&paths).await;
-                let _ = broker.sync_files(&paths, true).await;
-            }
-        }
-    });
+        })
+        .await;
     Ok(watcher)
 }
 

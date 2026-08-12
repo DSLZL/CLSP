@@ -1,4 +1,6 @@
 use super::*;
+
+use crate::test_support as support;
 use std::io::Write;
 
 #[test]
@@ -45,14 +47,14 @@ fn command_identity_handles_a_quoted_executable_path() {
 
 #[test]
 fn code_cli_script_must_be_unique() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let executable = directory.path().join("Code.exe");
-    fs::write(&executable, []).unwrap();
+    support::write(&executable, []).unwrap();
     let first = directory
         .path()
         .join("version-one/resources/app/out/cli.js");
-    fs::create_dir_all(first.parent().unwrap()).unwrap();
-    fs::write(&first, []).unwrap();
+    support::create_dir_all(first.parent().unwrap()).unwrap();
+    support::write(&first, []).unwrap();
     assert_eq!(
         resolve_code_cli_script(&executable).unwrap(),
         fs::canonicalize(&first).unwrap()
@@ -61,8 +63,8 @@ fn code_cli_script_must_be_unique() {
     let second = directory
         .path()
         .join("version-two/resources/app/out/cli.js");
-    fs::create_dir_all(second.parent().unwrap()).unwrap();
-    fs::write(second, []).unwrap();
+    support::create_dir_all(second.parent().unwrap()).unwrap();
+    support::write(second, []).unwrap();
     assert!(resolve_code_cli_script(&executable).is_err());
 }
 
@@ -81,7 +83,7 @@ fn child_process_paths_strip_windows_verbatim_prefixes() {
 
 #[test]
 fn vsix_identity_and_version_are_checked_from_the_archive() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let path = directory.path().join("clsp-ide.vsix");
     let file = fs::File::create(&path).unwrap();
     let mut archive = zip::ZipWriter::new(file);

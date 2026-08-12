@@ -11,7 +11,7 @@ Match CI as closely as practical.
 Required:
 
 - Windows x64
-- Rust **1.88+**
+- Rust **1.97.1+** (the repository pins this toolchain in `rust-toolchain.toml`)
 - `x86_64-pc-windows-msvc` target
 - Visual Studio Build Tools
 - Windows SDK
@@ -20,6 +20,13 @@ Required:
 - VS Code CLI (`code`)
 
 CI currently uses Node.js 24 and Bun 1.3.14.
+
+Confirm the selected Rust toolchain before changing Rust code:
+
+```powershell
+rustup show active-toolchain
+rustc --version
+```
 
 Add the Rust target if needed:
 
@@ -69,7 +76,12 @@ bun run clean
 │   ├── config.rs          Strict configuration model and defaults
 │   ├── hook.rs            Codex lifecycle hooks
 │   ├── ide.rs             Broker ↔ VS Code relay host
-│   ├── installer.rs       Server discovery / reuse / installation
+│   ├── installer.rs       Resolver policy and ordered installation orchestration
+│   ├── installer/         Bounded process, archive, state, and version seams
+│   │   ├── archive.rs     Checksum and bounded ZIP publication
+│   │   ├── process.rs     Sanitized child execution and output limits
+│   │   ├── state.rs       Workspace state paths and atomic writes
+│   │   └── version.rs     Shared server-version parsing/validation
 │   ├── ipc.rs             Windows local IPC and runtime metadata
 │   ├── lsp.rs             LSP client/process handling
 │   ├── mcp.rs             MCP tool adapter
@@ -80,6 +92,8 @@ bun run clean
 │   └── workspace.rs       Workspace detection and path safety
 ├── tests/
 │   ├── *.rs               Public Cargo integration-test targets
+│   ├── local_harness.ps1  Fixed local release/contract measurement command
+│   ├── support/            Shared test-only tempdir/filesystem fixtures
 │   └── unit/              Private unit tests mounted by their source modules
 ├── vscode/
 │   └── src/
@@ -123,11 +137,23 @@ Keep test bodies, fixtures, fakes, and test-only helpers below `tests/`. Keep
 test-only crates in `[dev-dependencies]`; do not add a production feature merely
 to expose private implementation to integration tests.
 
+Use `tests/support` for shared temporary-directory and fixture filesystem
+operations. It is mounted once under `cfg(test)` for private unit modules and
+is never part of a release target.
+
 For release-style local compilation:
 
 ```powershell
 cargo build --release --locked --target x86_64-pc-windows-msvc
 ```
+
+Run the fixed local release and contract measurement program from the repository root:
+
+```powershell
+pwsh -NoProfile -File tests/local_harness.ps1
+```
+
+It writes ignored JSON and text results below `target/local-measure-results` and records raw samples plus medians for the package-clean release build, startup, representative broker/LSP/diagnostics and installer contract probes, full locked tests, artifact size, and release-only dependency/symbol checks. The JSON records whether release dependencies were cold, warm, or prebuilt; use the same cache state for comparisons. Use `-Samples 3` when a multi-sample median is needed; the default is one bounded sample for a fast local check.
 
 The release profile is size-focused, so avoid changing release-profile settings casually; they affect the shipped executable.
 

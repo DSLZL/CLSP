@@ -2,7 +2,6 @@ use std::{
     collections::BTreeSet,
     ffi::OsStr,
     path::{Path, PathBuf},
-    process::{ExitStatus, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -10,12 +9,7 @@ use std::{
 use semver::{Version, VersionReq};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    process::Command,
-    sync::Mutex,
-    time::timeout,
-};
+use tokio::sync::Mutex;
 
 use crate::{
     config::Config,
@@ -23,11 +17,23 @@ use crate::{
     registry::{InstallRecipe, ServerDefinition},
 };
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const OUTPUT_LIMIT: usize = 4_096;
-const ARCHIVE_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
-const ARCHIVE_EXTRACT_LIMIT: u64 = 512 * 1024 * 1024;
-const ARCHIVE_ENTRY_LIMIT: usize = 4_096;
+mod archive;
+mod process;
+mod state;
+mod version;
+
+use archive::{
+    ARCHIVE_DOWNLOAD_LIMIT, ARCHIVE_EXTRACT_LIMIT, extract_zip, github_zip_candidate, system_curl,
+    verify_file_sha256,
+};
+pub(crate) use process::sanitize_command;
+#[cfg(test)]
+pub(super) use process::{OUTPUT_LIMIT, PRESERVED_ENV};
+use process::{bounded_text, command_output_detail, run_checked, run_command};
+pub use state::StatePaths;
+use state::atomic_write;
+use version::{parse_version, validate_version_output};
+
 const VSCODE_INSTALL_ENTRY_LIMIT: usize = 32;
 const VSCODE_EXTENSION_ENTRY_LIMIT: usize = 512;
 const ROSLYN_LANGUAGE_SERVER_PACKAGE: &str = "roslyn-language-server";
@@ -60,91 +66,7 @@ const KOTLIN_METADATA_FILE_LIMIT: u64 = 1024 * 1024;
 const LUA_LS_SERVER_ID: &str = "lua-ls";
 const LUA_EXTENSION_PREFIX: &str = "sumneko.lua-";
 const LUA_EXTENSION_FILE_LIMIT: u64 = 1024 * 1024;
-const PRESERVED_ENV: &[&str] = &[
-    "SystemRoot",
-    "SystemDrive",
-    "WINDIR",
-    "COMSPEC",
-    "PATH",
-    "PATHEXT",
-    "TEMP",
-    "TMP",
-    "TMPDIR",
-    "USERPROFILE",
-    "LOCALAPPDATA",
-    "APPDATA",
-    "HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_CACHE_HOME",
-    "XDG_DATA_HOME",
-    "XDG_STATE_HOME",
-    "JAVA_HOME",
-    "GRADLE_USER_HOME",
-    "GOBIN",
-    "GOPATH",
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "RUSTUP_TOOLCHAIN",
-    "DOTNET_CLI_HOME",
-    "DOTNET_ROOT",
-    "JULIA_DEPOT_PATH",
-    "JULIA_LOAD_PATH",
-    "JULIA_PROJECT",
-    "BUNDLE_GEMFILE",
-    "BUNDLE_PATH",
-    "BUNDLE_WITH",
-    "BUNDLE_WITHOUT",
-    "GEM_HOME",
-    "GEM_PATH",
-    "RUBYGEMS_GEMDEPS",
-    "RUBYLIB",
-    "RUBYOPT",
-    "ProgramFiles(x86)",
-    "PNPM_HOME",
-    "NPM_CONFIG_PREFIX",
-    "BUN_INSTALL",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "all_proxy",
-    "no_proxy",
-];
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Clone, Debug)]
-pub struct StatePaths {
-    pub workspace_state: PathBuf,
-    pub logs: PathBuf,
-    pub artifacts: PathBuf,
-}
-
-impl StatePaths {
-    pub fn for_workspace(workspace_hash: &str) -> Result<Self, ClspError> {
-        let local = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
-            ClspError::new(
-                ErrorCode::InvalidConfig,
-                "LOCALAPPDATA is required on Windows",
-            )
-        })?;
-        let clsp_root = PathBuf::from(local).join("clsp");
-        let workspace_state = clsp_root
-            .join("state")
-            .join("workspaces")
-            .join(workspace_hash);
-        let paths = Self {
-            logs: workspace_state.join("logs"),
-            workspace_state,
-            artifacts: clsp_root.join("artifacts"),
-        };
-        for path in [&paths.workspace_state, &paths.logs, &paths.artifacts] {
-            std::fs::create_dir_all(path).map_err(server_error)?;
-        }
-        Ok(paths)
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutableSource {
@@ -1462,105 +1384,6 @@ struct NpmProbe {
     modules_root: PathBuf,
 }
 
-#[derive(Debug)]
-struct CommandOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-fn validate_version_output(output: &str, requirement: &str) -> Result<Version, ClspError> {
-    let version = parse_version(output).ok_or_else(|| {
-        server_error(format!(
-            "executable version probe returned no semantic version: {output}"
-        ))
-    })?;
-    let requirement = VersionReq::parse(requirement).map_err(server_error)?;
-    if !requirement.matches(&version) {
-        return Err(server_error(format!(
-            "executable version {version} does not satisfy {requirement}"
-        )));
-    }
-    Ok(version)
-}
-
-fn parse_version(output: &str) -> Option<Version> {
-    output
-        .split(|character: char| {
-            !(character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+'))
-        })
-        .filter_map(|candidate| {
-            let candidate = candidate
-                .strip_prefix("ILS-")
-                .or_else(|| candidate.strip_prefix("LS-"))
-                .unwrap_or(candidate);
-            let candidate = candidate.strip_prefix('v').unwrap_or(candidate);
-            Version::parse(candidate)
-                .ok()
-                .or_else(|| parse_pvp_version(candidate))
-                .or_else(|| parse_calendar_version(candidate))
-        })
-        .next()
-}
-
-fn parse_pvp_version(candidate: &str) -> Option<Version> {
-    let parse_component = |value: &str| {
-        (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-            .then(|| value.parse().ok())
-            .flatten()
-    };
-    let mut components = candidate.split('.');
-    let major = parse_component(components.next()?)?;
-    let minor = parse_component(components.next()?)?;
-    let patch = parse_component(components.next()?)?;
-    let _revision: u64 = parse_component(components.next()?)?;
-    if components.next().is_some() {
-        return None;
-    }
-
-    // ponytail: SemVer has three numeric components; keep the PVP revision in the raw probe output.
-    Some(Version::new(major, minor, patch))
-}
-
-fn parse_calendar_version(candidate: &str) -> Option<Version> {
-    let (date, time) = candidate.split_once('-')?;
-    let mut date = date.split('.');
-    let year = fixed_width_number(date.next()?, 4)?;
-    let month = fixed_width_number(date.next()?, 2)?;
-    let day = fixed_width_number(date.next()?, 2)?;
-    if date.next().is_some() {
-        return None;
-    }
-
-    let mut time = time.split('.');
-    let hour = fixed_width_number(time.next()?, 2)?;
-    let minute = fixed_width_number(time.next()?, 2)?;
-    let second = fixed_width_number(time.next()?, 2)?;
-    if time.next().is_some() || year == 0 || hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-
-    let days_in_month = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-        2 => 28,
-        _ => return None,
-    };
-    if day == 0 || day > days_in_month {
-        return None;
-    }
-
-    // ponytail: compatibility is day-granular; preserve time only if same-day releases diverge.
-    Some(Version::new(year, month, day))
-}
-
-fn fixed_width_number(value: &str, width: usize) -> Option<u64> {
-    (value.len() == width && value.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| value.parse().ok())
-        .flatten()
-}
-
 async fn probe_npm_package(
     executable: &Path,
     package: &str,
@@ -1675,96 +1498,6 @@ async fn verify_exact_npm_manifest(
         )));
     }
     Ok(())
-}
-
-fn system_curl() -> Result<PathBuf, ClspError> {
-    #[cfg(windows)]
-    if let Some(system_root) = std::env::var_os("SystemRoot") {
-        let curl = PathBuf::from(system_root).join("System32/curl.exe");
-        if curl.is_file() {
-            return Ok(curl);
-        }
-    }
-    let program = if cfg!(windows) { "curl.exe" } else { "curl" };
-    which::which(program).map_err(|_| {
-        runtime_error(
-            "Windows curl.exe is required for CLSP clangd self-install; install clangd locally or set lsp.clangd.executable",
-        )
-    })
-}
-
-async fn verify_file_sha256(path: &Path, expected: &str) -> Result<(), ClspError> {
-    let mut file = tokio::fs::File::open(path).await.map_err(server_error)?;
-    let mut digest = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).await.map_err(server_error)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    let actual = hex::encode(digest.finalize());
-    if !actual.eq_ignore_ascii_case(expected) {
-        return Err(server_error(format!(
-            "archive SHA-256 mismatch: expected {expected}, got {actual}"
-        )));
-    }
-    Ok(())
-}
-
-fn extract_zip(
-    archive_path: &Path,
-    destination: &Path,
-    expanded_limit: u64,
-) -> Result<(), ClspError> {
-    let file = std::fs::File::open(archive_path).map_err(server_error)?;
-    let mut archive = zip::ZipArchive::new(file).map_err(server_error)?;
-    if archive.len() > ARCHIVE_ENTRY_LIMIT {
-        return Err(server_error("archive contains too many entries"));
-    }
-    std::fs::create_dir_all(destination).map_err(server_error)?;
-    let mut expanded = 0u64;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(server_error)?;
-        if entry.is_symlink() {
-            return Err(server_error("archive contains a symbolic link"));
-        }
-        let relative = entry
-            .enclosed_name()
-            .ok_or_else(|| server_error("archive contains an unsafe path"))?;
-        if !entry.is_dir() {
-            expanded = expanded
-                .checked_add(entry.size())
-                .ok_or_else(|| server_error("archive expanded size overflow"))?;
-            if expanded > expanded_limit {
-                return Err(server_error("archive exceeds the expanded size limit"));
-            }
-        }
-        let output = destination.join(relative);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&output).map_err(server_error)?;
-            continue;
-        }
-        if let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent).map_err(server_error)?;
-        }
-        let mut output_file = std::fs::File::create(&output).map_err(server_error)?;
-        let copied = std::io::copy(&mut entry, &mut output_file).map_err(server_error)?;
-        if copied != entry.size() {
-            return Err(server_error("archive entry size changed during extraction"));
-        }
-    }
-    Ok(())
-}
-
-fn github_zip_candidate(
-    artifacts: &Path,
-    server_id: &str,
-    version: &str,
-    executable: &str,
-) -> PathBuf {
-    artifacts.join(server_id).join(version).join(executable)
 }
 
 fn probe_elixir_ls_release(executable: &Path, requirement: &str) -> Result<String, ClspError> {
@@ -3864,125 +3597,6 @@ fn hash_executable_candidate(digest: &mut Sha256, candidate: PathBuf) {
     }
 }
 
-pub(crate) fn sanitize_command(command: &mut Command) {
-    let preserved: Vec<_> = PRESERVED_ENV
-        .iter()
-        .copied()
-        .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
-        .collect();
-    command.env_clear();
-    command.envs(preserved);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-async fn run_command(
-    executable: &Path,
-    args: &[String],
-    cwd: &Path,
-    duration: Duration,
-) -> Result<CommandOutput, ClspError> {
-    let mut command = Command::new(executable);
-    command.args(args).current_dir(cwd);
-    sanitize_command(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|error| server_error(format!("cannot start {}: {error}", executable.display())))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| server_error("child stdout was not captured"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| server_error("child stderr was not captured"))?;
-    let stdout = tokio::spawn(read_prefix(stdout));
-    let stderr = tokio::spawn(read_prefix(stderr));
-
-    let result = timeout(duration, child.wait()).await;
-    let timed_out = result.is_err();
-    let status = match result {
-        Ok(Ok(status)) => Some(status),
-        Ok(Err(error)) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err(server_error(format!(
-                "cannot wait for {}: {error}",
-                executable.display()
-            )));
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            None
-        }
-    };
-    let stdout = stdout.await.unwrap_or_default();
-    let stderr = stderr.await.unwrap_or_default();
-    if timed_out {
-        return Err(server_error(format!(
-            "{} timed out after {}s; stdout: {}; stderr: {}",
-            executable.display(),
-            duration.as_secs_f64(),
-            bounded_text(&stdout),
-            bounded_text(&stderr)
-        )));
-    }
-    Ok(CommandOutput {
-        status: status.expect("non-timeout child has an exit status"),
-        stdout,
-        stderr,
-    })
-}
-
-async fn read_prefix(mut reader: impl AsyncRead + Unpin) -> Vec<u8> {
-    let mut kept = Vec::new();
-    let mut buffer = [0u8; 1024];
-    while let Ok(read) = reader.read(&mut buffer).await {
-        if read == 0 {
-            break;
-        }
-        let remaining = OUTPUT_LIMIT.saturating_sub(kept.len());
-        kept.extend_from_slice(&buffer[..read.min(remaining)]);
-    }
-    kept
-}
-
-async fn run_checked(
-    executable: &Path,
-    args: &[String],
-    cwd: &Path,
-    duration: Duration,
-    label: &str,
-) -> Result<CommandOutput, ClspError> {
-    let output = run_command(executable, args, cwd, duration).await?;
-    if !output.status.success() {
-        return Err(server_error(format!(
-            "{label} exited with {}; {}",
-            output.status,
-            command_output_detail(&output)
-        )));
-    }
-    Ok(output)
-}
-
-fn command_output_detail(output: &CommandOutput) -> String {
-    format!(
-        "stdout: {}; stderr: {}",
-        bounded_text(&output.stdout),
-        bounded_text(&output.stderr)
-    )
-}
-
-fn bounded_text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(&bytes[..bytes.len().min(OUTPUT_LIMIT)]).replace(['\r', '\n'], " ")
-}
-
 fn absolute_output_path(output: &[u8], label: &str) -> Result<PathBuf, ClspError> {
     let text = std::str::from_utf8(output).map_err(server_error)?;
     let line = text
@@ -4033,16 +3647,6 @@ fn go_bin_from_env_output(output: &[u8]) -> Result<Option<PathBuf>, ClspError> {
         ))),
         None => Ok(None),
     }
-}
-
-async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ClspError> {
-    let temp = path.with_extension(format!(
-        "tmp-{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    tokio::fs::write(&temp, bytes).await.map_err(server_error)?;
-    crate::ipc::atomic_replace(&temp, path).map_err(server_error)
 }
 
 fn runtime_error(error: impl std::fmt::Display) -> ClspError {

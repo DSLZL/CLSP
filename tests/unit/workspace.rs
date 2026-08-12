@@ -1,12 +1,14 @@
 use super::*;
 
+use crate::test_support as support;
+
 #[test]
 fn rejects_parent_and_sibling_paths() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = support::tempdir().unwrap();
     let root = parent.path().join("workspace");
-    fs::create_dir(&root).unwrap();
-    fs::write(root.join("inside.rs"), "fn main() {}").unwrap();
-    fs::write(parent.path().join("outside.rs"), "").unwrap();
+    support::create_dir(&root).unwrap();
+    support::write(root.join("inside.rs"), "fn main() {}").unwrap();
+    support::write(parent.path().join("outside.rs"), "").unwrap();
     let workspace = Workspace::open(&root).unwrap();
 
     assert!(workspace.resolve_file("inside.rs", 1_024).is_ok());
@@ -28,9 +30,9 @@ fn rejects_parent_and_sibling_paths() {
 
 #[test]
 fn resolves_missing_edit_targets_through_the_nearest_existing_ancestor() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = support::tempdir().unwrap();
     let root = parent.path().join("workspace");
-    fs::create_dir(&root).unwrap();
+    support::create_dir(&root).unwrap();
     let workspace = Workspace::open(&root).unwrap();
 
     let target = workspace.resolve_candidate("new/nested.rs").unwrap();
@@ -52,15 +54,15 @@ fn resolves_missing_edit_targets_through_the_nearest_existing_ancestor() {
 
 #[test]
 fn discovers_nearest_monorepo_roots() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let nested = root.path().join("crate");
-    fs::create_dir(&nested).unwrap();
-    fs::write(
+    support::create_dir(&nested).unwrap();
+    support::write(
         nested.join("Cargo.toml"),
         "[package]\nname='fixture'\nversion='0.1.0'",
     )
     .unwrap();
-    fs::write(nested.join("lib.rs"), "pub fn answer() -> u8 { 42 }").unwrap();
+    support::write(nested.join("lib.rs"), "pub fn answer() -> u8 { 42 }").unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
     let result = workspace.discover(&Registry::builtin().unwrap(), &DiscoveryConfig::default());
     let rust = result
@@ -73,7 +75,7 @@ fn discovers_nearest_monorepo_roots() {
 
 #[test]
 fn file_detection_precedence_matrix_is_stable() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let rust_root = root.path().join("rust");
     let deno_root = root.path().join("deno");
     let java_root = root.path().join("java");
@@ -90,14 +92,14 @@ fn file_detection_precedence_matrix_is_stable() {
         &scripts,
         &loose,
     ] {
-        fs::create_dir_all(directory).unwrap();
+        support::create_dir_all(directory).unwrap();
     }
-    fs::write(rust_root.join("Cargo.toml"), "[workspace]\n").unwrap();
-    fs::write(deno_root.join("deno.json"), "{}").unwrap();
-    fs::write(java_root.join("settings.gradle"), "").unwrap();
-    fs::write(kotlin_root.join("settings.gradle.kts"), "").unwrap();
-    fs::write(root.path().join("go.work"), "go 1.26\n").unwrap();
-    fs::write(go_module.join("go.mod"), "module example.com/demo\n").unwrap();
+    support::write(rust_root.join("Cargo.toml"), "[workspace]\n").unwrap();
+    support::write(deno_root.join("deno.json"), "{}").unwrap();
+    support::write(java_root.join("settings.gradle"), "").unwrap();
+    support::write(kotlin_root.join("settings.gradle.kts"), "").unwrap();
+    support::write(root.path().join("go.work"), "go 1.26\n").unwrap();
+    support::write(go_module.join("go.mod"), "module example.com/demo\n").unwrap();
 
     let rust_file = rust_root.join("lib.rs");
     let deno_file = deno_root.join("main.ts");
@@ -115,7 +117,7 @@ fn file_detection_precedence_matrix_is_stable() {
         &ruby_file,
         &loose_java,
     ] {
-        fs::write(file, "").unwrap();
+        support::write(file, "").unwrap();
     }
 
     let workspace = Workspace::open(root.path()).unwrap();
@@ -160,10 +162,10 @@ fn file_detection_precedence_matrix_is_stable() {
 
 #[test]
 fn elixir_files_use_the_nearest_mix_root() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let nested = root.path().join("apps/example");
-    fs::create_dir_all(&nested).unwrap();
-    fs::write(
+    support::create_dir_all(&nested).unwrap();
+    support::write(
         nested.join("mix.exs"),
         "defmodule Example.MixProject do\nend",
     )
@@ -173,7 +175,7 @@ fn elixir_files_use_the_nearest_mix_root() {
 
     for name in ["example.ex", "example.exs"] {
         let file = nested.join(name);
-        fs::write(&file, "defmodule Example do\nend").unwrap();
+        support::write(&file, "defmodule Example do\nend").unwrap();
         assert_eq!(
             workspace
                 .matching_servers(
@@ -195,12 +197,12 @@ fn elixir_files_use_the_nearest_mix_root() {
 
 #[test]
 fn wildcard_markers_find_the_nearest_csharp_project() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let nested = root.path().join("src/Demo");
-    fs::create_dir_all(&nested).unwrap();
-    fs::write(nested.join("Demo.csproj"), "<Project />").unwrap();
+    support::create_dir_all(&nested).unwrap();
+    support::write(nested.join("Demo.csproj"), "<Project />").unwrap();
     let source = nested.join("Program.cs");
-    fs::write(&source, "class Program {}").unwrap();
+    support::write(&source, "class Program {}").unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
     let registry = Registry::builtin().unwrap();
 
@@ -216,22 +218,22 @@ fn wildcard_markers_find_the_nearest_csharp_project() {
         fs::canonicalize(root.path()).unwrap()
     );
     assert!(!marker_exists(root.path(), "global.json"));
-    fs::write(root.path().join("global.json"), "{}").unwrap();
+    support::write(root.path().join("global.json"), "{}").unwrap();
     assert!(marker_exists(root.path(), "global.json"));
 }
 
 #[test]
 fn fsharp_files_use_the_nearest_project_root() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let nested = root.path().join("src/Demo");
-    fs::create_dir_all(&nested).unwrap();
-    fs::write(nested.join("Demo.fsproj"), "<Project />").unwrap();
+    support::create_dir_all(&nested).unwrap();
+    support::write(nested.join("Demo.fsproj"), "<Project />").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
 
     for name in ["Demo.fs", "Types.fsi", "Script.fsx", "Build.fsscript"] {
         let file = nested.join(name);
-        fs::write(&file, "module Demo").unwrap();
+        support::write(&file, "module Demo").unwrap();
         assert_eq!(
             workspace
                 .matching_servers(
@@ -253,15 +255,15 @@ fn fsharp_files_use_the_nearest_project_root() {
 
 #[test]
 fn gleam_files_use_the_nearest_project_root_or_workspace() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let nested = root.path().join("apps/example");
     let source_dir = nested.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(nested.join("gleam.toml"), "name = \"example\"").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(nested.join("gleam.toml"), "name = \"example\"").unwrap();
     let file = source_dir.join("main.gleam");
-    fs::write(&file, "pub fn main() { Nil }").unwrap();
+    support::write(&file, "pub fn main() { Nil }").unwrap();
     let loose = root.path().join("loose.gleam");
-    fs::write(&loose, "pub fn loose() { Nil }").unwrap();
+    support::write(&loose, "pub fn loose() { Nil }").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
 
@@ -283,13 +285,13 @@ fn gleam_files_use_the_nearest_project_root_or_workspace() {
 
 #[test]
 fn gopls_prefers_go_work_then_the_nearest_module_marker_or_workspace() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let module = root.path().join("nested/module");
-    fs::create_dir_all(&module).unwrap();
+    support::create_dir_all(&module).unwrap();
     let source = module.join("main.go");
-    fs::write(&source, "package main").unwrap();
-    fs::write(root.path().join("go.work"), "go 1.26\nuse ./nested/module").unwrap();
-    fs::write(module.join("go.mod"), "module example.com/demo\ngo 1.26").unwrap();
+    support::write(&source, "package main").unwrap();
+    support::write(root.path().join("go.work"), "go 1.26\nuse ./nested/module").unwrap();
+    support::write(module.join("go.mod"), "module example.com/demo\ngo 1.26").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
     let gopls = registry.server(GOPLS_SERVER_ID).unwrap();
@@ -299,7 +301,7 @@ fn gopls_prefers_go_work_then_the_nearest_module_marker_or_workspace() {
     fs::remove_file(root.path().join("go.work")).unwrap();
     assert_eq!(selected_root(), fs::canonicalize(&module).unwrap());
     fs::remove_file(module.join("go.mod")).unwrap();
-    fs::write(module.join("go.sum"), "").unwrap();
+    support::write(module.join("go.sum"), "").unwrap();
     assert_eq!(selected_root(), fs::canonicalize(&module).unwrap());
     fs::remove_file(module.join("go.sum")).unwrap();
     assert_eq!(selected_root(), fs::canonicalize(root.path()).unwrap());
@@ -307,20 +309,20 @@ fn gopls_prefers_go_work_then_the_nearest_module_marker_or_workspace() {
 
 #[test]
 fn jdtls_uses_opencode_gradle_precedence() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let app = root.path().join("app");
     let module = app.join("module");
     let source_dir = module.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(
         root.path().join("settings.gradle"),
         "rootProject.name = 'demo'",
     )
     .unwrap();
-    fs::write(app.join("gradlew"), "").unwrap();
-    fs::write(module.join("build.gradle"), "").unwrap();
+    support::write(app.join("gradlew"), "").unwrap();
+    support::write(module.join("build.gradle"), "").unwrap();
     let source = source_dir.join("Main.java");
-    fs::write(&source, "class Main {}").unwrap();
+    support::write(&source, "class Main {}").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
     let jdtls = registry.server(JDTLS_SERVER_ID).unwrap();
@@ -334,24 +336,24 @@ fn jdtls_uses_opencode_gradle_precedence() {
 
 #[test]
 fn jdtls_climbs_only_declared_maven_modules() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let module = root.path().join("apps/demo");
     let source_dir = module.join("src/main/java");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(module.join("pom.xml"), "<project />").unwrap();
-    fs::write(
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(module.join("pom.xml"), "<project />").unwrap();
+    support::write(
         root.path().join("pom.xml"),
         "<project><modules><!-- <module>apps/demo</module> --><module>apps/sibling</module></modules></project>",
     )
     .unwrap();
     let source = source_dir.join("Main.java");
-    fs::write(&source, "class Main {}").unwrap();
+    support::write(&source, "class Main {}").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
     let jdtls = registry.server(JDTLS_SERVER_ID).unwrap();
 
     assert_eq!(workspace.root_for_file(&source, jdtls), module);
-    fs::write(
+    support::write(
         root.path().join("pom.xml"),
         "<project><modules><module>apps/demo</module></modules></project>",
     )
@@ -361,14 +363,14 @@ fn jdtls_climbs_only_declared_maven_modules() {
 
 #[test]
 fn jdtls_uses_eclipse_markers_but_skips_loose_java_files() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let project = root.path().join("eclipse-project");
-    fs::create_dir(&project).unwrap();
-    fs::write(project.join(".classpath"), "<classpath />").unwrap();
+    support::create_dir(&project).unwrap();
+    support::write(project.join(".classpath"), "<classpath />").unwrap();
     let source = project.join("Main.java");
     let loose = root.path().join("Loose.java");
-    fs::write(&source, "class Main {}").unwrap();
-    fs::write(&loose, "class Loose {}").unwrap();
+    support::write(&source, "class Main {}").unwrap();
+    support::write(&loose, "class Loose {}").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
 
@@ -393,12 +395,12 @@ fn jdtls_uses_eclipse_markers_but_skips_loose_java_files() {
 
 #[test]
 fn jdtls_never_uses_markers_above_the_workspace() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = support::tempdir().unwrap();
     let root = parent.path().join("workspace");
-    fs::create_dir(&root).unwrap();
-    fs::write(parent.path().join("settings.gradle"), "").unwrap();
+    support::create_dir(&root).unwrap();
+    support::write(parent.path().join("settings.gradle"), "").unwrap();
     let source = root.join("Loose.java");
-    fs::write(&source, "class Loose {}").unwrap();
+    support::write(&source, "class Loose {}").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&root).unwrap();
 
@@ -411,20 +413,20 @@ fn jdtls_never_uses_markers_above_the_workspace() {
 
 #[test]
 fn kotlin_uses_opencode_root_precedence_and_workspace_boundary() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = support::tempdir().unwrap();
     let root = parent.path().join("workspace");
     let app = root.join("app");
     let module = app.join("module");
     let project = module.join("project");
     let source_dir = project.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(parent.path().join("settings.gradle"), "").unwrap();
-    fs::write(root.join("settings.gradle.kts"), "").unwrap();
-    fs::write(app.join("gradlew.bat"), "").unwrap();
-    fs::write(module.join("build.gradle.kts"), "").unwrap();
-    fs::write(project.join("pom.xml"), "<project />").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(parent.path().join("settings.gradle"), "").unwrap();
+    support::write(root.join("settings.gradle.kts"), "").unwrap();
+    support::write(app.join("gradlew.bat"), "").unwrap();
+    support::write(module.join("build.gradle.kts"), "").unwrap();
+    support::write(project.join("pom.xml"), "<project />").unwrap();
     let source = source_dir.join("Main.kt");
-    fs::write(&source, "fun main() = Unit").unwrap();
+    support::write(&source, "fun main() = Unit").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&root).unwrap();
     let kotlin = registry.server(KOTLIN_LS_SERVER_ID).unwrap();
@@ -445,18 +447,18 @@ fn kotlin_uses_opencode_root_precedence_and_workspace_boundary() {
 
 #[test]
 fn haskell_files_use_the_nearest_project_root_or_workspace() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let project = root.path().join("apps/demo");
     let source_dir = project.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(project.join("demo.cabal"), "cabal-version: 3.0").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(project.join("demo.cabal"), "cabal-version: 3.0").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
     let hls = registry.server("hls").unwrap();
 
     for name in ["Main.hs", "Notes.lhs"] {
         let file = source_dir.join(name);
-        fs::write(&file, "module Demo where").unwrap();
+        support::write(&file, "module Demo where").unwrap();
         assert_eq!(
             workspace
                 .matching_servers(
@@ -481,19 +483,19 @@ fn haskell_files_use_the_nearest_project_root_or_workspace() {
 
 #[test]
 fn python_files_use_the_nearest_opencode_marker_within_the_workspace() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace_root = root.path().join("workspace");
     let project = workspace_root.join("packages/demo");
     let source_dir = project.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(root.path().join("pyproject.toml"), "").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(root.path().join("pyproject.toml"), "").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&workspace_root).unwrap();
     let pyright = registry.server("pyright").unwrap();
 
     for name in ["demo.py", "demo.pyi"] {
         let file = source_dir.join(name);
-        fs::write(&file, "value: str = 42").unwrap();
+        support::write(&file, "value: str = 42").unwrap();
         assert_eq!(
             workspace
                 .matching_servers(
@@ -508,7 +510,7 @@ fn python_files_use_the_nearest_opencode_marker_within_the_workspace() {
         );
         for marker in &pyright.markers {
             let marker = project.join(marker);
-            fs::write(&marker, "").unwrap();
+            support::write(&marker, "").unwrap();
             assert_eq!(workspace.root_for_file(&file, pyright), project);
             fs::remove_file(marker).unwrap();
         }
@@ -521,19 +523,19 @@ fn python_files_use_the_nearest_opencode_marker_within_the_workspace() {
 
 #[test]
 fn ruby_files_use_the_nearest_gemfile_within_the_workspace() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = support::tempdir().unwrap();
     let workspace_root = parent.path().join("workspace");
     let project = workspace_root.join("packages/demo");
     let source_dir = project.join("lib");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(parent.path().join("Gemfile"), "").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(parent.path().join("Gemfile"), "").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&workspace_root).unwrap();
     let ruby = registry.server("ruby-lsp").unwrap();
 
     for name in ["demo.rb", "Rakefile.rake", "demo.gemspec", "config.ru"] {
         let file = source_dir.join(name);
-        fs::write(&file, "value = 42").unwrap();
+        support::write(&file, "value = 42").unwrap();
         assert_eq!(
             workspace
                 .matching_servers(
@@ -550,7 +552,7 @@ fn ruby_files_use_the_nearest_gemfile_within_the_workspace() {
             workspace.root_for_file(&file, ruby),
             fs::canonicalize(&workspace_root).unwrap()
         );
-        fs::write(project.join("Gemfile"), "").unwrap();
+        support::write(project.join("Gemfile"), "").unwrap();
         assert_eq!(workspace.root_for_file(&file, ruby), project);
         fs::remove_file(project.join("Gemfile")).unwrap();
     }
@@ -558,18 +560,18 @@ fn ruby_files_use_the_nearest_gemfile_within_the_workspace() {
 
 #[test]
 fn julia_files_use_the_nearest_opencode_marker_or_workspace() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let project = root.path().join("packages/demo");
     let source_dir = project.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(root.path().join("Project.toml"), "[deps]").unwrap();
-    fs::write(project.join("Manifest.toml"), "manifest_format = \"2.0\"").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(root.path().join("Project.toml"), "[deps]").unwrap();
+    support::write(project.join("Manifest.toml"), "manifest_format = \"2.0\"").unwrap();
     let file = source_dir.join("Demo.jl");
-    fs::write(&file, "module Demo\nend").unwrap();
+    support::write(&file, "module Demo\nend").unwrap();
     let pending = project.join("pending/Demo.jl");
-    fs::create_dir_all(pending.parent().unwrap()).unwrap();
+    support::create_dir_all(pending.parent().unwrap()).unwrap();
     let loose = root.path().join("loose/Loose.jl");
-    fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    support::create_dir_all(loose.parent().unwrap()).unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
     let julials = registry.server("julials").unwrap();
@@ -595,14 +597,14 @@ fn julia_files_use_the_nearest_opencode_marker_or_workspace() {
 
 #[test]
 fn lua_files_use_the_nearest_opencode_marker_within_the_workspace() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace_root = root.path().join("workspace");
     let project = workspace_root.join("packages/demo");
     let source_dir = project.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(root.path().join(".luarc.json"), "{}").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(root.path().join(".luarc.json"), "{}").unwrap();
     let file = source_dir.join("main.lua");
-    fs::write(&file, "local value = 1").unwrap();
+    support::write(&file, "local value = 1").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&workspace_root).unwrap();
     let lua = registry.server("lua-ls").unwrap();
@@ -617,7 +619,7 @@ fn lua_files_use_the_nearest_opencode_marker_within_the_workspace() {
     );
     for marker in &lua.markers {
         let marker = project.join(marker);
-        fs::write(&marker, "{}").unwrap();
+        support::write(&marker, "{}").unwrap();
         assert_eq!(workspace.root_for_file(&file, lua), project);
         fs::remove_file(marker).unwrap();
     }
@@ -629,21 +631,21 @@ fn lua_files_use_the_nearest_opencode_marker_within_the_workspace() {
 
 #[test]
 fn ocaml_files_use_the_nearest_opencode_marker_within_the_workspace() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace_root = root.path().join("workspace");
     let project = workspace_root.join("packages/demo");
     let source_dir = project.join("lib");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(root.path().join("opam"), "").unwrap();
-    fs::write(workspace_root.join("dune-project"), "(lang dune 3.0)").unwrap();
-    fs::write(project.join(".merlin"), "B _build/default").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(root.path().join("opam"), "").unwrap();
+    support::write(workspace_root.join("dune-project"), "(lang dune 3.0)").unwrap();
+    support::write(project.join(".merlin"), "B _build/default").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&workspace_root).unwrap();
     let ocaml = registry.server("ocaml-lsp").unwrap();
 
     for name in ["demo.ml", "demo.mli"] {
         let file = source_dir.join(name);
-        fs::write(&file, "let value = 1").unwrap();
+        support::write(&file, "let value = 1").unwrap();
         assert_eq!(
             workspace
                 .matching_servers(
@@ -673,14 +675,14 @@ fn ocaml_files_use_the_nearest_opencode_marker_within_the_workspace() {
 
 #[test]
 fn php_files_use_the_nearest_opencode_marker_within_the_workspace() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = support::tempdir().unwrap();
     let workspace_root = parent.path().join("workspace");
     let project = workspace_root.join("apps/demo");
     let source_dir = project.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(parent.path().join("composer.json"), "{}").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(parent.path().join("composer.json"), "{}").unwrap();
     let file = source_dir.join("index.php");
-    fs::write(&file, "<?php echo $missing;").unwrap();
+    support::write(&file, "<?php echo $missing;").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&workspace_root).unwrap();
     let intelephense = registry.server("intelephense").unwrap();
@@ -699,7 +701,7 @@ fn php_files_use_the_nearest_opencode_marker_within_the_workspace() {
     );
     for marker in &intelephense.markers {
         let marker = project.join(marker);
-        fs::write(&marker, "{}").unwrap();
+        support::write(&marker, "{}").unwrap();
         assert_eq!(workspace.root_for_file(&file, intelephense), project);
         fs::remove_file(marker).unwrap();
     }
@@ -707,15 +709,15 @@ fn php_files_use_the_nearest_opencode_marker_within_the_workspace() {
 
 #[test]
 fn prisma_files_use_the_nearest_schema_root_within_the_workspace() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = support::tempdir().unwrap();
     let workspace_root = parent.path().join("workspace");
     let project = workspace_root.join("apps/demo");
     let source_dir = project.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(parent.path().join("package.json"), "{}").unwrap();
-    fs::write(project.join("package.json"), "{}").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(parent.path().join("package.json"), "{}").unwrap();
+    support::write(project.join("package.json"), "{}").unwrap();
     let file = source_dir.join("model.prisma");
-    fs::write(&file, "model User { id Int @id }").unwrap();
+    support::write(&file, "model User { id Int @id }").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&workspace_root).unwrap();
     let prisma = registry.server("prisma").unwrap();
@@ -734,20 +736,20 @@ fn prisma_files_use_the_nearest_schema_root_within_the_workspace() {
     );
 
     let schema = project.join("prisma/schema.prisma");
-    fs::create_dir_all(schema.parent().unwrap()).unwrap();
-    fs::write(&schema, "datasource db { provider = \"sqlite\" }").unwrap();
+    support::create_dir_all(schema.parent().unwrap()).unwrap();
+    support::write(&schema, "datasource db { provider = \"sqlite\" }").unwrap();
     assert_eq!(workspace.root_for_file(&file, prisma), project);
 
     let nested = project.join("prisma/models/user.prisma");
-    fs::create_dir_all(nested.parent().unwrap()).unwrap();
-    fs::write(&nested, "model User { id Int @id }").unwrap();
+    support::create_dir_all(nested.parent().unwrap()).unwrap();
+    support::write(&nested, "model User { id Int @id }").unwrap();
     assert_eq!(
         workspace.root_for_file(&nested, prisma),
         project.join("prisma")
     );
     fs::remove_file(project.join("prisma/schema.prisma")).unwrap();
     assert_eq!(workspace.root_for_file(&nested, prisma), project);
-    fs::write(project.join("prisma/schema.prisma"), "").unwrap();
+    support::write(project.join("prisma/schema.prisma"), "").unwrap();
     assert_eq!(
         workspace.root_for_file(&nested, prisma),
         project.join("prisma")
@@ -756,16 +758,16 @@ fn prisma_files_use_the_nearest_schema_root_within_the_workspace() {
 
 #[test]
 fn oxlint_uses_the_nearest_opencode_marker_and_coexists_with_astro() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = support::tempdir().unwrap();
     let workspace_root = parent.path().join("workspace");
     let project = workspace_root.join("apps/demo");
     let source_dir = project.join("src");
-    fs::create_dir_all(&source_dir).unwrap();
-    fs::write(parent.path().join("package.json"), "{}").unwrap();
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(parent.path().join("package.json"), "{}").unwrap();
     let script = source_dir.join("main.ts");
     let astro = source_dir.join("page.astro");
-    fs::write(&script, "export const value = 1;").unwrap();
-    fs::write(&astro, "---\nconst value = 1;\n---").unwrap();
+    support::write(&script, "export const value = 1;").unwrap();
+    support::write(&astro, "---\nconst value = 1;\n---").unwrap();
     let registry = Registry::builtin().unwrap();
     let workspace = Workspace::open(&workspace_root).unwrap();
     let oxlint = registry.server("oxlint").unwrap();
@@ -793,7 +795,7 @@ fn oxlint_uses_the_nearest_opencode_marker_and_coexists_with_astro() {
 
     for marker in &oxlint.markers {
         let marker = project.join(marker);
-        fs::write(&marker, "{}").unwrap();
+        support::write(&marker, "{}").unwrap();
         assert_eq!(workspace.root_for_file(&script, oxlint), project);
         fs::remove_file(marker).unwrap();
     }
@@ -801,22 +803,22 @@ fn oxlint_uses_the_nearest_opencode_marker_and_coexists_with_astro() {
 
 #[test]
 fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let deno_root = root.path().join("deno-app");
     let node_root = root.path().join("node-app");
-    fs::create_dir_all(&deno_root).unwrap();
-    fs::create_dir_all(&node_root).unwrap();
-    fs::write(deno_root.join("deno.json"), "{}").unwrap();
-    fs::write(deno_root.join("package.json"), "{}").unwrap();
-    fs::write(deno_root.join("bun.lock"), "").unwrap();
-    fs::write(node_root.join("package.json"), "{}").unwrap();
-    fs::write(node_root.join("bun.lock"), "").unwrap();
+    support::create_dir_all(&deno_root).unwrap();
+    support::create_dir_all(&node_root).unwrap();
+    support::write(deno_root.join("deno.json"), "{}").unwrap();
+    support::write(deno_root.join("package.json"), "{}").unwrap();
+    support::write(deno_root.join("bun.lock"), "").unwrap();
+    support::write(node_root.join("package.json"), "{}").unwrap();
+    support::write(node_root.join("bun.lock"), "").unwrap();
     let deno_file = deno_root.join("main.ts");
     let deno_js_file = deno_root.join("main.js");
     let node_file = node_root.join("main.ts");
-    fs::write(&deno_file, "export const deno = true;").unwrap();
-    fs::write(&deno_js_file, "export const deno = true;").unwrap();
-    fs::write(&node_file, "export const node = true;").unwrap();
+    support::write(&deno_file, "export const deno = true;").unwrap();
+    support::write(&deno_js_file, "export const deno = true;").unwrap();
+    support::write(&node_file, "export const node = true;").unwrap();
     let workspace = Workspace::open(root.path()).unwrap();
     let registry = Registry::builtin().unwrap();
 

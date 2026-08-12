@@ -14,6 +14,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
     sync::{Mutex, Notify, RwLock, mpsc, oneshot},
+    task::JoinHandle,
     time::timeout,
 };
 use url::Url;
@@ -337,6 +338,7 @@ pub struct LspClient {
     max_message_bytes: usize,
     max_file_bytes: u64,
     max_diagnostics_per_file: usize,
+    tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
 pub struct LspStartOptions<'a> {
@@ -436,38 +438,45 @@ impl LspClient {
             max_message_bytes: options.max_message_bytes,
             max_file_bytes: options.max_file_bytes,
             max_diagnostics_per_file: options.max_diagnostics_per_file,
+            tasks: Mutex::new(Vec::new()),
         });
 
-        tokio::spawn(reader_loop(
-            stdout,
-            Arc::clone(&client.writer),
-            Arc::clone(&client.pending),
-            Arc::clone(&client.documents),
-            Arc::clone(&client.diagnostics),
-            client.workspace.clone(),
-            client.server_id.clone(),
-            options.max_message_bytes,
-            options.max_file_bytes,
-            options.max_diagnostics_per_file,
-            Arc::clone(&client.encoding),
-            root_uri.clone(),
-            root_name.clone(),
-            diagnostic_refresh_tx,
-        ));
+        client
+            .spawn_owned(reader_loop(
+                stdout,
+                Arc::clone(&client.writer),
+                Arc::clone(&client.pending),
+                Arc::clone(&client.documents),
+                Arc::clone(&client.diagnostics),
+                client.workspace.clone(),
+                client.server_id.clone(),
+                options.max_message_bytes,
+                options.max_file_bytes,
+                options.max_diagnostics_per_file,
+                Arc::clone(&client.encoding),
+                root_uri.clone(),
+                root_name.clone(),
+                diagnostic_refresh_tx,
+            ))
+            .await;
         let refresh_client = Arc::downgrade(&client);
-        tokio::spawn(async move {
-            while diagnostic_refresh_rx.recv().await.is_some() {
-                let Some(client) = refresh_client.upgrade() else {
-                    break;
-                };
-                client.refresh_open_diagnostics().await;
-            }
-        });
-        tokio::spawn(stderr_loop(
-            stderr,
-            Arc::clone(&client.stderr),
-            options.max_stderr_bytes,
-        ));
+        client
+            .spawn_owned(async move {
+                while diagnostic_refresh_rx.recv().await.is_some() {
+                    let Some(client) = refresh_client.upgrade() else {
+                        break;
+                    };
+                    client.refresh_open_diagnostics().await;
+                }
+            })
+            .await;
+        client
+            .spawn_owned(stderr_loop(
+                stderr,
+                Arc::clone(&client.stderr),
+                options.max_stderr_bytes,
+            ))
+            .await;
 
         let mut initialize_params = json!({
             "processId": std::process::id(),
@@ -677,11 +686,33 @@ impl LspClient {
     pub async fn shutdown(&self) -> Result<(), ClspError> {
         let _ = self.request("shutdown", Value::Null).await;
         let _ = self.notify("exit", Value::Null).await;
-        let mut child = self.child.lock().await;
-        if timeout(Duration::from_secs(2), child.wait()).await.is_err() {
-            child.kill().await.map_err(server_error)?;
+        let result = {
+            let mut child = self.child.lock().await;
+            if timeout(Duration::from_secs(2), child.wait()).await.is_err() {
+                child.kill().await.map_err(server_error)
+            } else {
+                Ok(())
+            }
+        };
+        self.stop_owned_tasks().await;
+        result
+    }
+
+    async fn spawn_owned<F>(self: &Arc<Self>, task: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.tasks.lock().await;
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(tokio::spawn(task));
+    }
+
+    async fn stop_owned_tasks(&self) {
+        let tasks = std::mem::take(&mut *self.tasks.lock().await);
+        for task in tasks {
+            task.abort();
+            let _ = task.await;
         }
-        Ok(())
     }
 
     pub async fn stderr_tail(&self) -> Vec<String> {

@@ -1,13 +1,14 @@
-use std::fs;
 use std::path::Path;
 
 use clsp::config::{Config, ConfigOverrides, IdeConfig};
 use clsp::protocol::ErrorCode;
 
+mod support;
+
 #[test]
 fn project_config_overrides_defaults() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(
+    let dir = support::tempdir().unwrap();
+    support::write(
         dir.path().join(".clsp.toml"),
         "prewarm = false\n[install]\ncommand_timeout_seconds = 60\n",
     )
@@ -28,8 +29,8 @@ fn rejects_removed_managed_install_settings() {
         "[install]\ndownload_timeout_seconds = 120\n",
         "[lsp.rust]\npolicy = 'local-only'\n",
     ] {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(".clsp.toml"), source).unwrap();
+        let dir = support::tempdir().unwrap();
+        support::write(dir.path().join(".clsp.toml"), source).unwrap();
         assert_eq!(
             Config::load(dir.path(), ConfigOverrides::default())
                 .unwrap_err()
@@ -41,8 +42,8 @@ fn rejects_removed_managed_install_settings() {
 
 #[test]
 fn rejects_unknown_or_phase_three_settings() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join(".clsp.toml"), "offline = true\n").unwrap();
+    let dir = support::tempdir().unwrap();
+    support::write(dir.path().join(".clsp.toml"), "offline = true\n").unwrap();
     let error = Config::load(dir.path(), ConfigOverrides::default()).unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidConfig);
 

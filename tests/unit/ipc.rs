@@ -1,13 +1,15 @@
 use super::*;
 
+use crate::test_support as support;
+
 #[test]
 fn client_context_enforces_bootstrap_contract() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace_root = directory.path().join("workspace");
-    fs::create_dir(&workspace_root).unwrap();
-    fs::write(workspace_root.join(".clsp.toml"), "enabled = true\n").unwrap();
+    support::create_dir(&workspace_root).unwrap();
+    support::write(workspace_root.join(".clsp.toml"), "enabled = true\n").unwrap();
     let outside = directory.path().join("outside.rs");
-    fs::write(&outside, "").unwrap();
+    support::write(&outside, "").unwrap();
 
     let context = ClientContext::open(&workspace_root).unwrap();
     assert!(context.config.enabled);
@@ -45,8 +47,8 @@ fn client_context_enforces_bootstrap_contract() {
     }
 
     let disabled = directory.path().join("disabled");
-    fs::create_dir(&disabled).unwrap();
-    fs::write(disabled.join(".clsp.toml"), "enabled = false\n").unwrap();
+    support::create_dir(&disabled).unwrap();
+    support::write(disabled.join(".clsp.toml"), "enabled = false\n").unwrap();
     assert!(
         ClientContext::open(&disabled)
             .err()
@@ -56,8 +58,8 @@ fn client_context_enforces_bootstrap_contract() {
     );
 
     let invalid = directory.path().join("invalid");
-    fs::create_dir(&invalid).unwrap();
-    fs::write(invalid.join(".clsp.toml"), "unknown = true\n").unwrap();
+    support::create_dir(&invalid).unwrap();
+    support::write(invalid.join(".clsp.toml"), "unknown = true\n").unwrap();
     assert_eq!(
         ClientContext::open(&invalid).err().unwrap().code,
         ErrorCode::InvalidConfig
@@ -173,14 +175,14 @@ fn duplicate_session_prefers_the_deeper_workspace() {
 
 #[test]
 fn protected_acl_round_trip_has_only_user_and_system() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let file = directory.path().join("broker.json");
-    std::fs::write(&file, b"{}").unwrap();
+    support::write(&file, b"{}").unwrap();
     apply_user_system_dacl(&file, false).unwrap();
     verify_user_system_dacl(&file).unwrap();
 
     let inherited = directory.path().join("state");
-    std::fs::create_dir(&inherited).unwrap();
+    support::create_dir(&inherited).unwrap();
     apply_user_system_dacl(&inherited, true).unwrap();
     verify_user_system_dacl(&inherited).unwrap();
 }

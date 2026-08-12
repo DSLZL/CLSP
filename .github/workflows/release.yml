@@ -103,6 +103,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Verify Rust toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expected = "1.97.1"
+          $actual = (& rustc --version) -join [Environment]::NewLine
+          if ($LASTEXITCODE -ne 0 -or $actual.Trim() -notmatch "^rustc $expected ") {
+              throw "Rust $expected is required; got '$($actual.Trim())'"
+          }
+          (& cargo --version) | Out-Host
+
       - name: Validate tag, release notes, and versions
         id: release
         shell: pwsh

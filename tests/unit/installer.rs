@@ -1,5 +1,7 @@
 use super::*;
+
 use crate::registry::Registry;
+use crate::test_support as support;
 use std::io::Write;
 use std::sync::{
     Arc,
@@ -13,7 +15,7 @@ fn test_resolver(root: &Path) -> ServerResolver {
         artifacts: root.join("artifacts"),
     };
     for path in [&paths.logs, &paths.artifacts] {
-        std::fs::create_dir_all(path).unwrap();
+        support::create_dir_all(path).unwrap();
     }
     let mut resolver = ServerResolver::new(Config::default(), paths);
     resolver.vscode_app_data = None;
@@ -25,7 +27,7 @@ fn test_resolver(root: &Path) -> ServerResolver {
 #[cfg(windows)]
 fn fake_executable(root: &Path, name: &str, body: &str) -> PathBuf {
     let path = root.join(format!("{name}.cmd"));
-    std::fs::write(&path, format!("@echo off\r\n{body}\r\n")).unwrap();
+    support::write(&path, format!("@echo off\r\n{body}\r\n")).unwrap();
     path
 }
 
@@ -38,7 +40,7 @@ fn compatible_test_executable(path: &Path) {
 fn compatible_test_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::write(path, "#!/bin/sh\necho clangd version 22.1.6\n").unwrap();
+    support::write(path, "#!/bin/sh\necho clangd version 22.1.6\n").unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -57,7 +59,7 @@ fn fake_executable(root: &Path, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let path = root.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    support::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
@@ -71,19 +73,19 @@ fn write_elixir_ls_release(extension_root: &Path, version: &str) -> PathBuf {
     let release = extension_root
         .join(format!("jakebecker.elixir-ls-{version}"))
         .join("elixir-ls-release");
-    std::fs::create_dir_all(&release).unwrap();
+    support::create_dir_all(&release).unwrap();
     let executable = release.join(launcher);
-    std::fs::write(&executable, b"launcher").unwrap();
-    std::fs::write(release.join("VERSION"), version).unwrap();
+    support::write(&executable, b"launcher").unwrap();
+    support::write(release.join("VERSION"), version).unwrap();
     executable
 }
 
 fn write_eslint_extension(extension_root: &Path, version: &str) -> PathBuf {
     let root = extension_root.join(format!("dbaeumer.vscode-eslint-{version}"));
     let server = root.join("server/out/eslintServer.js");
-    std::fs::create_dir_all(server.parent().unwrap()).unwrap();
-    std::fs::write(&server, b"server").unwrap();
-    std::fs::write(
+    support::create_dir_all(server.parent().unwrap()).unwrap();
+    support::write(&server, b"server").unwrap();
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "vscode-eslint",
@@ -98,8 +100,8 @@ fn write_eslint_extension(extension_root: &Path, version: &str) -> PathBuf {
 
 fn write_eslint_dependency(workspace: &Path, version: &str) {
     let package = workspace.join("node_modules/eslint");
-    std::fs::create_dir_all(&package).unwrap();
-    std::fs::write(
+    support::create_dir_all(&package).unwrap();
+    support::write(
         package.join("package.json"),
         serde_json::to_vec(&serde_json::json!({"name": "eslint", "version": version})).unwrap(),
     )
@@ -109,9 +111,9 @@ fn write_eslint_dependency(workspace: &Path, version: &str) {
 fn write_intelephense_extension(extension_root: &Path, version: &str) -> PathBuf {
     let root = extension_root.join(format!("{INTELEPHENSE_EXTENSION_PREFIX}{version}"));
     let server = root.join("node_modules/intelephense/lib/intelephense.js");
-    std::fs::create_dir_all(server.parent().unwrap()).unwrap();
-    std::fs::write(&server, b"server").unwrap();
-    std::fs::write(
+    support::create_dir_all(server.parent().unwrap()).unwrap();
+    support::write(&server, b"server").unwrap();
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "vscode-intelephense-client",
@@ -121,7 +123,7 @@ fn write_intelephense_extension(extension_root: &Path, version: &str) -> PathBuf
         .unwrap(),
     )
     .unwrap();
-    std::fs::write(
+    support::write(
         root.join("node_modules/intelephense/package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "intelephense",
@@ -136,14 +138,14 @@ fn write_intelephense_extension(extension_root: &Path, version: &str) -> PathBuf
 fn write_prisma_extension(extension_root: &Path, version: &str) -> PathBuf {
     let root = extension_root.join(format!("{PRISMA_EXTENSION_PREFIX}{version}"));
     let server = root.join("dist/language-server/bin.js");
-    std::fs::create_dir_all(server.parent().unwrap()).unwrap();
-    std::fs::write(&server, b"server").unwrap();
-    std::fs::write(
+    support::create_dir_all(server.parent().unwrap()).unwrap();
+    support::write(&server, b"server").unwrap();
+    support::write(
         root.join("dist/language-server/prisma_schema_build_bg.wasm"),
         b"wasm",
     )
     .unwrap();
-    std::fs::write(
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "prisma",
@@ -159,9 +161,9 @@ fn write_prisma_extension(extension_root: &Path, version: &str) -> PathBuf {
 fn write_pyright_extension(extension_root: &Path, version: &str) -> PathBuf {
     let root = extension_root.join(format!("{PYRIGHT_EXTENSION_PREFIX}{version}"));
     let server = root.join("dist/server.js");
-    std::fs::create_dir_all(server.parent().unwrap()).unwrap();
-    std::fs::write(&server, b"server").unwrap();
-    std::fs::write(
+    support::create_dir_all(server.parent().unwrap()).unwrap();
+    support::write(&server, b"server").unwrap();
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "pyright",
@@ -181,15 +183,15 @@ fn write_fsharp_extension(
 ) -> PathBuf {
     let root = extension_root.join(format!("ionide.ionide-fsharp-{extension_version}"));
     let server = root.join("bin").join(framework).join("fsautocomplete.dll");
-    std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+    support::create_dir_all(server.parent().unwrap()).unwrap();
     for name in [
         "fsautocomplete.dll",
         "fsautocomplete.deps.json",
         "fsautocomplete.runtimeconfig.json",
     ] {
-        std::fs::write(server.with_file_name(name), b"server").unwrap();
+        support::write(server.with_file_name(name), b"server").unwrap();
     }
-    std::fs::write(
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "Ionide-fsharp",
@@ -222,11 +224,11 @@ fn write_kotlin_extension(
     let server = root.join("server");
     let launcher = server.join(launcher_path);
     let java = server.join(java_path);
-    std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
-    std::fs::create_dir_all(java.parent().unwrap()).unwrap();
-    std::fs::write(&launcher, b"launcher").unwrap();
-    std::fs::write(&java, b"java").unwrap();
-    std::fs::write(
+    support::create_dir_all(launcher.parent().unwrap()).unwrap();
+    support::create_dir_all(java.parent().unwrap()).unwrap();
+    support::write(&launcher, b"launcher").unwrap();
+    support::write(&java, b"java").unwrap();
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "kotlin-server",
@@ -236,8 +238,8 @@ fn write_kotlin_extension(
         .unwrap(),
     )
     .unwrap();
-    std::fs::write(server.join("build.txt"), format!("ILS-{server_version}\n")).unwrap();
-    std::fs::write(
+    support::write(server.join("build.txt"), format!("ILS-{server_version}\n")).unwrap();
+    support::write(
         server.join("product-info.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "kotlin-server",
@@ -274,12 +276,12 @@ fn write_lua_extension(
         root.join("server/meta"),
         root.join("server/locale"),
     ] {
-        std::fs::create_dir_all(directory).unwrap();
+        support::create_dir_all(directory).unwrap();
     }
-    std::fs::write(&executable, b"launcher").unwrap();
-    std::fs::write(root.join("server/main.lua"), b"return true").unwrap();
-    std::fs::write(root.join("server/bin/main.lua"), b"return true").unwrap();
-    std::fs::write(
+    support::write(&executable, b"launcher").unwrap();
+    support::write(root.join("server/main.lua"), b"return true").unwrap();
+    support::write(root.join("server/bin/main.lua"), b"return true").unwrap();
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "lua",
@@ -310,17 +312,17 @@ fn write_jdtls_extension(
     });
     let java_bin = root.join("jre/bin");
     for directory in [&plugins, &configuration, &java_bin] {
-        std::fs::create_dir_all(directory).unwrap();
+        support::create_dir_all(directory).unwrap();
     }
     let launcher = plugins.join("org.eclipse.equinox.launcher_1.7.0.jar");
-    std::fs::write(&launcher, b"launcher").unwrap();
-    std::fs::write(
+    support::write(&launcher, b"launcher").unwrap();
+    support::write(
         plugins.join(format!("org.eclipse.jdt.ls.core_{core_version}.jar")),
         b"core",
     )
     .unwrap();
-    std::fs::write(configuration.join("config.ini"), b"config").unwrap();
-    std::fs::write(
+    support::write(configuration.join("config.ini"), b"config").unwrap();
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "java",
@@ -350,9 +352,9 @@ fn write_julials_extension(
         .join(environment_name);
     let package = root.join("scripts/packages/LanguageServer");
     let source = package.join("src/LanguageServer.jl");
-    std::fs::create_dir_all(&environment).unwrap();
-    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-    std::fs::write(
+    support::create_dir_all(&environment).unwrap();
+    support::create_dir_all(source.parent().unwrap()).unwrap();
+    support::write(
         root.join("package.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "language-julia",
@@ -362,26 +364,26 @@ fn write_julials_extension(
         .unwrap(),
     )
     .unwrap();
-    std::fs::write(
+    support::write(
         environment.join("Project.toml"),
         format!("[deps]\nLanguageServer = \"{JULIALS_LANGUAGE_SERVER_UUID}\"\n"),
     )
     .unwrap();
-    std::fs::write(
+    support::write(
         environment.join("Manifest.toml"),
         format!(
             "manifest_format = \"2.0\"\n\n[[deps.LanguageServer]]\npath = \"../../../packages/LanguageServer\"\nuuid = \"{JULIALS_LANGUAGE_SERVER_UUID}\"\nversion = \"{server_version}\"\n"
         ),
     )
     .unwrap();
-    std::fs::write(
+    support::write(
         package.join("Project.toml"),
         format!(
             "name = \"LanguageServer\"\nuuid = \"{JULIALS_LANGUAGE_SERVER_UUID}\"\nversion = \"{server_version}\"\n"
         ),
     )
     .unwrap();
-    std::fs::write(&source, "module LanguageServer\nend\n").unwrap();
+    support::write(&source, "module LanguageServer\nend\n").unwrap();
     (environment.join("Project.toml"), source)
 }
 
@@ -391,7 +393,7 @@ fn write_fake_julia(
     server_version: &str,
     package: &Path,
 ) -> PathBuf {
-    std::fs::create_dir_all(root).unwrap();
+    support::create_dir_all(root).unwrap();
     #[cfg(windows)]
     let body = format!(
         "if \"%~1\"==\"--version\" (\r\n  echo julia version {runtime_version}\r\n  exit /b 0\r\n)\r\necho {runtime_version}\r\necho {server_version}\r\necho {}",
@@ -491,10 +493,10 @@ fn dotnet_tool_contract_is_exact() {
 
 #[tokio::test]
 async fn dotnet_global_resolution_requires_manifest_and_compatible_shim() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let home = root.path().join("dotnet-home");
     let tools = home.join(".dotnet/tools");
-    std::fs::create_dir_all(&tools).unwrap();
+    support::create_dir_all(&tools).unwrap();
     let dotnet = fake_executable(
         root.path(),
         "dotnet",
@@ -522,13 +524,13 @@ async fn dotnet_global_resolution_requires_manifest_and_compatible_shim() {
     assert_eq!(resolution.source, ExecutableSource::Path);
 
     #[cfg(windows)]
-    std::fs::write(
+    support::write(
         &dotnet,
         "@echo off\r\necho Package Id Version Commands\r\nexit /b 1\r\n",
     )
     .unwrap();
     #[cfg(unix)]
-    std::fs::write(
+    support::write(
         &dotnet,
         "#!/bin/sh\necho Package Id Version Commands\nexit 1\n",
     )
@@ -542,13 +544,13 @@ async fn dotnet_global_resolution_requires_manifest_and_compatible_shim() {
     );
 
     #[cfg(windows)]
-    std::fs::write(
+    support::write(
         &dotnet,
         "@echo off\r\necho roslyn-language-server 5.8.0 roslyn-language-server\r\n",
     )
     .unwrap();
     #[cfg(unix)]
-    std::fs::write(
+    support::write(
         &dotnet,
         "#!/bin/sh\necho roslyn-language-server 5.8.0 roslyn-language-server\n",
     )
@@ -564,7 +566,7 @@ async fn dotnet_global_resolution_requires_manifest_and_compatible_shim() {
 
 #[tokio::test]
 async fn manager_probe_skips_failures_without_reordering() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let resolver = test_resolver(root.path());
     let failed = fake_executable(root.path(), "bun", "exit /b 9");
     let working = fake_executable(root.path(), "pnpm", "echo 10.0.0");
@@ -592,7 +594,7 @@ async fn manager_probe_skips_failures_without_reordering() {
 
 #[tokio::test]
 async fn selected_manager_install_failure_is_terminal() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let resolver = test_resolver(root.path());
     let failed = fake_executable(root.path(), "bun", "exit /b 9");
     let server = Registry::builtin()
@@ -614,7 +616,7 @@ async fn selected_manager_install_failure_is_terminal() {
 
 #[tokio::test]
 async fn post_install_missing_manager_roots_fail() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let resolver = test_resolver(root.path());
     let missing = root.path().join("missing-global-root");
     let manager = NpmManagerSelection {
@@ -635,19 +637,19 @@ async fn post_install_missing_manager_roots_fail() {
 
 #[tokio::test]
 async fn compatible_project_executable_never_starts_install() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let bin = workspace.join("node_modules/.bin");
     let package = workspace.join("node_modules/pyright");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::create_dir_all(&package).unwrap();
+    support::create_dir_all(&bin).unwrap();
+    support::create_dir_all(&package).unwrap();
     let server = Registry::builtin()
         .unwrap()
         .server("pyright")
         .unwrap()
         .clone();
-    std::fs::write(bin.join(&executable_names(&server.command)[0]), b"wrapper").unwrap();
-    std::fs::write(
+    support::write(bin.join(&executable_names(&server.command)[0]), b"wrapper").unwrap();
+    support::write(
         package.join("package.json"),
         br#"{"name":"pyright","version":"1.1.405"}"#,
     )
@@ -667,9 +669,9 @@ async fn compatible_project_executable_never_starts_install() {
 
 #[tokio::test]
 async fn existing_resolution_pass_repeats_after_a_new_candidate_appears() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let mut server = Registry::builtin()
         .unwrap()
         .server(ELIXIR_LS_SERVER_ID)
@@ -700,7 +702,7 @@ async fn existing_resolution_pass_repeats_after_a_new_candidate_appears() {
 
 #[test]
 fn vscode_clangd_candidates_are_newest_first() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = root
         .path()
         .join("Code/User/globalStorage/llvm-vs-code-extensions.vscode-clangd/install/18.1.8/clangd_18.1.8/bin/clangd.exe");
@@ -708,8 +710,8 @@ fn vscode_clangd_candidates_are_newest_first() {
         .path()
         .join("Code - Insiders/User/globalStorage/llvm-vs-code-extensions.vscode-clangd/install/22.1.6/clangd_22.1.6/bin/clangd.exe");
     for path in [&older, &newer] {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"candidate").unwrap();
+        support::create_dir_all(path.parent().unwrap()).unwrap();
+        support::write(path, b"candidate").unwrap();
     }
 
     assert_eq!(vscode_clangd_candidates_from(root.path()), [newer, older]);
@@ -717,7 +719,7 @@ fn vscode_clangd_candidates_are_newest_first() {
 
 #[test]
 fn elixir_ls_release_probe_requires_official_bounded_version() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let executable = write_elixir_ls_release(root.path(), "0.31.1");
     let version_file = executable.parent().unwrap().join("VERSION");
 
@@ -727,36 +729,36 @@ fn elixir_ls_release_probe_requires_official_bounded_version() {
     );
 
     let wrong_launcher = executable.parent().unwrap().join("debug_adapter.bat");
-    std::fs::write(&wrong_launcher, b"launcher").unwrap();
+    support::write(&wrong_launcher, b"launcher").unwrap();
     assert!(probe_elixir_ls_release(&wrong_launcher, ">=0.31.1").is_err());
 
     std::fs::remove_file(&version_file).unwrap();
     assert!(probe_elixir_ls_release(&executable, ">=0.31.1").is_err());
 
-    std::fs::write(
+    support::write(
         &version_file,
         vec![b'1'; ELIXIR_LS_VERSION_FILE_LIMIT as usize + 1],
     )
     .unwrap();
     assert!(probe_elixir_ls_release(&executable, ">=0.31.1").is_err());
 
-    std::fs::write(&version_file, b"not-a-version").unwrap();
+    support::write(&version_file, b"not-a-version").unwrap();
     assert!(probe_elixir_ls_release(&executable, ">=0.31.1").is_err());
 
-    std::fs::write(&version_file, b"0.30.0").unwrap();
+    support::write(&version_file, b"0.30.0").unwrap();
     assert!(probe_elixir_ls_release(&executable, ">=0.31.1, <0.32.0").is_err());
 }
 
 #[test]
 fn vscode_elixir_ls_candidates_are_newest_first_and_official() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = write_elixir_ls_release(&root.path().join(".vscode/extensions"), "0.30.0");
     let newer = write_elixir_ls_release(&root.path().join(".vscode-insiders/extensions"), "0.31.1");
     let fake = root
         .path()
         .join(".vscode/extensions/not-official.elixir-ls-9.9.9/elixir-ls-release");
-    std::fs::create_dir_all(&fake).unwrap();
-    std::fs::write(
+    support::create_dir_all(&fake).unwrap();
+    support::write(
         fake.join(if cfg!(windows) {
             "language_server.bat"
         } else {
@@ -774,9 +776,9 @@ fn vscode_elixir_ls_candidates_are_newest_first_and_official() {
 
 #[tokio::test]
 async fn elixir_ls_reuses_the_official_vscode_release() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let executable = write_elixir_ls_release(&root.path().join(".vscode/extensions"), "0.31.1");
     let mut resolver = test_resolver(root.path());
     resolver.vscode_user_home = Some(root.path().to_path_buf());
@@ -797,29 +799,29 @@ async fn elixir_ls_reuses_the_official_vscode_release() {
 
 #[test]
 fn vscode_eslint_candidates_are_newest_first_and_official() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = write_eslint_extension(&root.path().join(".vscode/extensions"), "3.0.33");
     let newer = write_eslint_extension(&root.path().join(".vscode-insiders/extensions"), "3.0.34");
     let fake = root
         .path()
         .join(".vscode/extensions/not-official.vscode-eslint-9.9.9/server/out/eslintServer.js");
-    std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
-    std::fs::write(fake, b"server").unwrap();
+    support::create_dir_all(fake.parent().unwrap()).unwrap();
+    support::write(fake, b"server").unwrap();
 
     assert_eq!(vscode_eslint_candidates_from(root.path()), [newer, older]);
 }
 
 #[test]
 fn vscode_intelephense_candidates_are_newest_first_and_official() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = write_intelephense_extension(&root.path().join(".vscode/extensions"), "1.18.4");
     let newer =
         write_intelephense_extension(&root.path().join(".vscode-insiders/extensions"), "1.18.5");
     let fake = root.path().join(
         ".vscode/extensions/not-official.vscode-intelephense-client-9.9.9/node_modules/intelephense/lib/intelephense.js",
     );
-    std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
-    std::fs::write(fake, b"server").unwrap();
+    support::create_dir_all(fake.parent().unwrap()).unwrap();
+    support::write(fake, b"server").unwrap();
 
     assert_eq!(
         vscode_intelephense_candidates_from(root.path()),
@@ -831,14 +833,14 @@ fn vscode_intelephense_candidates_are_newest_first_and_official() {
 
 #[test]
 fn vscode_prisma_candidates_are_newest_first_and_official() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = write_prisma_extension(&root.path().join(".vscode/extensions"), "6.19.0");
     let newer = write_prisma_extension(&root.path().join(".vscode-insiders/extensions"), "31.11.0");
     let fake = root
         .path()
         .join(".vscode/extensions/not-official.prisma-99.0.0/dist/language-server/bin.js");
-    std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
-    std::fs::write(fake, b"server").unwrap();
+    support::create_dir_all(fake.parent().unwrap()).unwrap();
+    support::write(fake, b"server").unwrap();
 
     assert_eq!(
         vscode_prisma_candidates_from(root.path()),
@@ -850,15 +852,15 @@ fn vscode_prisma_candidates_are_newest_first_and_official() {
 
 #[test]
 fn vscode_pyright_candidates_are_newest_first_and_official() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = write_pyright_extension(&root.path().join(".vscode/extensions"), "1.1.410");
     let newer =
         write_pyright_extension(&root.path().join(".vscode-insiders/extensions"), "1.1.411");
     let fake = root
         .path()
         .join(".vscode/extensions/not-official.pyright-9.9.9/dist/server.js");
-    std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
-    std::fs::write(fake, b"server").unwrap();
+    support::create_dir_all(fake.parent().unwrap()).unwrap();
+    support::write(fake, b"server").unwrap();
 
     assert_eq!(
         vscode_pyright_candidates_from(root.path()),
@@ -870,7 +872,7 @@ fn vscode_pyright_candidates_are_newest_first_and_official() {
 
 #[test]
 fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = write_fsharp_extension(&root.path().join(".vscode/extensions"), "7.30.0", "net8.0");
     let newer_net8 = write_fsharp_extension(
         &root.path().join(".vscode-insiders/extensions"),
@@ -885,8 +887,8 @@ fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
     let fake = root
         .path()
         .join(".vscode/extensions/not-official.ionide-fsharp-9.9.9/bin/net9.0");
-    std::fs::create_dir_all(&fake).unwrap();
-    std::fs::write(fake.join("fsautocomplete.dll"), b"server").unwrap();
+    support::create_dir_all(&fake).unwrap();
+    support::write(fake.join("fsautocomplete.dll"), b"server").unwrap();
 
     assert_eq!(
         vscode_fsharp_candidates_from(root.path()),
@@ -895,7 +897,7 @@ fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
     validate_vscode_fsharp_extension(&newer_net8).unwrap();
     assert!(validate_vscode_fsharp_extension(&older).is_err());
 
-    std::fs::write(
+    support::write(
         vscode_fsharp_extension_root(&newer_net8)
             .unwrap()
             .join("package.json"),
@@ -907,7 +909,7 @@ fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
 
 #[test]
 fn vscode_kotlin_candidates_validate_official_bundled_servers() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = write_kotlin_extension(
         &root.path().join(".vscode/extensions"),
         "0.0.6-win32-x64",
@@ -936,7 +938,7 @@ fn vscode_kotlin_candidates_validate_official_bundled_servers() {
     );
     assert!(validate_vscode_kotlin_extension(&incompatible, ">=262.4739.0, <264.0.0").is_err());
 
-    std::fs::write(
+    support::write(
         layout.manifest,
         br#"{"name":"kotlin-server","publisher":"other","version":"0.0.8"}"#,
     )
@@ -947,7 +949,7 @@ fn vscode_kotlin_candidates_validate_official_bundled_servers() {
 
 #[test]
 fn vscode_lua_candidates_validate_official_bounded_runtime() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let older = write_lua_extension(
         &root.path().join(".vscode/extensions"),
         "3.18.2-win32-x64",
@@ -977,7 +979,7 @@ fn vscode_lua_candidates_validate_official_bounded_runtime() {
 
     let forged = write_lua_extension(&root.path().join("forged"), "3.19.0-win32-x64", "3.19.0");
     let forged_manifest = lua_extension_layout(&forged).unwrap().manifest;
-    std::fs::write(
+    support::write(
         forged_manifest,
         br#"{"name":"lua","publisher":"other","version":"3.19.0"}"#,
     )
@@ -992,7 +994,7 @@ fn vscode_lua_candidates_validate_official_bounded_runtime() {
     std::fs::remove_dir_all(lua_extension_layout(&incomplete).unwrap().locale).unwrap();
     assert!(validate_vscode_lua_extension(&incomplete, ">=3.19.0, <4.0.0").is_err());
 
-    std::fs::write(
+    support::write(
         layout.manifest,
         vec![b' '; LUA_EXTENSION_FILE_LIMIT as usize + 1],
     )
@@ -1004,14 +1006,14 @@ fn vscode_lua_candidates_validate_official_bounded_runtime() {
     } else {
         "outside/lua-language-server"
     });
-    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
-    std::fs::write(&outside, b"launcher").unwrap();
+    support::create_dir_all(outside.parent().unwrap()).unwrap();
+    support::write(&outside, b"launcher").unwrap();
     assert!(lua_extension_layout(&outside).is_err());
 }
 
 #[tokio::test]
 async fn vscode_jdtls_candidates_validate_layout_java_and_platform_suffixes() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let extensions = root.path().join(".vscode/extensions");
     let (older, _) = write_jdtls_extension(
         &extensions,
@@ -1044,7 +1046,7 @@ async fn vscode_jdtls_candidates_validate_layout_java_and_platform_suffixes() {
     assert_eq!(java_major_version("openjdk version \"20.0.2\""), Some(20));
 
     let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let mut resolver = test_resolver(root.path());
     resolver.vscode_user_home = Some(root.path().to_path_buf());
     let server = Registry::builtin()
@@ -1060,14 +1062,14 @@ async fn vscode_jdtls_candidates_validate_layout_java_and_platform_suffixes() {
     assert_eq!(resolution.path, newer);
     assert!(resolution.version_output.contains("Eclipse JDT LS 1.60.0"));
 
-    std::fs::write(
+    support::write(
         layout.extension_root.join("package.json"),
         br#"{"name":"java","publisher":"other","version":"1.55.0"}"#,
     )
     .unwrap();
     assert!(validate_vscode_jdtls_extension(&resolution.path, ">=1.30.0").is_err());
 
-    std::fs::write(
+    support::write(
         jdtls_extension_layout(&older)
             .unwrap()
             .core
@@ -1080,10 +1082,10 @@ async fn vscode_jdtls_candidates_validate_layout_java_and_platform_suffixes() {
 
 #[tokio::test]
 async fn julials_probe_checks_julia_and_language_server_versions() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let package = root.path().join("LanguageServer/src/LanguageServer.jl");
-    std::fs::create_dir_all(package.parent().unwrap()).unwrap();
-    std::fs::write(&package, "module LanguageServer\nend\n").unwrap();
+    support::create_dir_all(package.parent().unwrap()).unwrap();
+    support::write(&package, "module LanguageServer\nend\n").unwrap();
     let julia = write_fake_julia(&root.path().join("bin"), "1.11.9", "5.0.0", &package);
 
     assert_eq!(
@@ -1155,7 +1157,7 @@ async fn julials_probe_checks_julia_and_language_server_versions() {
 
 #[tokio::test]
 async fn vscode_julials_uses_official_exact_or_fallback_environment() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let stable = root.path().join(".vscode/extensions");
     let insiders = root.path().join(".vscode-insiders/extensions");
     let (fallback, _) = write_julials_extension(&stable, "1.230.0", "fallback", "5.0.0");
@@ -1196,12 +1198,12 @@ async fn vscode_julials_uses_official_exact_or_fallback_environment() {
 
 #[test]
 fn vscode_julials_rejects_forged_oversized_and_escaping_metadata() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let extensions = root.path().join(".vscode/extensions");
 
     let (forged, _) = write_julials_extension(&extensions, "1.231.0", "v1.11", "5.1.0");
     let forged_root = julials_extension_layout(&forged).unwrap().extension_root;
-    std::fs::write(
+    support::write(
         forged_root.join("package.json"),
         br#"{"name":"language-julia","publisher":"other","version":"1.231.0"}"#,
     )
@@ -1212,7 +1214,7 @@ fn vscode_julials_rejects_forged_oversized_and_escaping_metadata() {
     let mismatched_root = julials_extension_layout(&mismatched)
         .unwrap()
         .extension_root;
-    std::fs::write(
+    support::write(
         mismatched_root.join("package.json"),
         br#"{"name":"language-julia","publisher":"julialang","version":"1.231.0"}"#,
     )
@@ -1221,7 +1223,7 @@ fn vscode_julials_rejects_forged_oversized_and_escaping_metadata() {
 
     let (oversized, _) = write_julials_extension(&extensions, "1.232.0", "v1.11", "5.1.0");
     let oversized_root = julials_extension_layout(&oversized).unwrap().extension_root;
-    std::fs::write(
+    support::write(
         oversized_root.join("package.json"),
         vec![b'x'; JULIALS_FILE_LIMIT as usize + 1],
     )
@@ -1230,9 +1232,9 @@ fn vscode_julials_rejects_forged_oversized_and_escaping_metadata() {
 
     let (escaping, _) = write_julials_extension(&extensions, "1.233.0", "v1.11", "5.1.0");
     let outside = extensions.join("outside");
-    std::fs::create_dir(&outside).unwrap();
+    support::create_dir(&outside).unwrap();
     let layout = julials_extension_layout(&escaping).unwrap();
-    std::fs::write(
+    support::write(
         &layout.manifest,
         format!(
             "[[deps.LanguageServer]]\npath = \"../../../../../outside\"\nuuid = \"{JULIALS_LANGUAGE_SERVER_UUID}\"\nversion = \"5.1.0\"\n"
@@ -1244,9 +1246,9 @@ fn vscode_julials_rejects_forged_oversized_and_escaping_metadata() {
 
 #[tokio::test]
 async fn eslint_probe_requires_the_official_extension_and_project_dependency() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     write_eslint_dependency(&workspace, "9.32.0");
     let executable = write_eslint_extension(root.path(), "3.0.34");
 
@@ -1257,7 +1259,7 @@ async fn eslint_probe_requires_the_official_extension_and_project_dependency() {
     assert_eq!(probe.npm_modules_root, Some(workspace.join("node_modules")));
 
     let extension_root = vscode_eslint_extension_root(&executable).unwrap();
-    std::fs::write(
+    support::write(
         extension_root.join("package.json"),
         br#"{"name":"vscode-eslint","publisher":"other","version":"3.0.34"}"#,
     )
@@ -1279,9 +1281,9 @@ async fn eslint_probe_requires_the_official_extension_and_project_dependency() {
 
 #[tokio::test]
 async fn eslint_reuses_the_official_vscode_server() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     write_eslint_dependency(&workspace, "9.32.0");
     let executable = write_eslint_extension(&root.path().join(".vscode/extensions"), "3.0.34");
     let mut resolver = test_resolver(root.path());
@@ -1303,7 +1305,7 @@ async fn eslint_reuses_the_official_vscode_server() {
 
 #[test]
 fn intelephense_extension_probe_requires_official_matching_manifests() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let executable = write_intelephense_extension(root.path(), "1.18.5");
     let probe = validate_vscode_intelephense_extension(&executable, ">=1.18.5, <2.0.0").unwrap();
     assert_eq!(probe.version_output, "intelephense 1.18.5");
@@ -1316,7 +1318,7 @@ fn intelephense_extension_probe_requires_official_matching_manifests() {
     );
 
     let extension_root = vscode_intelephense_extension_root(&executable).unwrap();
-    std::fs::write(
+    support::write(
         extension_root.join("package.json"),
         br#"{"name":"vscode-intelephense-client","publisher":"other","version":"1.18.5"}"#,
     )
@@ -1324,7 +1326,7 @@ fn intelephense_extension_probe_requires_official_matching_manifests() {
     assert!(validate_vscode_intelephense_extension(&executable, ">=1.18.5, <2.0.0").is_err());
 
     write_intelephense_extension(root.path(), "1.18.5");
-    std::fs::write(
+    support::write(
         extension_root.join("node_modules/intelephense/package.json"),
         br#"{"name":"intelephense","version":"1.18.4"}"#,
     )
@@ -1332,7 +1334,7 @@ fn intelephense_extension_probe_requires_official_matching_manifests() {
     assert!(validate_vscode_intelephense_extension(&executable, ">=1.18.5, <2.0.0").is_err());
 
     write_intelephense_extension(root.path(), "1.18.5");
-    std::fs::write(
+    support::write(
         extension_root.join("package.json"),
         vec![b' '; 1024 * 1024 + 1],
     )
@@ -1346,7 +1348,7 @@ fn intelephense_extension_probe_requires_official_matching_manifests() {
 
 #[tokio::test]
 async fn intelephense_reuses_the_official_vscode_server() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let executable =
         write_intelephense_extension(&root.path().join(".vscode/extensions"), "1.18.5");
     let mut resolver = test_resolver(root.path());
@@ -1366,7 +1368,7 @@ async fn intelephense_reuses_the_official_vscode_server() {
 
 #[test]
 fn prisma_extension_probe_requires_official_manifest_and_wasm() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let executable = write_prisma_extension(root.path(), "31.11.0");
     assert_eq!(
         validate_vscode_prisma_extension(&executable, ">=6.19.0, <32.0.0").unwrap(),
@@ -1374,7 +1376,7 @@ fn prisma_extension_probe_requires_official_manifest_and_wasm() {
     );
 
     let extension_root = vscode_prisma_extension_root(&executable).unwrap();
-    std::fs::write(
+    support::write(
         extension_root.join("package.json"),
         br#"{"name":"prisma","publisher":"other","version":"31.11.0"}"#,
     )
@@ -1382,7 +1384,7 @@ fn prisma_extension_probe_requires_official_manifest_and_wasm() {
     assert!(validate_vscode_prisma_extension(&executable, ">=6.19.0, <32.0.0").is_err());
 
     write_prisma_extension(root.path(), "31.11.0");
-    std::fs::write(
+    support::write(
         extension_root.join("package.json"),
         br#"{"name":"prisma","publisher":"Prisma","version":"31.10.0"}"#,
     )
@@ -1401,7 +1403,7 @@ fn prisma_extension_probe_requires_official_manifest_and_wasm() {
 
 #[tokio::test]
 async fn prisma_reuses_the_official_vscode_server() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let executable = write_prisma_extension(&root.path().join(".vscode/extensions"), "31.11.0");
     let mut resolver = test_resolver(root.path());
     resolver.config.auto_install = false;
@@ -1421,7 +1423,7 @@ async fn prisma_reuses_the_official_vscode_server() {
 
 #[test]
 fn pyright_extension_probe_requires_official_matching_manifest() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let executable = write_pyright_extension(root.path(), "1.1.411");
     assert_eq!(
         validate_vscode_pyright_extension(&executable, ">=1.1.300, <2.0.0").unwrap(),
@@ -1429,7 +1431,7 @@ fn pyright_extension_probe_requires_official_matching_manifest() {
     );
 
     let extension_root = vscode_pyright_extension_root(&executable).unwrap();
-    std::fs::write(
+    support::write(
         extension_root.join("package.json"),
         br#"{"name":"pyright","publisher":"other","version":"1.1.411"}"#,
     )
@@ -1437,7 +1439,7 @@ fn pyright_extension_probe_requires_official_matching_manifest() {
     assert!(validate_vscode_pyright_extension(&executable, ">=1.1.300, <2.0.0").is_err());
 
     write_pyright_extension(root.path(), "1.1.411");
-    std::fs::write(
+    support::write(
         extension_root.join("package.json"),
         br#"{"name":"pyright","publisher":"ms-pyright","version":"1.1.410"}"#,
     )
@@ -1451,7 +1453,7 @@ fn pyright_extension_probe_requires_official_matching_manifest() {
 
 #[tokio::test]
 async fn pyright_reuses_the_official_vscode_server() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let executable = write_pyright_extension(&root.path().join(".vscode/extensions"), "1.1.411");
     let mut resolver = test_resolver(root.path());
     resolver.config.auto_install = false;
@@ -1471,13 +1473,13 @@ async fn pyright_reuses_the_official_vscode_server() {
 
 #[tokio::test]
 async fn github_zip_resolution_prefers_vscode_then_cache() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let app_data = root.path().join("appdata");
     let extension = app_data
         .join("Code/User/globalStorage/llvm-vs-code-extensions.vscode-clangd/install/22.1.6/clangd_22.1.6/bin/clangd.exe");
-    std::fs::create_dir_all(extension.parent().unwrap()).unwrap();
+    support::create_dir_all(extension.parent().unwrap()).unwrap();
     compatible_test_executable(&extension);
 
     let mut resolver = test_resolver(root.path());
@@ -1497,7 +1499,7 @@ async fn github_zip_resolution_prefers_vscode_then_cache() {
         _ => unreachable!(),
     };
     let cached = github_zip_candidate(&resolver.paths.artifacts, &server.id, &version, &executable);
-    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    support::create_dir_all(cached.parent().unwrap()).unwrap();
     compatible_test_executable(&cached);
     let extension_candidates =
         vscode_clangd_candidates_from(resolver.vscode_app_data.as_deref().unwrap());
@@ -1528,7 +1530,7 @@ async fn github_zip_resolution_prefers_vscode_then_cache() {
 
 #[tokio::test]
 async fn auto_install_false_does_not_create_github_zip_artifacts() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let mut resolver = test_resolver(root.path());
     resolver.config.auto_install = false;
     let mut server = Registry::builtin()
@@ -1553,7 +1555,7 @@ async fn auto_install_false_does_not_create_github_zip_artifacts() {
 
 #[tokio::test]
 async fn github_zip_checksum_and_extraction_are_bounded() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let archive = root.path().join("clangd.zip");
     write_test_zip(&archive, "clangd/bin/clangd.exe", b"binary");
     let expected = hex::encode(Sha256::digest(std::fs::read(&archive).unwrap()));
@@ -1575,7 +1577,7 @@ async fn github_zip_checksum_and_extraction_are_bounded() {
 
 #[tokio::test]
 async fn command_runner_bounds_output_and_reports_nonzero() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     #[cfg(windows)]
     let body = "for /L %%i in (1,1,5000) do <nul set /p \"=x\"\r\n>&2 echo failed\r\nexit /b 7";
     #[cfg(unix)]
@@ -1591,7 +1593,7 @@ async fn command_runner_bounds_output_and_reports_nonzero() {
 
 #[tokio::test]
 async fn command_runner_times_out_and_reaps() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     #[cfg(windows)]
     let body = ":loop\r\ngoto loop";
     #[cfg(unix)]
@@ -1624,14 +1626,14 @@ fn locates_project_and_global_npm_package_manifests() {
 
 #[tokio::test]
 async fn npm_server_version_comes_from_named_manifest_without_running_wrapper() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let bin = root.path().join("node_modules/.bin");
     let package = root.path().join("node_modules/pyright");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::create_dir_all(&package).unwrap();
+    support::create_dir_all(&bin).unwrap();
+    support::create_dir_all(&package).unwrap();
     let executable = bin.join("pyright-langserver.cmd");
-    std::fs::write(&executable, b"@exit /b 99").unwrap();
-    std::fs::write(
+    support::write(&executable, b"@exit /b 99").unwrap();
+    support::write(
         package.join("package.json"),
         br#"{"name":"pyright","version":"1.1.405"}"#,
     )
@@ -1646,19 +1648,19 @@ async fn npm_server_version_comes_from_named_manifest_without_running_wrapper() 
 
 #[tokio::test]
 async fn npm_global_resolution_uses_the_manager_modules_root() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let bin = root.path().join("global-bin");
     let modules = root.path().join("global-store/node_modules");
     let package = modules.join("pyright");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::create_dir_all(&package).unwrap();
+    support::create_dir_all(&bin).unwrap();
+    support::create_dir_all(&package).unwrap();
     let server = Registry::builtin()
         .unwrap()
         .server("pyright")
         .unwrap()
         .clone();
-    std::fs::write(bin.join(&executable_names(&server.command)[0]), b"wrapper").unwrap();
-    std::fs::write(
+    support::write(bin.join(&executable_names(&server.command)[0]), b"wrapper").unwrap();
+    support::write(
         package.join("package.json"),
         br#"{"name":"pyright","version":"1.1.405"}"#,
     )
@@ -1682,10 +1684,10 @@ async fn npm_global_resolution_uses_the_manager_modules_root() {
 
 #[tokio::test]
 async fn exact_npm_manifest_rejects_wrong_name_or_version() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let package = root.path().join("pyright");
-    std::fs::create_dir(&package).unwrap();
-    std::fs::write(
+    support::create_dir(&package).unwrap();
+    support::write(
         package.join("package.json"),
         br#"{"name":"other","version":"1.1.405"}"#,
     )
@@ -1699,10 +1701,10 @@ async fn exact_npm_manifest_rejects_wrong_name_or_version() {
 
 #[tokio::test]
 async fn rustup_candidate_uses_reported_component_path() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let resolver = test_resolver(root.path());
     let analyzer = root.path().join(&executable_names("rust-analyzer")[0]);
-    std::fs::write(&analyzer, b"binary").unwrap();
+    support::write(&analyzer, b"binary").unwrap();
     let rustup = fake_executable(
         root.path(),
         "rustup",
@@ -1720,7 +1722,7 @@ async fn rustup_candidate_uses_reported_component_path() {
 
 #[tokio::test]
 async fn manual_recipe_blocks_without_starting_install() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let mut server = Registry::builtin()
         .unwrap()
         .server("clangd")
@@ -1746,7 +1748,7 @@ async fn manual_recipe_blocks_without_starting_install() {
 
 #[tokio::test]
 async fn manual_clojure_reuses_an_explicit_compatible_server() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir().unwrap();
     let executable = fake_executable(
         root.path(),
         "clojure-lsp",
@@ -1881,15 +1883,15 @@ fn oxlint_version_output_is_supported() {
 
 #[test]
 fn executable_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let bin = directory.path().join("bin");
-    std::fs::create_dir(&bin).unwrap();
+    support::create_dir(&bin).unwrap();
     let registry = Registry::builtin().unwrap();
     let server = registry.server("rust").unwrap();
     let executable = bin.join(&executable_names(&server.command)[0]);
-    std::fs::write(&executable, b"one").unwrap();
+    support::write(&executable, b"one").unwrap();
     let first = resolution_fingerprint(server, directory.path(), None);
-    std::fs::write(executable, b"different-size").unwrap();
+    support::write(executable, b"different-size").unwrap();
     let second = resolution_fingerprint(server, directory.path(), None);
     assert_ne!(first, second);
 }
@@ -1910,21 +1912,21 @@ fn windows_executable_candidates_include_batch_launchers() {
 
 #[test]
 fn elixir_ls_version_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let executable = write_elixir_ls_release(directory.path(), "0.31.1");
     let registry = Registry::builtin().unwrap();
     let server = registry.server(ELIXIR_LS_SERVER_ID).unwrap();
     let first = resolution_fingerprint(server, directory.path(), Some(&executable));
-    std::fs::write(executable.parent().unwrap().join("VERSION"), b"0.31.2").unwrap();
+    support::write(executable.parent().unwrap().join("VERSION"), b"0.31.2").unwrap();
     let second = resolution_fingerprint(server, directory.path(), Some(&executable));
     assert_ne!(first, second);
 }
 
 #[test]
 fn eslint_manifest_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     write_eslint_dependency(&workspace, "9.32.0");
     let executable = write_eslint_extension(directory.path(), "3.0.34");
     let registry = Registry::builtin().unwrap();
@@ -1937,9 +1939,9 @@ fn eslint_manifest_identity_changes_the_resolution_fingerprint() {
 
 #[test]
 fn intelephense_manifest_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let executable = write_intelephense_extension(directory.path(), "1.18.5");
     let registry = Registry::builtin().unwrap();
     let server = registry.server(INTELEPHENSE_SERVER_ID).unwrap();
@@ -1947,16 +1949,16 @@ fn intelephense_manifest_identity_changes_the_resolution_fingerprint() {
         .unwrap()
         .join("node_modules/intelephense/package.json");
     let first = resolution_fingerprint(server, &workspace, Some(&executable));
-    std::fs::write(manifest, br#"{"name":"intelephense","version":"1.18.6"}"#).unwrap();
+    support::write(manifest, br#"{"name":"intelephense","version":"1.18.6"}"#).unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&executable));
     assert_ne!(first, second);
 }
 
 #[test]
 fn prisma_wasm_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let executable = write_prisma_extension(directory.path(), "31.11.0");
     let registry = Registry::builtin().unwrap();
     let server = registry.server(PRISMA_SERVER_ID).unwrap();
@@ -1964,16 +1966,16 @@ fn prisma_wasm_identity_changes_the_resolution_fingerprint() {
         .unwrap()
         .join("dist/language-server/prisma_schema_build_bg.wasm");
     let first = resolution_fingerprint(server, &workspace, Some(&executable));
-    std::fs::write(wasm, b"different-wasm").unwrap();
+    support::write(wasm, b"different-wasm").unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&executable));
     assert_ne!(first, second);
 }
 
 #[test]
 fn pyright_manifest_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let executable = write_pyright_extension(directory.path(), "1.1.411");
     let registry = Registry::builtin().unwrap();
     let server = registry.server(PYRIGHT_SERVER_ID).unwrap();
@@ -1981,7 +1983,7 @@ fn pyright_manifest_identity_changes_the_resolution_fingerprint() {
         .unwrap()
         .join("package.json");
     let first = resolution_fingerprint(server, &workspace, Some(&executable));
-    std::fs::write(
+    support::write(
         manifest,
         br#"{"name":"pyright","publisher":"ms-pyright","version":"1.1.410"}"#,
     )
@@ -1992,9 +1994,9 @@ fn pyright_manifest_identity_changes_the_resolution_fingerprint() {
 
 #[test]
 fn jdtls_core_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let (launcher, _) = write_jdtls_extension(
         directory.path(),
         "1.55.0-win32-x64",
@@ -2006,16 +2008,16 @@ fn jdtls_core_identity_changes_the_resolution_fingerprint() {
     let server = registry.server(JDTLS_SERVER_ID).unwrap();
     let core = jdtls_extension_layout(&launcher).unwrap().core;
     let first = resolution_fingerprint(server, &workspace, Some(&launcher));
-    std::fs::write(core, b"different-core").unwrap();
+    support::write(core, b"different-core").unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&launcher));
     assert_ne!(first, second);
 }
 
 #[test]
 fn julials_environment_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let (project, _) = write_julials_extension(directory.path(), "1.231.1", "v1.11", "5.1.0");
     let registry = Registry::builtin().unwrap();
     let server = registry.server(JULIALS_SERVER_ID).unwrap();
@@ -2023,38 +2025,38 @@ fn julials_environment_identity_changes_the_resolution_fingerprint() {
     let first = resolution_fingerprint(server, &workspace, Some(&project));
     let mut contents = std::fs::read_to_string(&manifest).unwrap();
     contents.push_str("\n# changed\n");
-    std::fs::write(manifest, contents).unwrap();
+    support::write(manifest, contents).unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&project));
     assert_ne!(first, second);
 }
 
 #[test]
 fn kotlin_bundle_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let launcher =
         write_kotlin_extension(directory.path(), "0.0.8-win32-x64", "0.0.8", "263.2689.0");
     let registry = Registry::builtin().unwrap();
     let server = registry.server(KOTLIN_LS_SERVER_ID).unwrap();
     let build_file = kotlin_extension_layout(&launcher).unwrap().build_file;
     let first = resolution_fingerprint(server, &workspace, Some(&launcher));
-    std::fs::write(build_file, b"ILS-263.2689.1\n").unwrap();
+    support::write(build_file, b"ILS-263.2689.1\n").unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&launcher));
     assert_ne!(first, second);
 }
 
 #[test]
 fn lua_runtime_identity_changes_the_resolution_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    support::create_dir(&workspace).unwrap();
     let executable = write_lua_extension(directory.path(), "3.19.0-win32-x64", "3.19.0");
     let registry = Registry::builtin().unwrap();
     let server = registry.server(LUA_LS_SERVER_ID).unwrap();
     let server_main = lua_extension_layout(&executable).unwrap().server_main;
     let first = resolution_fingerprint(server, &workspace, Some(&executable));
-    std::fs::write(server_main, b"return false -- changed").unwrap();
+    support::write(server_main, b"return false -- changed").unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&executable));
     assert_ne!(first, second);
 }

@@ -13,3 +13,7 @@ pub mod registry;
 pub mod setup;
 pub mod tui;
 pub mod workspace;
+
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod test_support;
