@@ -10,9 +10,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Config, ConfigOverrides},
-    installer::StatePaths,
-    ipc::BrokerConnector,
+    config::Config,
+    ipc::{BrokerConnector, ClientContext},
     protocol::{
         ClientKind, ClspError, DiagnosticSeverity, ErrorCode, Position, QueryOperation,
         QueryRequest, RpcRequest, RpcResponse,
@@ -218,17 +217,9 @@ fn ide_session_hint() -> Option<String> {
 }
 
 pub async fn run(workspace_path: &Path) -> anyhow::Result<()> {
-    let workspace = Workspace::open(workspace_path)?;
-    let config = Config::load(workspace.root(), ConfigOverrides::default())?;
-    config.ensure_enabled()?;
-    let paths = StatePaths::for_workspace(&workspace.hash())?;
-    let connector = BrokerConnector::new(
-        &workspace,
-        &paths,
-        config.limits.max_response_bytes,
-        ClientKind::Mcp,
-    );
-    let service = McpService::new(connector, workspace, &config);
+    let context = ClientContext::open(workspace_path)?;
+    let connector = context.connector(ClientKind::Mcp)?;
+    let service = McpService::new(connector, context.workspace, &context.config);
     service
         .serve(rmcp::transport::stdio())
         .await?
@@ -276,25 +267,5 @@ fn query_request(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mcp_input_rejects_zero_based_positions() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::create_dir(directory.path().join("src")).unwrap();
-        std::fs::write(directory.path().join("src/lib.rs"), "").unwrap();
-        let workspace = Workspace::open(directory.path()).unwrap();
-        let input: QueryInput = serde_json::from_value(serde_json::json!({
-            "operation": "definition",
-            "file": "src/lib.rs",
-            "line": 0,
-            "character": 1
-        }))
-        .unwrap();
-        assert_eq!(
-            query_request(input, &workspace, 1024).unwrap_err().code,
-            crate::protocol::ErrorCode::InvalidRequest
-        );
-    }
-}
+#[path = "../tests/unit/mcp.rs"]
+mod tests;

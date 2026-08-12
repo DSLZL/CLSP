@@ -19,6 +19,10 @@ use tokio::{
 use url::Url;
 
 use crate::{
+    edit_diagnostics::{
+        Baseline, DiagnosticSnapshot, HOOK_MAX_ERRORS, LspDiagnosticSource, Verification,
+        diagnostic_key as edit_diagnostic_key, verify as verify_edit,
+    },
     installer::{
         jdtls_extension_layout, jdtls_java_for_launcher, julials_extension_environment,
         sanitize_command,
@@ -94,6 +98,7 @@ struct DiagnosticRecord {
     synchronized_version: Option<i32>,
     received_version: Option<i32>,
     fresh: bool,
+    truncated: bool,
     reason: Option<String>,
 }
 
@@ -106,16 +111,28 @@ pub struct DiagnosticsStore {
 impl DiagnosticsStore {
     pub async fn begin_sync(&self, path: &Path, version: i32) -> (BTreeSet<String>, bool) {
         let mut records = self.records.lock().await;
-        let baseline_available = records.contains_key(path);
+        let baseline_available = records.get(path).is_some_and(|record| !record.truncated);
         let record = records.entry(path.to_path_buf()).or_default();
-        let baseline = record.diagnostics.iter().map(diagnostic_key).collect();
+        let baseline = record.diagnostics.iter().map(edit_diagnostic_key).collect();
         record.synchronized_version = Some(version);
         record.fresh = false;
+        record.truncated = false;
         record.reason = Some("awaiting_diagnostics".into());
         (baseline, baseline_available)
     }
 
     pub async fn publish(&self, path: PathBuf, version: Option<i32>, diagnostics: Vec<Diagnostic>) {
+        self.publish_with_truncation(path, version, diagnostics, false)
+            .await;
+    }
+
+    async fn publish_with_truncation(
+        &self,
+        path: PathBuf,
+        version: Option<i32>,
+        diagnostics: Vec<Diagnostic>,
+        truncated: bool,
+    ) {
         let mut records = self.records.lock().await;
         let record = records.entry(path).or_default();
         record.push_generation = record.push_generation.saturating_add(1);
@@ -124,22 +141,26 @@ impl DiagnosticsStore {
             (Some(actual), Some(expected)) if actual == expected => {
                 record.diagnostics = dedupe_diagnostics(diagnostics);
                 record.received_version = Some(actual);
-                record.fresh = true;
-                record.reason = None;
+                record.truncated = truncated;
+                record.fresh = !truncated;
+                record.reason = truncated.then_some("diagnostics_truncated".into());
             }
             (Some(actual), Some(expected)) if actual > expected => {
                 record.fresh = false;
+                record.truncated = truncated;
                 record.reason = Some("future_document_version".into());
             }
             (Some(actual), _) => {
                 record.diagnostics = dedupe_diagnostics(diagnostics);
                 record.received_version = Some(actual);
+                record.truncated = truncated;
                 record.fresh = false;
                 record.reason = Some("stale_document_version".into());
             }
             (None, _) => {
                 record.diagnostics = dedupe_diagnostics(diagnostics);
                 record.received_version = None;
+                record.truncated = truncated;
                 record.fresh = false;
                 record.reason = Some("diagnostic_version_unavailable".into());
             }
@@ -149,13 +170,25 @@ impl DiagnosticsStore {
     }
 
     pub async fn publish_pull(&self, path: PathBuf, version: i32, diagnostics: Vec<Diagnostic>) {
+        self.publish_pull_with_truncation(path, version, diagnostics, false)
+            .await;
+    }
+
+    async fn publish_pull_with_truncation(
+        &self,
+        path: PathBuf,
+        version: i32,
+        diagnostics: Vec<Diagnostic>,
+        truncated: bool,
+    ) {
         let mut records = self.records.lock().await;
         let record = records.entry(path).or_default();
         if record.synchronized_version == Some(version) {
             record.diagnostics = dedupe_diagnostics(diagnostics);
             record.received_version = Some(version);
-            record.fresh = true;
-            record.reason = None;
+            record.truncated = truncated;
+            record.fresh = !truncated;
+            record.reason = truncated.then_some("diagnostics_truncated".into());
         }
         drop(records);
         self.changed.notify_waiters();
@@ -185,14 +218,48 @@ impl DiagnosticsStore {
 
     pub async fn new_errors(&self, sync: &SyncResult) -> Vec<Diagnostic> {
         let records = self.records.lock().await;
-        records
-            .get(&sync.path)
-            .into_iter()
-            .flat_map(|record| record.diagnostics.iter())
-            .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
-            .filter(|diagnostic| !sync.baseline.contains(&diagnostic_key(diagnostic)))
-            .cloned()
-            .collect()
+        let Some(record) = records.get(&sync.path) else {
+            return Vec::new();
+        };
+        let baseline = Baseline::from_keys(
+            BTreeSet::from([sync.path.clone()]),
+            sync.baseline.clone(),
+            sync.baseline_available,
+        );
+        let source = DiagnosticSnapshot::new(
+            BTreeSet::from([sync.path.clone()]),
+            record.diagnostics.clone(),
+            record.fresh,
+            !record.truncated,
+            record.truncated,
+        );
+        verify_edit(
+            Some(&baseline),
+            &BTreeSet::from([sync.path.clone()]),
+            &source,
+            HOOK_MAX_ERRORS,
+        )
+        .new_errors
+    }
+
+    pub(crate) async fn verify(
+        &self,
+        sync: &SyncResult,
+        report: &DiagnosticsReport,
+        max_errors: usize,
+    ) -> Verification {
+        let baseline = Baseline::from_keys(
+            BTreeSet::from([sync.path.clone()]),
+            sync.baseline.clone(),
+            sync.baseline_available,
+        );
+        let source = LspDiagnosticSource::new(std::slice::from_ref(&sync.path), report);
+        verify_edit(
+            Some(&baseline),
+            &BTreeSet::from([sync.path.clone()]),
+            &source,
+            max_errors,
+        )
     }
 
     async fn snapshot(
@@ -217,8 +284,12 @@ impl DiagnosticsStore {
             diagnostics.extend(record.diagnostics.iter().take(max_per_file).cloned());
             sources.push(SourceFreshness {
                 server_id: server_id.into(),
-                fresh: record.fresh,
-                reason: record.reason.clone(),
+                fresh: record.fresh && !record.truncated,
+                reason: if record.truncated {
+                    Some("diagnostics_truncated".into())
+                } else {
+                    record.reason.clone()
+                },
                 document_version: record.received_version,
             });
         }
@@ -227,7 +298,9 @@ impl DiagnosticsStore {
             diagnostics,
             fresh,
             sources,
-            baseline_available: paths.iter().all(|path| records.contains_key(path)),
+            baseline_available: paths
+                .iter()
+                .all(|path| records.get(path).is_some_and(|record| !record.truncated)),
         }
     }
 }
@@ -514,9 +587,9 @@ impl LspClient {
             .await
             && let Some(items) = result.get("items").and_then(Value::as_array)
         {
-            let diagnostics = self.convert_diagnostics(path, items).await;
+            let (diagnostics, truncated) = self.convert_diagnostics(path, items).await;
             self.diagnostics
-                .publish_pull(path.to_path_buf(), version, diagnostics)
+                .publish_pull_with_truncation(path.to_path_buf(), version, diagnostics, truncated)
                 .await;
         }
     }
@@ -713,9 +786,9 @@ impl LspClient {
         locations
     }
 
-    async fn convert_diagnostics(&self, path: &Path, items: &[Value]) -> Vec<Diagnostic> {
+    async fn convert_diagnostics(&self, path: &Path, items: &[Value]) -> (Vec<Diagnostic>, bool) {
         let Ok(text) = tokio::fs::read_to_string(path).await else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         convert_diagnostics(
             path,
@@ -850,7 +923,7 @@ async fn reader_loop(
             .and_then(Value::as_array)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let converted = convert_diagnostics(
+        let (converted, truncated) = convert_diagnostics(
             &path,
             &text,
             items,
@@ -863,7 +936,9 @@ async fn reader_loop(
             .and_then(Value::as_i64)
             .and_then(|value| i32::try_from(value).ok());
         let version = diagnostic_version(&server_id, reported_version, open_version);
-        diagnostics.publish(path, version, converted).await;
+        diagnostics
+            .publish_with_truncation(path, version, converted, truncated)
+            .await;
     }
 }
 
@@ -1088,8 +1163,9 @@ fn convert_diagnostics(
     server_id: &str,
     encoding: PositionEncoding,
     max_items: usize,
-) -> Vec<Diagnostic> {
-    items
+) -> (Vec<Diagnostic>, bool) {
+    let truncated = items.len() > max_items;
+    let diagnostics = items
         .iter()
         .take(max_items)
         .filter_map(|item| {
@@ -1118,30 +1194,16 @@ fn convert_diagnostics(
                 server_id: server_id.into(),
             })
         })
-        .collect()
+        .collect();
+    (diagnostics, truncated)
 }
 
 fn dedupe_diagnostics(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
     let mut seen = BTreeSet::new();
     diagnostics
         .into_iter()
-        .filter(|diagnostic| seen.insert(diagnostic_key(diagnostic)))
+        .filter(|diagnostic| seen.insert(edit_diagnostic_key(diagnostic)))
         .collect()
-}
-
-fn diagnostic_key(diagnostic: &Diagnostic) -> String {
-    format!(
-        "{}:{}:{}:{}:{}:{:?}:{}:{}:{}",
-        diagnostic.path.display(),
-        diagnostic.range.start.line,
-        diagnostic.range.start.column,
-        diagnostic.range.end.line,
-        diagnostic.range.end.column,
-        diagnostic.severity,
-        diagnostic.code.as_deref().unwrap_or_default(),
-        diagnostic.source.as_deref().unwrap_or_default(),
-        diagnostic.message
-    )
 }
 
 fn parse_hover(value: &Value) -> Option<String> {
@@ -1369,519 +1431,5 @@ fn runtime_error(error: impl std::fmt::Display) -> ClspError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn write_typescript_sdk(root: &Path) -> PathBuf {
-        let tsdk = root.join("node_modules").join("typescript").join("lib");
-        std::fs::create_dir_all(&tsdk).unwrap();
-        std::fs::write(tsdk.join("tsserver.js"), "").unwrap();
-        tsdk
-    }
-
-    #[tokio::test]
-    async fn codec_handles_fragmented_frames() {
-        let (mut writer, mut reader) = tokio::io::duplex(256);
-        let task = tokio::spawn(async move {
-            writer.write_all(b"Content-Len").await.unwrap();
-            writer
-                .write_all(b"gth: 17\r\n\r\n{\"jsonrpc\":\"2.0\"}")
-                .await
-                .unwrap();
-        });
-        let value = read_frame(&mut reader, 128).await.unwrap();
-        task.await.unwrap();
-        assert_eq!(value["jsonrpc"], "2.0");
-    }
-
-    #[tokio::test]
-    async fn codec_rejects_oversized_body_before_allocation() {
-        let (mut writer, mut reader) = tokio::io::duplex(64);
-        writer
-            .write_all(b"Content-Length: 999\r\n\r\n")
-            .await
-            .unwrap();
-        assert!(read_frame(&mut reader, 32).await.is_err());
-    }
-
-    #[test]
-    fn outbound_json_rpc_omits_null_params() {
-        for message in [
-            json!({"jsonrpc": "2.0", "id": 1, "method": "shutdown", "params": null}),
-            json!({"jsonrpc": "2.0", "method": "exit", "params": null}),
-        ] {
-            assert!(normalize_outgoing_message(message).get("params").is_none());
-        }
-        assert_eq!(
-            normalize_outgoing_message(json!({"jsonrpc": "2.0", "id": 1, "result": null})),
-            json!({"jsonrpc": "2.0", "id": 1, "result": null})
-        );
-    }
-
-    #[test]
-    fn converts_unicode_positions_for_all_encodings() {
-        let text = "a😀b\n";
-        let external = Position { line: 1, column: 3 };
-        assert_eq!(
-            external_to_lsp(text, external, PositionEncoding::Utf8).unwrap()["character"],
-            5
-        );
-        assert_eq!(
-            external_to_lsp(text, external, PositionEncoding::Utf16).unwrap()["character"],
-            3
-        );
-        assert_eq!(
-            external_to_lsp(text, external, PositionEncoding::Utf32).unwrap()["character"],
-            2
-        );
-        assert_eq!(
-            lsp_to_external(text, 0, 3, PositionEncoding::Utf16).unwrap(),
-            external
-        );
-    }
-
-    #[tokio::test]
-    async fn diagnostic_freshness_requires_matching_version() {
-        let store = DiagnosticsStore::default();
-        let path = PathBuf::from("C:/fixture.rs");
-        store.begin_sync(&path, 4).await;
-        store.publish(path.clone(), Some(3), Vec::new()).await;
-        let report = store
-            .report("rust", std::slice::from_ref(&path), Duration::ZERO, 20)
-            .await;
-        assert!(!report.fresh);
-        assert_eq!(
-            report.sources[0].reason.as_deref(),
-            Some("stale_document_version")
-        );
-
-        store.publish(path.clone(), None, Vec::new()).await;
-        let report = store
-            .report("rust", std::slice::from_ref(&path), Duration::ZERO, 20)
-            .await;
-        assert!(!report.fresh);
-        assert_eq!(
-            report.sources[0].reason.as_deref(),
-            Some("diagnostic_version_unavailable")
-        );
-
-        store.publish(path.clone(), Some(4), Vec::new()).await;
-        assert!(
-            store
-                .report("rust", &[path], Duration::ZERO, 20)
-                .await
-                .fresh
-        );
-    }
-
-    #[tokio::test]
-    async fn diagnostic_wait_reports_a_stable_timeout_reason() {
-        let store = DiagnosticsStore::default();
-        let path = PathBuf::from("C:/fixture.rs");
-        store.begin_sync(&path, 1).await;
-        let report = store.report("rust", &[path], Duration::ZERO, 20).await;
-        assert!(!report.fresh);
-        assert_eq!(
-            report.sources[0].reason.as_deref(),
-            Some("diagnostics_timeout")
-        );
-    }
-
-    #[test]
-    fn astro_initialization_prefers_nearest_project_typescript() {
-        let directory = tempfile::tempdir().unwrap();
-        let workspace = directory.path();
-        let root = workspace.join("packages").join("site");
-        std::fs::create_dir_all(&root).unwrap();
-        write_typescript_sdk(workspace);
-        let nearest = write_typescript_sdk(&root);
-
-        let options = server_initialization_options(
-            ASTRO_SERVER_ID,
-            &root,
-            workspace,
-            &root.join("node_modules/.bin/astro-ls.cmd"),
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            options.pointer("/typescript/tsdk").and_then(Value::as_str),
-            Some(nearest.to_string_lossy().as_ref())
-        );
-    }
-
-    #[test]
-    fn astro_initialization_uses_manager_typescript() {
-        let directory = tempfile::tempdir().unwrap();
-        let workspace = directory.path().join("workspace");
-        let root = workspace.join("site");
-        std::fs::create_dir_all(&root).unwrap();
-        let manager = directory.path().join("manager");
-        let installed = write_typescript_sdk(&manager);
-
-        let options = server_initialization_options(
-            ASTRO_SERVER_ID,
-            &root,
-            &workspace,
-            &manager.join("bin/astro-ls.cmd"),
-            Some(&manager.join("node_modules")),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            options.pointer("/typescript/tsdk").and_then(Value::as_str),
-            Some(installed.to_string_lossy().as_ref())
-        );
-
-        assert!(
-            server_initialization_options(
-                TYPESCRIPT_SERVER_ID,
-                &root,
-                &workspace,
-                &manager.join("bin/typescript-language-server.cmd"),
-                Some(&manager.join("node_modules")),
-            )
-            .unwrap()
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn only_astro_requires_typescript_initialization() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let executable = root.join("astro-ls.cmd");
-        assert!(
-            server_initialization_options("rust", root, root, &executable, None)
-                .unwrap()
-                .is_none()
-        );
-        let error = server_initialization_options(ASTRO_SERVER_ID, root, root, &executable, None)
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::RuntimeUnavailable);
-        assert!(
-            error
-                .message
-                .contains("requires typescript/lib/tsserver.js")
-        );
-    }
-
-    #[test]
-    fn deno_initialization_enables_the_server() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let options =
-            server_initialization_options(DENO_SERVER_ID, root, root, &root.join("deno.exe"), None)
-                .unwrap()
-                .unwrap();
-        assert_eq!(options, json!({"enable": true}));
-    }
-
-    #[test]
-    fn intelephense_disables_telemetry_and_hosts_only_js_entries_with_node() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let script = root.join("intelephense.js");
-        let shim = root.join("intelephense.cmd");
-        let options =
-            server_initialization_options(INTELEPHENSE_SERVER_ID, root, root, &script, None)
-                .unwrap()
-                .unwrap();
-        assert_eq!(options, json!({"telemetry": {"enabled": false}}));
-        assert!(uses_node_host(INTELEPHENSE_SERVER_ID, &script));
-        assert!(!uses_node_host(INTELEPHENSE_SERVER_ID, &shim));
-        assert!(uses_node_host(ESLINT_SERVER_ID, &script));
-        assert!(!uses_node_host("typescript", &script));
-    }
-
-    #[test]
-    fn prisma_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let script = root.join("bin.js");
-        let shim = root.join("prisma-language-server.cmd");
-        assert!(
-            server_initialization_options(PRISMA_SERVER_ID, root, root, &script, None)
-                .unwrap()
-                .is_none()
-        );
-        assert!(uses_node_host(PRISMA_SERVER_ID, &script));
-        assert!(!uses_node_host(PRISMA_SERVER_ID, &shim));
-        assert_eq!(diagnostic_version(PRISMA_SERVER_ID, None, Some(2)), Some(2));
-        assert_eq!(
-            diagnostic_version(PRISMA_SERVER_ID, Some(1), Some(2)),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn pyright_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let script = root.join("server.js");
-        let shim = root.join("pyright-langserver.cmd");
-        assert!(
-            server_initialization_options(PYRIGHT_SERVER_ID, root, root, &script, None)
-                .unwrap()
-                .is_none()
-        );
-        assert!(uses_node_host(PYRIGHT_SERVER_ID, &script));
-        assert!(!uses_node_host(PYRIGHT_SERVER_ID, &shim));
-    }
-
-    #[test]
-    fn fsharp_initialization_and_dll_host_are_explicit() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let dll = root.join("fsautocomplete.DLL");
-        let options = server_initialization_options(FSHARP_SERVER_ID, root, root, &dll, None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(options, json!({"AutomaticWorkspaceInit": true}));
-        assert!(uses_dotnet_host(FSHARP_SERVER_ID, &dll));
-        assert!(!uses_dotnet_host("csharp", &dll));
-        assert!(!uses_dotnet_host(
-            FSHARP_SERVER_ID,
-            &root.join("fsautocomplete.exe")
-        ));
-        assert_eq!(strip_utf8_bom("\u{feff}let value = 1"), "let value = 1");
-        assert_eq!(strip_utf8_bom("let value = 1"), "let value = 1");
-        assert_eq!(diagnostic_version(FSHARP_SERVER_ID, None, Some(2)), Some(2));
-        assert_eq!(diagnostic_version("rust", None, Some(2)), None);
-        assert_eq!(
-            diagnostic_version(FSHARP_SERVER_ID, Some(1), Some(2)),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn jdtls_initialization_names_the_server_root() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("java-project");
-        std::fs::create_dir(&root).unwrap();
-        let options = server_initialization_options(
-            JDTLS_SERVER_ID,
-            &root,
-            directory.path(),
-            &root.join("jdtls.cmd"),
-            None,
-        )
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(
-            options,
-            json!({"workspaceFolders": [path_to_uri(&root).unwrap()], "settings": {}})
-        );
-        assert_eq!(
-            server_request_timeout(JDTLS_SERVER_ID, Duration::from_secs(10)),
-            SLOW_REQUEST_TIMEOUT
-        );
-        assert_eq!(
-            server_request_timeout(JULIALS_SERVER_ID, Duration::from_secs(10)),
-            SLOW_REQUEST_TIMEOUT
-        );
-        assert_eq!(
-            server_request_timeout("rust", Duration::from_secs(10)),
-            Duration::from_secs(10)
-        );
-    }
-
-    #[test]
-    fn ruby_lsp_uses_slow_initialize_without_custom_options() {
-        let root = Path::new("C:/ruby-project");
-        assert_eq!(
-            initialization_timeout(RUBY_LSP_SERVER_ID, Duration::from_secs(10)),
-            SLOW_INITIALIZE_TIMEOUT
-        );
-        assert!(
-            server_initialization_options(
-                RUBY_LSP_SERVER_ID,
-                root,
-                root,
-                &root.join("ruby-lsp.bat"),
-                None,
-            )
-            .unwrap()
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn jdtls_extension_uses_the_official_java_launcher_arguments() {
-        let root = Path::new("C:/extension/server");
-        let configuration = root.join("config_win");
-        let launcher = root
-            .join("plugins")
-            .join("org.eclipse.equinox.launcher_1.7.0.jar");
-        assert!(uses_jdtls_java_host(JDTLS_SERVER_ID, &launcher));
-        assert!(!uses_jdtls_java_host(
-            JDTLS_SERVER_ID,
-            Path::new("C:/bin/jdtls.cmd")
-        ));
-        assert!(!uses_jdtls_java_host("rust", &launcher));
-
-        let args = jdtls_vm_args(&configuration, &launcher, 21);
-        assert_eq!(args[0], "-Declipse.application=org.eclipse.jdt.ls.core.id1");
-        assert!(args.contains(&"-Dosgi.sharedConfiguration.area.readOnly=true".into()));
-        assert!(args.contains(&"-Dosgi.configuration.cascaded=true".into()));
-        assert!(args.contains(&"-Xms1G".into()));
-        assert_eq!(args[args.len() - 2], "-jar");
-        assert_eq!(args.last().unwrap(), &launcher.to_string_lossy());
-        assert!(
-            !args
-                .iter()
-                .any(|arg| arg.starts_with("-Djdk.xml.maxGeneralEntitySizeLimit"))
-        );
-
-        let java_24_args = jdtls_vm_args(&configuration, &launcher, 24);
-        assert_eq!(java_24_args[0], "-Djdk.xml.maxGeneralEntitySizeLimit=0");
-        assert_eq!(java_24_args[1], "-Djdk.xml.totalEntitySizeLimit=0");
-    }
-
-    #[test]
-    fn julials_extension_uses_its_project_without_initialization_options() {
-        let julia = Path::new("C:/Julia/bin/julia.exe");
-        let environment =
-            Path::new("C:/extensions/julia/scripts/environments/languageserver/v1.11");
-        let command = julials_command(julia, environment);
-        assert_eq!(command.as_std().get_program(), julia.as_os_str());
-        assert_eq!(
-            command.as_std().get_args().collect::<Vec<_>>(),
-            [std::ffi::OsString::from(format!(
-                "--project={}",
-                environment.to_string_lossy()
-            ))]
-        );
-        assert!(
-            server_initialization_options(
-                JULIALS_SERVER_ID,
-                environment,
-                environment,
-                julia,
-                None,
-            )
-            .unwrap()
-            .is_none()
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn fsharp_diagnostic_uri_round_trips_an_encoded_lowercase_drive() {
-        let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("Program.fs");
-        std::fs::write(&file, "module Demo").unwrap();
-        let workspace = Workspace::open(directory.path()).unwrap();
-        let canonical = std::fs::canonicalize(&file).unwrap();
-        assert!(!path_to_uri(workspace.root()).unwrap().contains("%3F"));
-        let ordinary = canonical
-            .to_string_lossy()
-            .trim_start_matches(r"\\?\")
-            .replace('\\', "/");
-        let (drive, rest) = ordinary.split_once(':').unwrap();
-        let uri = format!("file:///{}%3A{rest}", drive.to_ascii_lowercase());
-
-        let raw = uri_to_path(&uri).unwrap();
-        assert_eq!(workspace.resolve_file(raw, 1024).unwrap(), canonical);
-    }
-
-    #[test]
-    fn server_configuration_is_scoped_to_eslint_and_prisma() {
-        let params = json!({"items": [{}, {}]});
-        let eslint = server_request_response(
-            ESLINT_SERVER_ID,
-            "workspace/configuration",
-            Some(&params),
-            "file:///workspace",
-            "workspace",
-        )
-        .unwrap();
-        assert_eq!(
-            eslint,
-            json!([
-                {
-                    "validate": "on",
-                    "workspaceFolder": {"uri": "file:///workspace", "name": "workspace"}
-                },
-                {
-                    "validate": "on",
-                    "workspaceFolder": {"uri": "file:///workspace", "name": "workspace"}
-                }
-            ])
-        );
-        assert_eq!(
-            server_request_response(
-                PRISMA_SERVER_ID,
-                "workspace/configuration",
-                Some(&params),
-                "file:///workspace",
-                "workspace",
-            )
-            .unwrap(),
-            json!([{}, {}])
-        );
-        assert_eq!(
-            server_request_response(
-                "rust",
-                "workspace/configuration",
-                Some(&params),
-                "file:///workspace",
-                "workspace",
-            )
-            .unwrap(),
-            json!([null, null])
-        );
-        for method in [
-            "eslint/noConfig",
-            "eslint/noLibrary",
-            "eslint/openDoc",
-            "eslint/probeFailed",
-        ] {
-            assert_eq!(
-                server_request_response(
-                    ESLINT_SERVER_ID,
-                    method,
-                    None,
-                    "file:///workspace",
-                    "workspace",
-                )
-                .unwrap(),
-                Value::Null
-            );
-        }
-    }
-
-    #[test]
-    fn diagnostic_refresh_request_is_acknowledged() {
-        assert_eq!(
-            server_request_response(
-                KOTLIN_LS_SERVER_ID,
-                "workspace/diagnostic/refresh",
-                None,
-                "file:///workspace",
-                "workspace",
-            )
-            .unwrap(),
-            Value::Null
-        );
-    }
-
-    #[test]
-    fn only_slow_starting_servers_get_the_long_initialize_timeout() {
-        let normal = Duration::from_secs(10);
-        for server_id in [
-            CLOJURE_SERVER_ID,
-            ELIXIR_LS_SERVER_ID,
-            JULIALS_SERVER_ID,
-            KOTLIN_LS_SERVER_ID,
-        ] {
-            assert_eq!(
-                initialization_timeout(server_id, normal),
-                Duration::from_secs(300)
-            );
-        }
-        assert_eq!(initialization_timeout("rust", normal), normal);
-    }
-}
+#[path = "../tests/unit/lsp.rs"]
+mod tests;

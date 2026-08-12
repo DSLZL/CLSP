@@ -11,7 +11,6 @@ repository = "https://github.com/DSLZL/CLSP"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
-flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 futures-util = "0.3"
 getrandom = "0.3"
 hex = "0.4"

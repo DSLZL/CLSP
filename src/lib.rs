@@ -1,6 +1,7 @@
 pub mod broker;
 pub mod cli;
 pub mod config;
+pub(crate) mod edit_diagnostics;
 pub mod hook;
 pub mod ide;
 pub mod installer;

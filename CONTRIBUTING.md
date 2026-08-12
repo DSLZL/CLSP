@@ -78,6 +78,9 @@ bun run clean
 │   ├── setup.rs           Codex + VS Code project setup
 │   ├── tui.rs             ratatui status UI
 │   └── workspace.rs       Workspace detection and path safety
+├── tests/
+│   ├── *.rs               Public Cargo integration-test targets
+│   └── unit/              Private unit tests mounted by their source modules
 ├── vscode/
 │   └── src/
 │       ├── extension.ts   VS Code bridge implementation
@@ -105,6 +108,20 @@ Lint:
 ```powershell
 cargo clippy --all-targets --locked -- -D warnings
 ```
+
+Put public, black-box behavior tests directly in `tests/*.rs`. Tests that need
+private module access belong in `tests/unit/<module>.rs`; the owning production
+module mounts them with a conditional declaration:
+
+```rust
+#[cfg(test)]
+#[path = "../tests/unit/workspace.rs"]
+mod tests;
+```
+
+Keep test bodies, fixtures, fakes, and test-only helpers below `tests/`. Keep
+test-only crates in `[dev-dependencies]`; do not add a production feature merely
+to expose private implementation to integration tests.
 
 For release-style local compilation:
 

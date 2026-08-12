@@ -7,29 +7,18 @@ use tokio::{
 };
 
 use crate::{
-    config::{Config, ConfigOverrides},
-    installer::StatePaths,
-    ipc::BrokerConnector,
+    ipc::{BrokerConnector, ClientContext},
     protocol::{
         ClientKind, ErrorCode, IDE_STDIO_MAX_BYTES, IdeHostInput, IdeHostOutput, RpcRequest,
         RpcResponse,
     },
-    workspace::Workspace,
 };
 
 pub async fn run(workspace_path: &Path, session_id: &str) -> Result<()> {
-    let workspace = Workspace::open(workspace_path)?;
-    let config = Config::load(workspace.root(), ConfigOverrides::default())?;
-    config.ensure_enabled()?;
-    let paths = StatePaths::for_workspace(&workspace.hash())?;
-    let connector = BrokerConnector::new(
-        &workspace,
-        &paths,
-        config.limits.max_response_bytes,
-        ClientKind::Ide,
-    );
+    let context = ClientContext::open(workspace_path)?;
+    let connector = context.connector(ClientKind::Ide)?;
     let session_id = session_id.to_owned();
-    let workspace_root = workspace.root().to_path_buf();
+    let workspace_root = context.workspace.root().to_path_buf();
     let (output_tx, mut output_rx) = mpsc::channel::<IdeHostOutput>(16);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -177,21 +166,5 @@ async fn read_bounded_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Optio
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn bounded_line_preserves_embedded_json_escapes() {
-        let input = b"{\"type\":\"shutdown\",\"value\":\"a\\\\nb\"}\n";
-        let mut reader = &input[..];
-        let line = read_bounded_line(&mut reader).await.unwrap().unwrap();
-        assert_eq!(line, &input[..input.len() - 1]);
-    }
-
-    #[tokio::test]
-    async fn bounded_line_rejects_oversize_input() {
-        let bytes = vec![b'a'; IDE_STDIO_MAX_BYTES + 1];
-        let mut reader = &bytes[..];
-        assert!(read_bounded_line(&mut reader).await.is_err());
-    }
-}
+#[path = "../tests/unit/ide.rs"]
+mod tests;
