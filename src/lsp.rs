@@ -42,6 +42,7 @@ const FSHARP_SERVER_ID: &str = "fsharp";
 const INTELEPHENSE_SERVER_ID: &str = "intelephense";
 const PRISMA_SERVER_ID: &str = "prisma";
 const PYRIGHT_SERVER_ID: &str = "pyright";
+const RUBY_LSP_SERVER_ID: &str = "ruby-lsp";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JULIALS_SERVER_ID: &str = "julials";
 const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
@@ -730,7 +731,11 @@ impl LspClient {
 fn initialization_timeout(server_id: &str, request_timeout: Duration) -> Duration {
     if matches!(
         server_id,
-        CLOJURE_SERVER_ID | ELIXIR_LS_SERVER_ID | JULIALS_SERVER_ID | KOTLIN_LS_SERVER_ID
+        CLOJURE_SERVER_ID
+            | ELIXIR_LS_SERVER_ID
+            | JULIALS_SERVER_ID
+            | KOTLIN_LS_SERVER_ID
+            | RUBY_LSP_SERVER_ID
     ) {
         SLOW_INITIALIZE_TIMEOUT
     } else {
@@ -1680,6 +1685,26 @@ mod tests {
         assert_eq!(
             server_request_timeout("rust", Duration::from_secs(10)),
             Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn ruby_lsp_uses_slow_initialize_without_custom_options() {
+        let root = Path::new("C:/ruby-project");
+        assert_eq!(
+            initialization_timeout(RUBY_LSP_SERVER_ID, Duration::from_secs(10)),
+            SLOW_INITIALIZE_TIMEOUT
+        );
+        assert!(
+            server_initialization_options(
+                RUBY_LSP_SERVER_ID,
+                root,
+                root,
+                &root.join("ruby-lsp.bat"),
+                None,
+            )
+            .unwrap()
+            .is_none()
         );
     }
 

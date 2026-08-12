@@ -43,6 +43,7 @@ const PRISMA_SERVER_ID: &str = "prisma";
 const PRISMA_EXTENSION_PREFIX: &str = "prisma.prisma-";
 const PYRIGHT_SERVER_ID: &str = "pyright";
 const PYRIGHT_EXTENSION_PREFIX: &str = "ms-pyright.pyright-";
+const RUBY_LSP_SERVER_ID: &str = "ruby-lsp";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JDTLS_EXTENSION_PREFIX: &str = "redhat.java-";
 const JDTLS_PLUGIN_ENTRY_LIMIT: usize = 512;
@@ -61,6 +62,7 @@ const LUA_EXTENSION_PREFIX: &str = "sumneko.lua-";
 const LUA_EXTENSION_FILE_LIMIT: u64 = 1024 * 1024;
 const PRESERVED_ENV: &[&str] = &[
     "SystemRoot",
+    "SystemDrive",
     "WINDIR",
     "COMSPEC",
     "PATH",
@@ -88,6 +90,15 @@ const PRESERVED_ENV: &[&str] = &[
     "JULIA_DEPOT_PATH",
     "JULIA_LOAD_PATH",
     "JULIA_PROJECT",
+    "BUNDLE_GEMFILE",
+    "BUNDLE_PATH",
+    "BUNDLE_WITH",
+    "BUNDLE_WITHOUT",
+    "GEM_HOME",
+    "GEM_PATH",
+    "RUBYGEMS_GEMDEPS",
+    "RUBYLIB",
+    "RUBYOPT",
     "ProgramFiles(x86)",
     "PNPM_HOME",
     "NPM_CONFIG_PREFIX",
@@ -193,6 +204,11 @@ impl ServerResolver {
                 .await
                 .map_err(|error| error.for_server(&server.id))?;
         }
+        if server.id == RUBY_LSP_SERVER_ID {
+            self.require_program("ruby", Some(">=3.0.0"))
+                .await
+                .map_err(|error| error.for_server(&server.id))?;
+        }
         if matches!(
             server.id.as_str(),
             ESLINT_SERVER_ID | INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID | PYRIGHT_SERVER_ID
@@ -286,7 +302,9 @@ impl ServerResolver {
             }
         }
 
-        if let InstallRecipe::Command { program, .. } = &server.install {
+        if server.id != RUBY_LSP_SERVER_ID
+            && let InstallRecipe::Command { program, .. } = &server.install
+        {
             let program = self
                 .require_program(program, None)
                 .await
@@ -1154,6 +1172,17 @@ impl ServerResolver {
         }
 
         if let Some(mut resolution) = self.resolve_local(server, workspace, None).await {
+            if server.id == RUBY_LSP_SERVER_ID
+                && let InstallRecipe::Command { version, .. } = &server.install
+            {
+                validate_version_output(&resolution.version_output, &format!("={version}"))
+                    .map_err(|_| {
+                        server_error(format!(
+                            "{} installed version does not match {version}: {}",
+                            server.display_name, resolution.version_output
+                        ))
+                    })?;
+            }
             resolution.source = ExecutableSource::Installed;
             return Ok(resolution);
         }
@@ -3767,6 +3796,27 @@ pub(crate) fn resolution_fingerprint(
             );
         }
     }
+    if server.id == RUBY_LSP_SERVER_ID {
+        for name in [
+            "SystemDrive",
+            "BUNDLE_GEMFILE",
+            "BUNDLE_PATH",
+            "BUNDLE_WITH",
+            "BUNDLE_WITHOUT",
+            "GEM_HOME",
+            "GEM_PATH",
+            "RUBYGEMS_GEMDEPS",
+            "RUBYLIB",
+            "RUBYOPT",
+        ] {
+            digest.update(
+                std::env::var_os(name)
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+        }
+    }
     if server.id == ESLINT_SERVER_ID {
         hash_executable_candidate(
             &mut digest,
@@ -5912,6 +5962,9 @@ mod tests {
             assert_eq!(parse_version(invalid), None);
         }
         assert!(PRESERVED_ENV.contains(&"JAVA_HOME"));
+        assert!(PRESERVED_ENV.contains(&"SystemDrive"));
+        assert!(PRESERVED_ENV.contains(&"GEM_HOME"));
+        assert!(PRESERVED_ENV.contains(&"RUBYOPT"));
     }
 
     #[test]

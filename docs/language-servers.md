@@ -21,6 +21,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver --stdio` | `>=1.1.300, <2.0.0` | official VS Code extension or `pyright@1.1.411` |
+| `ruby-lsp` | Ruby | `ruby-lsp` | `>=0.26.10, <0.27.0` | `gem install ruby-lsp --version 0.26.10 --no-document` |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
@@ -264,6 +265,16 @@ Pyright requires Node.js 14 or newer. CLSP first checks the selected project's `
 If no compatible existing source is found, CLSP checks the selected package manager's global root and, when automatic installation is enabled, installs the exact `pyright@1.1.411` package. CLSP starts `pyright-langserver --stdio` and sends no extension-private settings or Pyright-specific initialization options.
 
 The nearest `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `Pipfile`, or `pyrightconfig.json` selects the root, otherwise the workspace root is used. The official extension disables its own editor client when Pylance is installed, but CLSP's server process and `lsp_diagnostics` remain independent from VS Code Problems.
+
+### Ruby
+
+Ruby LSP requires Ruby 3.0 or newer. CLSP checks project-local, explicit, and `PATH` `ruby-lsp` candidates in that order and validates `ruby-lsp --version` against `>=0.26.10, <0.27.0`. If no compatible candidate exists and automatic installation is enabled, CLSP requires RubyGems and runs exactly:
+
+```powershell
+gem install ruby-lsp --version 0.26.10 --no-document
+```
+
+The nearest `Gemfile` selects the root; otherwise CLSP uses the workspace root. `BUNDLE_GEMFILE`, Bundler path/group settings, RubyGems paths, and `RUBYGEMS_GEMDEPS` are preserved for the child process and included in resolution identity. CLSP sends no Shopify extension-private initialization options and gives the first composed-bundle startup the existing 300-second initialize budget. The official `Shopify.ruby-lsp` VS Code extension is an independent client of the external gem and can publish Problems through the IDE bridge; CLSP does not scan its extension directory or own `.ruby-lsp` bundles. Use only trusted Ruby projects because Gemfiles and Bundler hooks can execute code.
 
 ### C#
 

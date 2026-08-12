@@ -202,6 +202,22 @@ The official `ms-pyright.pyright` extension disables its own editor client when 
 
 In that setup, `ide_diagnostics` may report Problems published by Pylance while `lsp_diagnostics` reports CLSP-managed Pyright diagnostics. To test the open-source Pyright extension itself, use a VS Code profile or isolated extension directory without Pylance.
 
+## Ruby LSP cannot be resolved or starts slowly
+
+CLSP requires Ruby 3.0 or newer and RubyGems. Check the runtime and server visible to the current process:
+
+```powershell
+where.exe ruby
+ruby --version
+where.exe gem
+gem --version
+where.exe ruby-lsp
+ruby-lsp --version
+code --list-extensions --show-versions | Select-String Shopify.ruby-lsp
+```
+
+If no compatible server is available and `auto_install = true`, CLSP runs `gem install ruby-lsp --version 0.26.10 --no-document`. A selected Bundler environment can be made explicit with `BUNDLE_GEMFILE`, `BUNDLE_PATH`, `BUNDLE_WITH`, or `BUNDLE_WITHOUT`; CLSP preserves those variables but does not install Ruby or manage the project's `.ruby-lsp` composed bundle. The first trusted project launch may take several minutes while Bundler prepares that bundle, so CLSP allows a longer initialize deadline. The official `Shopify.ruby-lsp` extension and CLSP resolve the external server independently; installing the extension alone does not make its private files a CLSP server source.
+
 ## npm Language Server install fails even though another package manager exists
 
 CLSP probes package managers in this order:

@@ -367,6 +367,7 @@ ocaml-lsp
 oxlint
 prisma
 pyright
+ruby-lsp
 rust
 typescript
 yaml-ls

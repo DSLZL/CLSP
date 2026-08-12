@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 25] = [
+const APPROVED_IDS: [&str; 26] = [
     "astro",
     "bash",
     "csharp",
@@ -28,16 +28,17 @@ const APPROVED_IDS: [&str; 25] = [
     "oxlint",
     "prisma",
     "pyright",
+    "ruby-lsp",
     "rust",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 56] = [
+const APPROVED_EXTENSIONS: [&str; 60] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
-    "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gleam", "go", "h", "h++",
-    "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs", "lua", "mjs",
-    "ml", "mli", "mts", "php", "prisma", "py", "pyi", "rs", "sh", "svelte", "ts", "tsx", "vue",
-    "yaml", "yml", "zsh",
+    "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gemspec", "gleam", "go",
+    "h", "h++", "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs",
+    "lua", "mjs", "ml", "mli", "mts", "php", "prisma", "py", "pyi", "rake", "rb", "rs", "ru", "sh",
+    "svelte", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -311,9 +312,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_is_the_closed_twenty_five_server_set() {
+    fn builtin_is_the_closed_twenty_six_server_set() {
         let registry = Registry::builtin().unwrap();
-        assert_eq!(registry.server.len(), 25);
+        assert_eq!(registry.server.len(), 26);
         assert_eq!(
             registry
                 .server
@@ -438,6 +439,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["intelephense"]
         );
+        for extension in [".RB", ".RAKE", ".GEMSPEC", ".RU"] {
+            assert_eq!(
+                registry
+                    .matching_extension(extension)
+                    .map(|server| server.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["ruby-lsp"]
+            );
+        }
     }
 
     #[test]
@@ -518,6 +528,40 @@ mod tests {
         assert_eq!(version, "1.1.411");
         assert_eq!(package, "pyright");
         assert!(companions.is_empty());
+    }
+
+    #[test]
+    fn ruby_lsp_uses_the_locked_shopify_contract() {
+        let registry = Registry::builtin().unwrap();
+        let ruby = registry.server("ruby-lsp").unwrap();
+        assert_eq!(ruby.display_name, "Ruby LSP");
+        assert_eq!(ruby.language_id, "ruby");
+        assert_eq!(ruby.version_req, ">=0.26.10, <0.27.0");
+        assert_eq!(ruby.extensions, ["rb", "rake", "gemspec", "ru"]);
+        assert_eq!(ruby.markers, ["Gemfile"]);
+        assert_eq!(ruby.command, "ruby-lsp");
+        assert!(ruby.args.is_empty());
+        assert_eq!(ruby.version_args, ["--version"]);
+        let InstallRecipe::Command {
+            version,
+            program,
+            args,
+        } = &ruby.install
+        else {
+            panic!("Ruby LSP must use the gem command recipe");
+        };
+        assert_eq!(version, "0.26.10");
+        assert_eq!(program, "gem");
+        assert_eq!(
+            args,
+            &[
+                "install".to_owned(),
+                "ruby-lsp".to_owned(),
+                "--version".to_owned(),
+                "0.26.10".to_owned(),
+                "--no-document".to_owned(),
+            ]
+        );
     }
 
     #[test]

@@ -81,6 +81,7 @@ After setup:
 | PHP | Intelephense | Reuse official VS Code extension or npm-compatible manager |
 | Prisma | Prisma Language Server | Reuse official VS Code extension or npm-compatible manager |
 | Python | Pyright | Reuse official VS Code extension or npm-compatible manager |
+| Ruby | Ruby LSP | Reuse local/gem-installed server or `gem install` |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
 | YAML | YAML Language Server | npm-compatible manager |
@@ -120,6 +121,8 @@ PHP support covers `.php` files below the nearest `composer.json`, `composer.loc
 Prisma support covers `.prisma` files below the nearest `schema.prisma`, `prisma/schema.prisma`, or `prisma` directory, with the workspace root as the fallback. CLSP reuses a compatible project, explicit, or `PATH` server, then the bundle in the official `Prisma.prisma` Stable/Insiders extension, then a compatible global package; if enabled, automatic installation pins `@prisma/language-server@31.11.0`. Node.js 20+ is required. Use only trusted workspaces because Prisma configuration can execute project code.
 
 Python support covers `.py` and `.pyi` files below the nearest OpenCode-compatible Python project marker, with the workspace root as the fallback. CLSP reuses a compatible project, explicit, or `PATH` Pyright, then the server bundled with the official `ms-pyright.pyright` Stable/Insiders extension, then a compatible global package; if enabled, automatic installation pins `pyright@1.1.411`. Node.js 14+ is required.
+
+Ruby support covers `.rb`, `.rake`, `.gemspec`, and `.ru` files below the nearest `Gemfile`, with the workspace root as the fallback. CLSP requires Ruby 3.0 or newer, reuses a compatible local, explicit, or `PATH` `ruby-lsp`, and, when automatic installation is enabled, runs the fixed `gem install ruby-lsp --version 0.26.10 --no-document` command. The official `Shopify.ruby-lsp` extension is an independent VS Code client of the external server; CLSP does not scan its private bundle or manage `.ruby-lsp` contents. Use Ruby LSP only in trusted projects because Bundler and Gemfile configuration can execute project code.
 
 Oxlint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, `.vue`, `.astro`, and `.svelte`. CLSP reuses compatible `oxlint` 1.x from the selected project's `node_modules/.bin`, `PATH`, or `[lsp.oxlint].executable` and starts `oxlint --lsp`; it does not install packages or the official `oxc.oxc-vscode` extension. The extension independently uses the same external project tool and can publish Problems through the IDE bridge. Use Oxlint only in trusted projects because configuration and JavaScript plugins may execute project code.
 

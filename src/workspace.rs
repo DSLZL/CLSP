@@ -967,6 +967,43 @@ mod tests {
     }
 
     #[test]
+    fn ruby_files_use_the_nearest_gemfile_within_the_workspace() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace_root = parent.path().join("workspace");
+        let project = workspace_root.join("packages/demo");
+        let source_dir = project.join("lib");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(parent.path().join("Gemfile"), "").unwrap();
+        let registry = Registry::builtin().unwrap();
+        let workspace = Workspace::open(&workspace_root).unwrap();
+        let ruby = registry.server("ruby-lsp").unwrap();
+
+        for name in ["demo.rb", "Rakefile.rake", "demo.gemspec", "config.ru"] {
+            let file = source_dir.join(name);
+            fs::write(&file, "value = 42").unwrap();
+            assert_eq!(
+                workspace
+                    .matching_servers(
+                        &file,
+                        file.extension().unwrap().to_str().unwrap(),
+                        &registry
+                    )
+                    .into_iter()
+                    .map(|server| server.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["ruby-lsp"]
+            );
+            assert_eq!(
+                workspace.root_for_file(&file, ruby),
+                fs::canonicalize(&workspace_root).unwrap()
+            );
+            fs::write(project.join("Gemfile"), "").unwrap();
+            assert_eq!(workspace.root_for_file(&file, ruby), project);
+            fs::remove_file(project.join("Gemfile")).unwrap();
+        }
+    }
+
+    #[test]
     fn julia_files_use_the_nearest_opencode_marker_or_workspace() {
         let root = tempfile::tempdir().unwrap();
         let project = root.path().join("packages/demo");

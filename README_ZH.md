@@ -79,6 +79,7 @@ clsp setup --workspace .
 | PHP | Intelephense | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | Prisma | Prisma Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | Python | Pyright | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
+| Ruby | Ruby LSP | 复用本地/gem 服务端或 `gem install` |
 | Rust | rust-analyzer | `rustup component add` |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
 | YAML | YAML Language Server | npm 兼容包管理器 |
@@ -118,6 +119,8 @@ PHP 支持 `.php` 文件，根目录取最近的 `composer.json`、`composer.loc
 Prisma 支持 `.prisma` 文件，根目录取最近的 `schema.prisma`、`prisma/schema.prisma` 或 `prisma` 目录，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `Prisma.prisma` Stable/Insiders 扩展内置服务端，以及兼容的全局包；启用自动安装时固定安装 `@prisma/language-server@31.11.0`。本机需要 Node.js 20+；Prisma 配置可能执行项目代码，因此只应在可信 workspace 中使用。
 
 Python 支持 `.py` 与 `.pyi` 文件，根目录取最近的 OpenCode 兼容 Python 项目标记，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 Pyright、官方 `ms-pyright.pyright` Stable/Insiders 扩展内置服务端，以及兼容的全局包；启用自动安装时固定安装 `pyright@1.1.411`。本机需要 Node.js 14+。
+
+Ruby 支持 `.rb`、`.rake`、`.gemspec` 与 `.ru` 文件，根目录取最近的 `Gemfile`，找不到时回退到 workspace 根。本机需要 Ruby 3.0 或更新版本；CLSP 依次复用兼容的项目本地、显式路径或 `PATH` 中的 `ruby-lsp`，启用自动安装时只执行固定命令 `gem install ruby-lsp --version 0.26.10 --no-document`。官方 `Shopify.ruby-lsp` 扩展是独立的 VS Code 外部客户端，CLSP 不扫描其私有 bundle，也不管理 `.ruby-lsp` 内容。Bundler 和 Gemfile 配置可能执行项目代码，因此只应在可信项目中使用。
 
 Oxlint 支持 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.mts`、`.cts`、`.vue`、`.astro` 与 `.svelte`。CLSP 复用所选项目 `node_modules/.bin`、`PATH` 或 `[lsp.oxlint].executable` 中兼容的 Oxlint 1.x，并启动 `oxlint --lsp`；不会安装 npm 包或官方 `oxc.oxc-vscode` 扩展。该扩展会独立使用同一个项目工具，并可通过现有 IDE Bridge 提供 Problems。Oxlint 配置和 JavaScript 插件可能执行项目代码，因此只应在可信项目中使用。
 
