@@ -517,7 +517,11 @@ fn marker_exists(directory: &Path, marker: &str) -> bool {
     };
     fs::read_dir(directory).is_ok_and(|entries| {
         entries.filter_map(Result::ok).any(|entry| {
-            entry.file_type().is_ok_and(|kind| kind.is_file())
+            let matches_kind = entry.file_type().is_ok_and(|kind| {
+                kind.is_file()
+                    || (kind.is_dir() && matches!(extension, "xcodeproj" | "xcworkspace"))
+            });
+            matches_kind
                 && entry
                     .path()
                     .extension()

@@ -66,6 +66,7 @@ const KOTLIN_METADATA_FILE_LIMIT: u64 = 1024 * 1024;
 const LUA_LS_SERVER_ID: &str = "lua-ls";
 const LUA_EXTENSION_PREFIX: &str = "sumneko.lua-";
 const LUA_EXTENSION_FILE_LIMIT: u64 = 1024 * 1024;
+const SOURCEKIT_LSP_SERVER_ID: &str = "sourcekit-lsp";
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +215,12 @@ impl ServerResolver {
         // This is the single ordered discovery pass; resolve_server runs it both
         // before and after the install lock so every source gets the same retry.
         if let Some(resolution) = self.resolve_local(server, workspace, explicit).await {
+            return Ok(Some(resolution));
+        }
+
+        if server.id == SOURCEKIT_LSP_SERVER_ID
+            && let Some(resolution) = self.resolve_sourcekit_xcrun(server, workspace).await
+        {
             return Ok(Some(resolution));
         }
 
@@ -624,6 +631,38 @@ impl ServerResolver {
             source,
             npm_modules_root: probe.npm_modules_root,
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn resolve_sourcekit_xcrun(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let xcrun = which::which("xcrun").ok()?;
+        let output = run_command(
+            &xcrun,
+            &["--find".to_owned(), "sourcekit-lsp".to_owned()],
+            workspace,
+            Duration::from_millis(self.config.runtime.probe_timeout_ms),
+        )
+        .await
+        .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let candidate = absolute_output_path(&output.stdout, "xcrun sourcekit-lsp path").ok()?;
+        self.resolve_candidate(server, workspace, candidate, ExecutableSource::Path)
+            .await
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn resolve_sourcekit_xcrun(
+        &self,
+        _server: &ServerDefinition,
+        _workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        None
     }
 
     async fn install_github_zip(
@@ -1176,6 +1215,19 @@ impl ServerResolver {
         executable: &Path,
         working_dir: &Path,
     ) -> Result<ServerProbe, ClspError> {
+        if server.id == SOURCEKIT_LSP_SERVER_ID {
+            return Ok(ServerProbe {
+                version_output: self
+                    .probe_sourcekit_lsp(
+                        executable,
+                        working_dir,
+                        &server.version_args,
+                        &server.version_req,
+                    )
+                    .await?,
+                npm_modules_root: None,
+            });
+        }
         if server.id == ELIXIR_LS_SERVER_ID {
             return Ok(ServerProbe {
                 version_output: probe_elixir_ls_release(executable, &server.version_req)?,
@@ -1305,6 +1357,87 @@ impl ServerResolver {
             .collect();
         validate_version_output(&text, requirement)?;
         Ok(text)
+    }
+
+    async fn probe_sourcekit_lsp(
+        &self,
+        executable: &Path,
+        working_dir: &Path,
+        help_args: &[String],
+        swift_requirement: &str,
+    ) -> Result<String, ClspError> {
+        if !executable.is_file() {
+            return Err(server_error("SourceKit-LSP candidate is not a file"));
+        }
+        let help_args = if help_args.is_empty() {
+            vec!["--help".to_owned()]
+        } else {
+            help_args.to_vec()
+        };
+        run_checked(
+            executable,
+            &help_args,
+            working_dir,
+            Duration::from_millis(self.config.runtime.probe_timeout_ms),
+            "SourceKit-LSP startup probe",
+        )
+        .await?;
+
+        let swift = self
+            .sourcekit_swift_executable(executable, working_dir)
+            .await?;
+        let output = run_checked(
+            &swift,
+            &["--version".to_owned()],
+            working_dir,
+            Duration::from_millis(self.config.runtime.probe_timeout_ms),
+            "Swift toolchain version probe",
+        )
+        .await?;
+        let text = if output.stdout.is_empty() {
+            &output.stderr
+        } else {
+            &output.stdout
+        };
+        let text: String = String::from_utf8_lossy(text)
+            .trim()
+            .chars()
+            .take(512)
+            .collect();
+        validate_sourcekit_swift_output(&text, swift_requirement)?;
+        Ok(text)
+    }
+
+    async fn sourcekit_swift_executable(
+        &self,
+        sourcekit: &Path,
+        _working_dir: &Path,
+    ) -> Result<PathBuf, ClspError> {
+        for candidate in sourcekit_swift_candidates(sourcekit) {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if let Ok(xcrun) = which::which("xcrun") {
+            let output = run_command(
+                &xcrun,
+                &["--find".to_owned(), "swift".to_owned()],
+                _working_dir,
+                Duration::from_millis(self.config.runtime.probe_timeout_ms),
+            )
+            .await
+            .map_err(|_| server_error("cannot locate swift through xcrun"))?;
+            if output.status.success()
+                && let Ok(candidate) = absolute_output_path(&output.stdout, "xcrun swift path")
+                && candidate.is_file()
+            {
+                return Ok(candidate);
+            }
+        }
+        Err(runtime_error(
+            "SourceKit-LSP requires Swift 5.9+; install the Swift toolchain (or Xcode on macOS), then ensure swift is on PATH or configure [lsp.sourcekit-lsp].executable",
+        ))
     }
 }
 
@@ -3213,6 +3346,69 @@ fn push_vscode_clangd_candidate(
     }
 }
 
+fn sourcekit_swift_candidates(sourcekit: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut roots = Vec::new();
+    roots.push(sourcekit.to_path_buf());
+    if let Ok(canonical) = std::fs::canonicalize(sourcekit) {
+        roots.push(canonical);
+    }
+    for root in roots {
+        for ancestor in root.ancestors().skip(1).take(4) {
+            for name in executable_names("swift") {
+                let candidate = ancestor.join(&name);
+                if seen.insert(candidate.clone()) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+    }
+    if let Ok(path) = which::which("swift")
+        && seen.insert(path.clone())
+    {
+        candidates.push(path);
+    }
+    candidates
+}
+
+fn validate_sourcekit_swift_output(output: &str, requirement: &str) -> Result<Version, ClspError> {
+    let lower = output.to_ascii_lowercase();
+    let version = lower
+        .rfind("swift version")
+        .and_then(|index| {
+            let output = &output[index + "swift version".len()..];
+            parse_version(output).or_else(|| parse_swift_version(output))
+        })
+        .ok_or_else(|| {
+            server_error(format!(
+                "Swift toolchain version probe returned no Swift version: {output}"
+            ))
+        })?;
+    let requirement = VersionReq::parse(requirement).map_err(server_error)?;
+    if !requirement.matches(&version) {
+        return Err(server_error(format!(
+            "Swift toolchain version {version} does not satisfy {requirement}"
+        )));
+    }
+    Ok(version)
+}
+
+fn parse_swift_version(output: &str) -> Option<Version> {
+    output.split_whitespace().find_map(|token| {
+        let token =
+            token.trim_matches(|character: char| !character.is_ascii_digit() && character != '.');
+        let mut components = token.split('.');
+        let major = components.next()?.parse().ok()?;
+        let minor = components.next()?.parse().ok()?;
+        let patch = components.next().unwrap_or("0").parse().ok()?;
+        components
+            .next()
+            .is_none()
+            .then(|| Version::new(major, minor, patch))
+    })
+}
+
 fn local_candidates<'a>(
     server: &'a ServerDefinition,
     workspace: &'a Path,
@@ -3461,6 +3657,21 @@ pub(crate) fn resolution_fingerprint(
     }
     if server.id == JULIALS_SERVER_ID {
         for name in ["JULIA_DEPOT_PATH", "JULIA_LOAD_PATH", "JULIA_PROJECT"] {
+            digest.update(
+                std::env::var_os(name)
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+        }
+    }
+    if server.id == SOURCEKIT_LSP_SERVER_ID {
+        for name in [
+            "DEVELOPER_DIR",
+            "TOOLCHAINS",
+            "SDKROOT",
+            "VCToolsInstallDir",
+        ] {
             digest.update(
                 std::env::var_os(name)
                     .unwrap_or_default()

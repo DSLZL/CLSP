@@ -51,6 +51,7 @@ const RUBY_LSP_SERVER_ID: &str = "ruby-lsp";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JULIALS_SERVER_ID: &str = "julials";
 const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
+const SOURCEKIT_LSP_SERVER_ID: &str = "sourcekit-lsp";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -840,6 +841,7 @@ fn initialization_timeout(server_id: &str, request_timeout: Duration) -> Duratio
             | JULIALS_SERVER_ID
             | KOTLIN_LS_SERVER_ID
             | RUBY_LSP_SERVER_ID
+            | SOURCEKIT_LSP_SERVER_ID
     ) {
         SLOW_INITIALIZE_TIMEOUT
     } else {

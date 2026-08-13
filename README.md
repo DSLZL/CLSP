@@ -83,6 +83,7 @@ After setup:
 | Python | Pyright | Reuse official VS Code extension or npm-compatible manager |
 | Ruby | Ruby LSP | Reuse local/gem-installed server or `gem install` |
 | Rust | rust-analyzer | `rustup component add` |
+| Swift / Objective-C / Objective-C++ | SourceKit-LSP | Manual Swift toolchain or Xcode |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
 | YAML | YAML Language Server | npm-compatible manager |
 
@@ -125,6 +126,8 @@ Python support covers `.py` and `.pyi` files below the nearest OpenCode-compatib
 Ruby support covers `.rb`, `.rake`, `.gemspec`, and `.ru` files below the nearest `Gemfile`, with the workspace root as the fallback. CLSP requires Ruby 3.0 or newer, reuses a compatible local, explicit, or `PATH` `ruby-lsp`, and, when automatic installation is enabled, runs the fixed `gem install ruby-lsp --version 0.26.10 --no-document` command. The official `Shopify.ruby-lsp` extension is an independent VS Code client of the external server; CLSP does not scan its private bundle or manage `.ruby-lsp` contents. Use Ruby LSP only in trusted projects because Bundler and Gemfile configuration can execute project code.
 
 Oxlint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, `.vue`, `.astro`, and `.svelte`. CLSP reuses compatible `oxlint` 1.x from the selected project's `node_modules/.bin`, `PATH`, or `[lsp.oxlint].executable` and starts `oxlint --lsp`; it does not install packages or the official `oxc.oxc-vscode` extension. The extension independently uses the same external project tool and can publish Problems through the IDE bridge. Use Oxlint only in trusted projects because configuration and JavaScript plugins may execute project code.
+
+SourceKit-LSP support covers `.swift`, `.objc`, and `.objcpp` below the nearest `Package.swift`, Xcode project/workspace directory, or compilation database, with the workspace root as the fallback. CLSP reuses `sourcekit-lsp` from the project, an explicit path, or `PATH`, and on macOS can resolve it through `xcrun`; it validates a short `--help` probe and Swift 5.9+. It sends the protocol language IDs `swift`, `objective-c`, and `objective-cpp` for those extensions. CLSP does not install Swift, Xcode, or the official `swiftlang.swift-vscode` extension. SwiftPM/Xcode indexing can take several minutes and may execute trusted project build configuration, so use SourceKit-LSP only in trusted workspaces.
 
 For exact versions, discovery order, and installation behavior, see [Language Servers](docs/language-servers.md).
 

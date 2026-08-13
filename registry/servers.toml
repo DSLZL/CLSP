@@ -299,6 +299,18 @@ version_args = ["--version"]
 install = { kind = "github_zip", version = "22.1.6", url = "https://github.com/clangd/clangd/releases/download/22.1.6/clangd-windows-22.1.6.zip", sha256 = "ce54f16e0b4fd76d450eeda9664420b195360b73febcfe40e661108fa57f2ce1", executable = "clangd_22.1.6/bin/clangd.exe" }
 
 [[server]]
+id = "sourcekit-lsp"
+display_name = "SourceKit-LSP"
+language_id = "swift"
+version_req = ">=5.9.0"
+extensions = ["swift", "objc", "objcpp"]
+markers = ["Package.swift", "*.xcodeproj", "*.xcworkspace", "compile_commands.json", "compile_flags.txt"]
+command = "sourcekit-lsp"
+args = []
+version_args = ["--help"]
+install = { kind = "manual", version = "5.9.0", hint = "Install Swift 5.9+ (or Xcode on macOS), then ensure sourcekit-lsp and swift are on PATH or set [lsp.sourcekit-lsp].executable; CLSP does not install the Swift toolchain" }
+
+[[server]]
 id = "yaml-ls"
 display_name = "YAML Language Server"
 language_id = "yaml"

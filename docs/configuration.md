@@ -48,6 +48,13 @@ Use a custom clangd:
 executable = "C:/LLVM/bin/clangd.exe"
 ```
 
+Use a custom Swift toolchain's SourceKit-LSP:
+
+```toml
+[lsp.sourcekit-lsp]
+executable = "C:/Swift/usr/bin/sourcekit-lsp.exe"
+```
+
 Disable a built-in server:
 
 ```toml
@@ -369,6 +376,7 @@ prisma
 pyright
 ruby-lsp
 rust
+sourcekit-lsp
 typescript
 yaml-ls
 ```

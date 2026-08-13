@@ -1619,10 +1619,8 @@ impl Broker {
         let clients = self.ensure_file(&request.path).await?;
         let mut last_error = None;
         for (definition, client) in clients {
-            if let Err(error) = client
-                .sync_file(&request.path, &definition.language_id)
-                .await
-            {
+            let language_id = definition.language_id_for_file(&request.path);
+            if let Err(error) = client.sync_file(&request.path, language_id).await {
                 last_error = Some(error);
                 continue;
             }
@@ -1659,7 +1657,8 @@ impl Broker {
                 .workspace
                 .resolve_file(input, self.config.limits.max_file_bytes)?;
             for (definition, client) in self.ensure_file(&path).await? {
-                let _ = client.sync_file(&path, &definition.language_id).await?;
+                let language_id = definition.language_id_for_file(&path);
+                let _ = client.sync_file(&path, language_id).await?;
                 let report = client.diagnostics(std::slice::from_ref(&path), wait).await;
                 diagnostics.extend(report.diagnostics);
                 sources.extend(report.sources);
@@ -1733,7 +1732,8 @@ impl Broker {
                     baseline_available = false;
                     continue;
                 };
-                let sync = client.sync_file(&path, &definition.language_id).await?;
+                let language_id = definition.language_id_for_file(&path);
+                let sync = client.sync_file(&path, language_id).await?;
                 let baseline_key = (key, path.clone());
                 let mut baselines = self.watcher_baselines.lock().await;
                 let sync = handoff_watcher_baseline(

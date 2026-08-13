@@ -499,6 +499,29 @@ executable = "C:/tools/dart-sdk/bin/dart.exe"
 
 CLSP does not read VS Code's `dart.sdkPath`; Dart Code and CLSP resolve their SDKs independently.
 
+## SourceKit-LSP cannot be resolved or takes a long time to start
+
+CLSP does not install Swift, Xcode, or the Swift VS Code extension. Check the toolchain and server visible to the current process:
+
+```powershell
+where.exe swift
+where.exe sourcekit-lsp
+swift --version
+sourcekit-lsp --help
+code --list-extensions --show-versions | Select-String swiftlang.swift-vscode
+```
+
+Swift 5.9 or newer is required. SourceKit-LSP itself has no stable standalone semantic-version command, so CLSP validates `--help` and reads the Swift toolchain version from `swift --version`. On macOS, CLSP also tries `xcrun --find sourcekit-lsp` after local, explicit, and `PATH` candidates. For a non-standard toolchain, configure the server directly:
+
+```toml
+[lsp.sourcekit-lsp]
+executable = "C:/Swift/usr/bin/sourcekit-lsp.exe"
+```
+
+The nearest `Package.swift`, Xcode project/workspace directory, `compile_commands.json`, or `compile_flags.txt` selects the root; without one, CLSP uses the workspace root. SwiftPM/Xcode indexing and the first build may take several minutes. SourceKit-LSP and project build configuration can execute code, so use it only in a trusted workspace. The official `swiftlang.swift-vscode` extension is an independent client; installing it alone does not make CLSP's server resolution succeed.
+
+If Objective-C diagnostics are missing, check that the file uses the `.objc` or `.objcpp` extension. CLSP maps those files to the SourceKit-LSP protocol IDs `objective-c` and `objective-cpp`; Swift files use `swift`.
+
 ## Deno server cannot be resolved
 
 CLSP does not install Deno. Check that Deno 1.40.0 or newer is available:

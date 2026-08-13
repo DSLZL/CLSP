@@ -1780,6 +1780,77 @@ async fn manual_clojure_reuses_an_explicit_compatible_server() {
     assert!(!called.load(Ordering::Relaxed));
 }
 
+#[tokio::test]
+async fn sourcekit_probe_requires_help_and_a_compatible_swift_toolchain() {
+    let root = support::tempdir().unwrap();
+    let sourcekit = fake_executable(root.path(), "sourcekit-lsp", "echo sourcekit-help");
+    let swift = fake_executable(
+        root.path(),
+        "swift",
+        "echo swift-driver version: 1.120.2 Apple Swift version 6.1.2 (swift-6.1.2-RELEASE)",
+    );
+    let mut resolver = test_resolver(root.path());
+    resolver.config.auto_install = false;
+    let server = Registry::builtin()
+        .unwrap()
+        .server("sourcekit-lsp")
+        .unwrap()
+        .clone();
+
+    let called = Arc::new(AtomicBool::new(false));
+    let callback = Arc::clone(&called);
+    let resolution = resolver
+        .resolve_server(&server, root.path(), Some(&sourcekit), move || async move {
+            callback.store(true, Ordering::Relaxed);
+        })
+        .await
+        .unwrap();
+    assert_eq!(resolution.source, ExecutableSource::Explicit);
+    assert!(!called.load(Ordering::Relaxed));
+
+    let probe = resolver
+        .probe_server(&server, &sourcekit, root.path())
+        .await
+        .unwrap();
+    assert!(probe.version_output.contains("Swift version 6.1.2"));
+    assert!(sourcekit_swift_candidates(&sourcekit).contains(&swift));
+
+    let old_root = root.path().join("old");
+    support::create_dir(&old_root).unwrap();
+    let old_swift = fake_executable(
+        &old_root,
+        "swift-old",
+        "echo Apple Swift version 5.8.1 (swift-5.8.1-RELEASE)",
+    );
+    let old_sourcekit = fake_executable(&old_root, "sourcekit-old", "echo sourcekit-help");
+    let old_swift_target =
+        old_sourcekit
+            .parent()
+            .unwrap()
+            .join(if cfg!(windows) { "swift.cmd" } else { "swift" });
+    std::fs::rename(old_swift, old_swift_target).unwrap();
+    assert!(
+        resolver
+            .probe_server(&server, &old_sourcekit, root.path())
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn sourcekit_swift_version_parser_ignores_swift_driver_version() {
+    assert!(
+        validate_sourcekit_swift_output(
+            "swift-driver version: 1.120.2 Apple Swift version 6.1.2 (swift-6.1.2-RELEASE)",
+            ">=5.9.0"
+        )
+        .is_ok()
+    );
+    assert!(validate_sourcekit_swift_output("Apple Swift version 5.8.1", ">=5.9.0").is_err());
+    assert!(validate_sourcekit_swift_output("Swift version 6.3-dev", ">=5.9.0").is_ok());
+    assert!(validate_sourcekit_swift_output("sourcekit-lsp help", ">=5.9.0").is_err());
+}
+
 #[test]
 fn parses_bun_and_go_roots() {
     let bun = if cfg!(windows) {
@@ -1870,6 +1941,10 @@ fn parses_common_language_server_versions_and_enforces_ranges() {
     assert!(PRESERVED_ENV.contains(&"SystemDrive"));
     assert!(PRESERVED_ENV.contains(&"GEM_HOME"));
     assert!(PRESERVED_ENV.contains(&"RUBYOPT"));
+    assert!(PRESERVED_ENV.contains(&"DEVELOPER_DIR"));
+    assert!(PRESERVED_ENV.contains(&"TOOLCHAINS"));
+    assert!(PRESERVED_ENV.contains(&"SDKROOT"));
+    assert!(PRESERVED_ENV.contains(&"VCToolsInstallDir"));
 }
 
 #[test]

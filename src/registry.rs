@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 26] = [
+const APPROVED_IDS: [&str; 27] = [
     "astro",
     "bash",
     "csharp",
@@ -30,15 +30,16 @@ const APPROVED_IDS: [&str; 26] = [
     "pyright",
     "ruby-lsp",
     "rust",
+    "sourcekit-lsp",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 60] = [
+const APPROVED_EXTENSIONS: [&str; 63] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gemspec", "gleam", "go",
     "h", "h++", "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs",
-    "lua", "mjs", "ml", "mli", "mts", "php", "prisma", "py", "pyi", "rake", "rb", "rs", "ru", "sh",
-    "svelte", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "lua", "mjs", "ml", "mli", "mts", "objc", "objcpp", "php", "prisma", "py", "pyi", "rake", "rb",
+    "rs", "ru", "sh", "svelte", "swift", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -137,6 +138,20 @@ pub struct ServerDefinition {
     pub args: Vec<String>,
     pub version_args: Vec<String>,
     pub install: InstallRecipe,
+}
+
+impl ServerDefinition {
+    pub(crate) fn language_id_for_file(&self, file: &Path) -> &str {
+        if self.id == "sourcekit-lsp" {
+            match file.extension().and_then(|extension| extension.to_str()) {
+                Some(extension) if extension.eq_ignore_ascii_case("objc") => "objective-c",
+                Some(extension) if extension.eq_ignore_ascii_case("objcpp") => "objective-cpp",
+                _ => &self.language_id,
+            }
+        } else {
+            &self.language_id
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn builtin_is_the_closed_twenty_six_server_set() {
+fn builtin_is_the_closed_twenty_seven_server_set() {
     let registry = Registry::builtin().unwrap();
-    assert_eq!(registry.server.len(), 26);
+    assert_eq!(registry.server.len(), 27);
     assert_eq!(
         registry
             .server
@@ -35,6 +35,15 @@ fn matches_only_declared_extensions() {
             .collect::<Vec<_>>(),
         vec!["bash"]
     );
+    for extension in [".swift", ".objc", ".objcpp"] {
+        assert_eq!(
+            registry
+                .matching_extension(extension)
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sourcekit-lsp"]
+        );
+    }
     assert_eq!(
         registry
             .matching_extension(".CLJC")
@@ -776,6 +785,60 @@ fn clangd_uses_the_locked_official_windows_archive() {
         "ce54f16e0b4fd76d450eeda9664420b195360b73febcfe40e661108fa57f2ce1"
     );
     assert_eq!(executable, "clangd_22.1.6/bin/clangd.exe");
+}
+
+#[test]
+fn sourcekit_lsp_uses_the_swift_toolchain_contract() {
+    let registry = Registry::builtin().unwrap();
+    let sourcekit = registry.server("sourcekit-lsp").unwrap();
+    assert_eq!(sourcekit.display_name, "SourceKit-LSP");
+    assert_eq!(sourcekit.language_id, "swift");
+    assert_eq!(sourcekit.version_req, ">=5.9.0");
+    assert_eq!(sourcekit.extensions, ["swift", "objc", "objcpp"]);
+    assert_eq!(
+        sourcekit.markers,
+        [
+            "Package.swift",
+            "*.xcodeproj",
+            "*.xcworkspace",
+            "compile_commands.json",
+            "compile_flags.txt",
+        ]
+    );
+    assert_eq!(sourcekit.command, "sourcekit-lsp");
+    assert!(sourcekit.args.is_empty());
+    assert_eq!(sourcekit.version_args, ["--help"]);
+    let InstallRecipe::Manual { version, hint } = &sourcekit.install else {
+        panic!("SourceKit-LSP must use a manual recipe");
+    };
+    assert_eq!(version, "5.9.0");
+    assert!(hint.contains("Swift 5.9+"));
+    assert!(hint.contains("[lsp.sourcekit-lsp].executable"));
+}
+
+#[test]
+fn sourcekit_uses_protocol_language_ids_for_c_family_files() {
+    let sourcekit = Registry::builtin()
+        .unwrap()
+        .server("sourcekit-lsp")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        sourcekit.language_id_for_file(Path::new("main.swift")),
+        "swift"
+    );
+    assert_eq!(
+        sourcekit.language_id_for_file(Path::new("main.objc")),
+        "objective-c"
+    );
+    assert_eq!(
+        sourcekit.language_id_for_file(Path::new("main.OBJC")),
+        "objective-c"
+    );
+    assert_eq!(
+        sourcekit.language_id_for_file(Path::new("main.objcpp")),
+        "objective-cpp"
+    );
 }
 
 #[test]

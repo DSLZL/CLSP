@@ -223,6 +223,66 @@ fn wildcard_markers_find_the_nearest_csharp_project() {
 }
 
 #[test]
+fn sourcekit_lsp_finds_swift_packages_xcode_directories_and_compile_databases() {
+    let root = support::tempdir().unwrap();
+    let workspace_root = root.path().join("workspace");
+    let package = workspace_root.join("Packages/Demo");
+    let xcode = workspace_root.join("Apps/Demo");
+    let database = workspace_root.join("Native");
+    support::create_dir_all(package.join("Sources")).unwrap();
+    support::create_dir_all(xcode.join("Sources")).unwrap();
+    support::create_dir_all(database.join("Sources")).unwrap();
+    support::create_dir(xcode.join("Demo.xcodeproj")).unwrap();
+    support::create_dir(xcode.join("Demo.xcworkspace")).unwrap();
+    support::write(package.join("Package.swift"), "// swift-tools-version: 5.9").unwrap();
+    support::write(database.join("compile_commands.json"), "[]").unwrap();
+    let package_file = package.join("Sources/Demo.swift");
+    let xcode_file = xcode.join("Sources/Demo.swift");
+    let objc_file = database.join("Sources/Demo.objc");
+    support::write(&package_file, "struct Demo {}").unwrap();
+    support::write(&xcode_file, "struct Demo {}").unwrap();
+    support::write(&objc_file, "@interface Demo @end").unwrap();
+    let workspace = Workspace::open(&workspace_root).unwrap();
+    let registry = Registry::builtin().unwrap();
+    let sourcekit = registry.server("sourcekit-lsp").unwrap();
+
+    for (file, expected_root) in [
+        (&package_file, package.clone()),
+        (&xcode_file, xcode.clone()),
+        (&objc_file, database.clone()),
+    ] {
+        assert_eq!(
+            workspace
+                .matching_servers(file, file.extension().unwrap().to_str().unwrap(), &registry,)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["sourcekit-lsp"]
+        );
+        assert_eq!(workspace.root_for_file(file, sourcekit), expected_root);
+    }
+}
+
+#[test]
+fn sourcekit_lsp_respects_workspace_boundary_and_falls_back_without_markers() {
+    let parent = support::tempdir().unwrap();
+    support::create_dir(parent.path().join("Outside.xcodeproj")).unwrap();
+    let workspace_root = parent.path().join("workspace");
+    let source_dir = workspace_root.join("Sources");
+    support::create_dir_all(&source_dir).unwrap();
+    let source = source_dir.join("Demo.swift");
+    support::write(&source, "struct Demo {}").unwrap();
+    let workspace = Workspace::open(&workspace_root).unwrap();
+    let registry = Registry::builtin().unwrap();
+    let sourcekit = registry.server("sourcekit-lsp").unwrap();
+
+    assert_eq!(
+        workspace.root_for_file(&source, sourcekit),
+        fs::canonicalize(&workspace_root).unwrap()
+    );
+}
+
+#[test]
 fn fsharp_files_use_the_nearest_project_root() {
     let root = support::tempdir().unwrap();
     let nested = root.path().join("src/Demo");

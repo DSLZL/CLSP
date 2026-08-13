@@ -364,6 +364,30 @@ fn ruby_lsp_uses_slow_initialize_without_custom_options() {
 }
 
 #[test]
+fn sourcekit_lsp_uses_slow_initialize_without_custom_options() {
+    let root = Path::new("C:/swift-project");
+    assert_eq!(
+        initialization_timeout(SOURCEKIT_LSP_SERVER_ID, Duration::from_secs(10)),
+        SLOW_INITIALIZE_TIMEOUT
+    );
+    assert!(
+        server_initialization_options(
+            SOURCEKIT_LSP_SERVER_ID,
+            root,
+            root,
+            &root.join("sourcekit-lsp.exe"),
+            None,
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        server_request_timeout(SOURCEKIT_LSP_SERVER_ID, Duration::from_secs(10)),
+        Duration::from_secs(10)
+    );
+}
+
+#[test]
 fn jdtls_extension_uses_the_official_java_launcher_arguments() {
     let root = Path::new("C:/extension/server");
     let configuration = root.join("config_win");
@@ -524,6 +548,7 @@ fn only_slow_starting_servers_get_the_long_initialize_timeout() {
         ELIXIR_LS_SERVER_ID,
         JULIALS_SERVER_ID,
         KOTLIN_LS_SERVER_ID,
+        SOURCEKIT_LSP_SERVER_ID,
     ] {
         assert_eq!(
             initialization_timeout(server_id, normal),

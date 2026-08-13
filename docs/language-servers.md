@@ -22,6 +22,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver --stdio` | `>=1.1.300, <2.0.0` | official VS Code extension or `pyright@1.1.411` |
 | `ruby-lsp` | Ruby | `ruby-lsp` | `>=0.26.10, <0.27.0` | `gem install ruby-lsp --version 0.26.10 --no-document` |
+| `sourcekit-lsp` | Swift / Objective-C / Objective-C++ | `sourcekit-lsp` | `>=5.9.0` (Swift toolchain) | manual Swift toolchain / Xcode |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
@@ -62,6 +63,7 @@ Some server types then have an additional reuse path before installation:
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
 - LuaLS: the complete server bundled with the official `sumneko.lua` Stable/Insiders extension after standalone executables; its manifest, launcher, runtime files, and actual server version are verified
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
+- SourceKit-LSP: macOS `xcrun --find sourcekit-lsp` after local/explicit/PATH candidates; CLSP never scans arbitrary VS Code extension directories
 
 Only after those reuse paths fail does automatic installation begin.
 
@@ -386,6 +388,21 @@ CLSP does not download or build `vscode-eslint`, install Node.js, or modify the 
 
 ESLint configurations and plugins execute project code. Start the server only in workspaces you trust.
 
+### Swift / SourceKit-LSP
+
+SourceKit-LSP is supplied by the Swift toolchain or Xcode; CLSP does not download or install either one. The registry accepts Swift toolchain version `>=5.9.0`, because SourceKit-LSP has no stable independent semantic-version command. Candidate validation runs `sourcekit-lsp --help`, then reads the Swift version from `swift --version` (including toolchains whose output also contains a `swift-driver` version).
+
+Swift files use the nearest `Package.swift`, `*.xcodeproj`, `*.xcworkspace`, `compile_commands.json`, or `compile_flags.txt` marker. Discovery checks project-local, explicit, and `PATH` candidates first; on macOS it then tries `xcrun --find sourcekit-lsp`. Configure a non-standard installation explicitly:
+
+```toml
+[lsp.sourcekit-lsp]
+executable = "C:/Swift/usr/bin/sourcekit-lsp.exe"
+```
+
+For `didOpen`, CLSP sends the protocol language IDs `swift`, `objective-c`, and `objective-cpp` for the matching extensions; the registry's single `language_id` is only the default metadata value.
+
+The official [`swiftlang.swift-vscode`](https://marketplace.visualstudio.com/items?itemName=swiftlang.swift-vscode) extension is an independent VS Code client. CLSP does not scan its private bundle or copy its settings. SwiftPM/Xcode indexing and the first build may be slow; only use SourceKit-LSP in trusted workspaces.
+
 ### clangd
 
 clangd is the only built-in server with a direct archive download recipe.
@@ -440,6 +457,7 @@ Examples:
 - Python: `.py` or `.pyi` below the nearest `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `Pipfile`, or `pyrightconfig.json`, with workspace-root fallback
 - TypeScript/JavaScript: JS/TS extensions plus `package.json`, `tsconfig.json`, or `jsconfig.json`
 - C/C++: C-family extensions plus `compile_commands.json`, `CMakeLists.txt`, or `.clangd`
+- Swift/Objective-C: `.swift`, `.objc`, or `.objcpp` plus `Package.swift`, Xcode project/workspace directories, or a compilation database
 - Dart: `.dart` plus `pubspec.yaml` or `analysis_options.yaml`
 - Deno: `.ts`, `.tsx`, `.js`, `.jsx`, or `.mjs` below `deno.json` or `deno.jsonc`; this takes precedence over the TypeScript server within that root
 - Elixir: `.ex` or `.exs` below the nearest `mix.exs` or `mix.lock`
