@@ -55,6 +55,13 @@ Use a custom Terraform Language Server:
 executable = "C:/tools/terraform-ls.exe"
 ```
 
+Use a custom Tinymist:
+
+```toml
+[lsp.tinymist]
+executable = "C:/tools/tinymist.exe"
+```
+
 Use a custom Swift toolchain's SourceKit-LSP:
 
 ```toml
@@ -393,6 +400,7 @@ rust
 sourcekit-lsp
 svelte
 terraform
+tinymist
 typescript
 yaml-ls
 ```

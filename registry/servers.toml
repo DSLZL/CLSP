@@ -335,6 +335,18 @@ version_args = ["-v"]
 install = { kind = "github_zip", version = "0.39.0", url = "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_windows_amd64.zip", sha256 = "6edc885fe113f6a7fd049622ed0bd255141e68c84acc2fce1bb6a54c1f47bfe1", executable = "terraform-ls.exe" }
 
 [[server]]
+id = "tinymist"
+display_name = "Tinymist Typst Language Server"
+language_id = "typst"
+version_req = ">=0.15.2, <0.16.0"
+extensions = ["typ", "typc"]
+markers = ["typst.toml"]
+command = "tinymist"
+args = ["lsp"]
+version_args = ["--version"]
+install = { kind = "github_zip", version = "0.15.2", url = "https://github.com/Myriad-Dreamin/tinymist/releases/download/v0.15.2/tinymist-x86_64-pc-windows-msvc.zip", sha256 = "91edb0d21edca5841b896d702d8086622792d52b71a9b444d8befb0e937969ae", executable = "tinymist.exe" }
+
+[[server]]
 id = "yaml-ls"
 display_name = "YAML Language Server"
 language_id = "yaml"

@@ -84,6 +84,7 @@ clsp setup --workspace .
 | Swift / Objective-C / Objective-C++ | SourceKit-LSP | 手动安装 Swift 工具链或 macOS Xcode |
 | Svelte | Svelte Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | Terraform | Terraform Language Server | 复用官方 VS Code 扩展，否则由 CLSP 校验后下载 |
+| Typst | Tinymist | 复用官方 VS Code 扩展，否则由 CLSP 校验后下载 |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
 | YAML | YAML Language Server | npm 兼容包管理器 |
 
@@ -130,6 +131,8 @@ Oxlint 支持 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.mts`、`.cts
 Svelte 支持 `.svelte` 文件，根目录取最近的 `package-lock.json`、`bun.lockb`、`bun.lock`、`pnpm-lock.yaml` 或 `yarn.lock`，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `svelte.svelte-vscode` Stable/Insiders 扩展内置且经过 manifest 校验的 `svelte-language-server`，以及兼容的全局包；启用自动安装时固定安装 `svelte-language-server@0.18.4` 和 `typescript@5.9.2`。JavaScript 入口需要 Node.js 18+。Svelte 扩展会独立提供 VS Code Problems，CLSP 不管理扩展私有配置。
 
 Terraform 支持 `.tf` 与 `.tfvars`，根目录取最近的 `.terraform.lock.hcl`、`terraform.tfstate` 或包含 `.tf` 文件的目录，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 `terraform-ls`、官方 `HashiCorp.terraform` Stable/Insiders 扩展内置且经过校验的服务端，以及 CLSP 托管缓存；在 Windows x86-64 上，启用自动安装时可下载固定版本、校验 SHA-256 的 `terraform-ls` 0.39.0 归档。CLSP 不安装 Terraform CLI、provider、module 或 VS Code 扩展；`.tfvars` 使用协议语言 ID `terraform-vars`。
+
+Typst 支持 `.typ` 与 `.typc`，根目录取最近的 `typst.toml`，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 Tinymist、官方 `myriad-dreamin.tinymist` Stable/Insiders 扩展内置且经过校验的服务端，以及 CLSP 托管缓存；在 Windows x86-64 上，启用自动安装时可下载固定版本、校验 SHA-256 的 Tinymist 0.15.2 归档。CLSP 启动 `tinymist lsp`，不会安装 VS Code 扩展或单独的 Typst CLI；`.typc` 使用协议语言 ID `typst-code`。
 
 SourceKit-LSP 支持 `.swift`、`.objc` 与 `.objcpp`，根目录取最近的 `Package.swift`、Xcode 项目/工作区目录或编译数据库，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中的 `sourcekit-lsp`，macOS 还可通过 `xcrun` 查找；启动探测使用短时 `--help`，并校验 Swift 5.9+。这三个扩展会分别发送协议语言 ID `swift`、`objective-c` 与 `objective-cpp`。CLSP 不安装 Swift、Xcode 或官方 `swiftlang.swift-vscode` 扩展。SwiftPM/Xcode 首次索引可能需要数分钟，也可能执行可信项目的构建配置，因此只应在可信 workspace 中启动。
 

@@ -216,6 +216,20 @@ CLSP accepts `terraform-ls >=0.39.0, <0.40.0`. It checks project, explicit, and 
 
 CLSP does not install Terraform CLI or run `terraform init`. Syntax diagnostics do not require provider downloads, but CLI-dependent validation needs a compatible local Terraform installation and initialized project; install or initialize those separately only when the project requires them.
 
+## Tinymist cannot be resolved
+
+Check the standalone server and official extension visible to the current process:
+
+```powershell
+where.exe tinymist
+tinymist --version
+code --list-extensions --show-versions | Select-String myriad-dreamin.tinymist
+```
+
+CLSP accepts `tinymist >=0.15.2, <0.16.0`. It checks project, explicit, and `PATH` candidates first, then the verified `out/tinymist.exe` in the official Stable/Insiders extension, then its managed cache. On Windows x86-64 with automatic installation enabled, it downloads only the pinned 0.15.2 official archive and verifies its SHA-256 before extraction. For a non-standard installation, set `[lsp.tinymist].executable`.
+
+CLSP starts `tinymist lsp`; a separate Typst CLI is not required. The nearest `typst.toml` selects the server root, and `.typc` documents use the `typst-code` protocol language ID.
+
 ## Svelte Language Server cannot be resolved
 
 Svelte Language Server requires Node.js 18 or newer. Check the runtime and supported existing sources:

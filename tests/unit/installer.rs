@@ -353,6 +353,32 @@ fn write_terraform_extension(
     executable
 }
 
+fn write_tinymist_extension(
+    extension_root: &Path,
+    directory_version: &str,
+    manifest_version: &str,
+) -> PathBuf {
+    let root = extension_root.join(format!("{TINYMIST_EXTENSION_PREFIX}{directory_version}"));
+    let executable = root.join(if cfg!(windows) {
+        "out/tinymist.exe"
+    } else {
+        "out/tinymist"
+    });
+    support::create_dir_all(executable.parent().unwrap()).unwrap();
+    support::write(&executable, b"launcher").unwrap();
+    support::write(
+        root.join("package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "tinymist",
+            "publisher": "myriad-dreamin",
+            "version": manifest_version,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    executable
+}
+
 fn write_jdtls_extension(
     extension_root: &Path,
     directory_version: &str,
@@ -1193,6 +1219,54 @@ fn vscode_terraform_candidates_validate_official_pinned_server() {
         first
     );
     assert!(validate_vscode_terraform_extension(&newer, ">=0.39.0, <0.40.0").is_err());
+}
+
+#[test]
+fn vscode_tinymist_candidates_validate_official_pinned_server() {
+    let root = support::tempdir().unwrap();
+    let older =
+        write_tinymist_extension(&root.path().join(".vscode/extensions"), "0.15.1", "0.15.1");
+    let newer = write_tinymist_extension(
+        &root.path().join(".vscode-insiders/extensions"),
+        "0.15.2-win32-x64",
+        "0.15.2",
+    );
+    assert_eq!(
+        vscode_tinymist_candidates_from(root.path()),
+        [newer.clone(), older]
+    );
+
+    let (extension_root, version) =
+        validate_vscode_tinymist_extension(&newer, ">=0.15.2, <0.16.0").unwrap();
+    assert_eq!(version, Version::new(0, 15, 2));
+    validate_extension_server_version("tinymist 0.15.2", &version, "Tinymist").unwrap();
+    assert!(validate_extension_server_version("tinymist 0.15.3", &version, "Tinymist").is_err());
+
+    let mismatched = write_tinymist_extension(
+        &root.path().join("mismatched"),
+        "0.15.3-win32-x64",
+        "0.15.2",
+    );
+    assert!(validate_vscode_tinymist_extension(&mismatched, ">=0.15.2, <0.16.0").is_err());
+
+    let workspace = root.path().join("workspace");
+    support::create_dir(&workspace).unwrap();
+    let server = Registry::builtin()
+        .unwrap()
+        .server(TINYMIST_SERVER_ID)
+        .unwrap()
+        .clone();
+    let first = resolution_fingerprint(&server, &workspace, Some(&newer));
+    support::write(
+        extension_root.join("package.json"),
+        br#"{"name":"tinymist","publisher":"other","version":"0.15.2"}"#,
+    )
+    .unwrap();
+    assert_ne!(
+        resolution_fingerprint(&server, &workspace, Some(&newer)),
+        first
+    );
+    assert!(validate_vscode_tinymist_extension(&newer, ">=0.15.2, <0.16.0").is_err());
 }
 
 #[tokio::test]
@@ -2134,6 +2208,10 @@ fn parses_common_language_server_versions_and_enforces_ranges() {
         ("2.14.0.0", Version::new(2, 14, 0)),
         ("1.27.0", Version::new(1, 27, 0)),
         ("terraform-ls 0.39.0", Version::new(0, 39, 0)),
+        (
+            "tinymist \nBuild Timestamp: 2026-06-22T10:34:37Z\nBuild Git Describe: v0.15.2",
+            Version::new(0, 15, 2),
+        ),
     ] {
         assert_eq!(parse_version(output), Some(expected));
     }

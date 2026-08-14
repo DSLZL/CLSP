@@ -936,6 +936,38 @@ fn terraform_files_use_the_nearest_opencode_marker_within_the_workspace() {
 }
 
 #[test]
+fn tinymist_files_use_the_nearest_typst_manifest_within_the_workspace() {
+    let parent = support::tempdir().unwrap();
+    support::write(parent.path().join("typst.toml"), "").unwrap();
+    let workspace_root = parent.path().join("workspace");
+    let project = workspace_root.join("docs/book");
+    let chapter = project.join("chapters");
+    support::create_dir_all(&chapter).unwrap();
+    let source = chapter.join("intro.typ");
+    let code = chapter.join("example.typc");
+    support::write(&source, "= Intro").unwrap();
+    support::write(&code, "#let answer = 42").unwrap();
+    let workspace = Workspace::open(&workspace_root).unwrap();
+    let registry = Registry::builtin().unwrap();
+    let tinymist = registry.server("tinymist").unwrap();
+
+    assert_eq!(
+        workspace
+            .matching_servers(&code, "typc", &registry)
+            .into_iter()
+            .map(|server| server.id.as_str())
+            .collect::<Vec<_>>(),
+        ["tinymist"]
+    );
+    assert_eq!(
+        workspace.root_for_file(&source, tinymist),
+        fs::canonicalize(&workspace_root).unwrap()
+    );
+    support::write(project.join("typst.toml"), "[package]\nname = \"book\"").unwrap();
+    assert_eq!(workspace.root_for_file(&source, tinymist), project);
+}
+
+#[test]
 fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
     let root = support::tempdir().unwrap();
     let deno_root = root.path().join("deno-app");

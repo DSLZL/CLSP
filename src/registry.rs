@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 29] = [
+const APPROVED_IDS: [&str; 30] = [
     "astro",
     "bash",
     "csharp",
@@ -33,15 +33,17 @@ const APPROVED_IDS: [&str; 29] = [
     "sourcekit-lsp",
     "svelte",
     "terraform",
+    "tinymist",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 65] = [
+const APPROVED_EXTENSIONS: [&str; 67] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gemspec", "gleam", "go",
     "h", "h++", "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs",
     "lua", "mjs", "ml", "mli", "mts", "objc", "objcpp", "php", "prisma", "py", "pyi", "rake", "rb",
-    "rs", "ru", "sh", "svelte", "swift", "tf", "tfvars", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "rs", "ru", "sh", "svelte", "swift", "tf", "tfvars", "ts", "tsx", "typ", "typc", "vue", "yaml",
+    "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -157,6 +159,7 @@ impl ServerDefinition {
             ("terraform", Some(extension)) if extension.eq_ignore_ascii_case("tfvars") => {
                 "terraform-vars"
             }
+            ("tinymist", Some(extension)) if extension.eq_ignore_ascii_case("typc") => "typst-code",
             _ => &self.language_id,
         }
     }
@@ -223,7 +226,7 @@ fn validate_recipe(recipe: &InstallRecipe, server_id: &str) -> Result<(), ClspEr
             executable,
         } => {
             let approved_host = match server_id {
-                "clangd" => "github.com",
+                "clangd" | "tinymist" => "github.com",
                 "terraform" => "releases.hashicorp.com",
                 _ => {
                     return Err(registry_error(format!(

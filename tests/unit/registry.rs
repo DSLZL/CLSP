@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn builtin_is_the_closed_twenty_nine_server_set() {
+fn builtin_is_the_closed_thirty_server_set() {
     let registry = Registry::builtin().unwrap();
-    assert_eq!(registry.server.len(), 29);
+    assert_eq!(registry.server.len(), 30);
     assert_eq!(
         registry
             .server
@@ -49,6 +49,15 @@ fn matches_only_declared_extensions() {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["terraform"]
+        );
+    }
+    for extension in [".TYP", ".TYPC"] {
+        assert_eq!(
+            registry
+                .matching_extension(extension)
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tinymist"]
         );
     }
     for extension in [".swift", ".objc", ".objcpp"] {
@@ -939,6 +948,50 @@ fn terraform_uses_the_locked_official_windows_archive() {
 }
 
 #[test]
+fn tinymist_uses_the_locked_official_windows_archive() {
+    let tinymist = Registry::builtin()
+        .unwrap()
+        .server("tinymist")
+        .unwrap()
+        .clone();
+    assert_eq!(tinymist.display_name, "Tinymist Typst Language Server");
+    assert_eq!(tinymist.language_id, "typst");
+    assert_eq!(tinymist.version_req, ">=0.15.2, <0.16.0");
+    assert_eq!(tinymist.extensions, ["typ", "typc"]);
+    assert_eq!(tinymist.markers, ["typst.toml"]);
+    assert_eq!(tinymist.command, "tinymist");
+    assert_eq!(tinymist.args, ["lsp"]);
+    assert_eq!(tinymist.version_args, ["--version"]);
+    assert_eq!(
+        tinymist.language_id_for_file(Path::new("main.typ")),
+        "typst"
+    );
+    assert_eq!(
+        tinymist.language_id_for_file(Path::new("main.TYPC")),
+        "typst-code"
+    );
+    let InstallRecipe::GithubZip {
+        version,
+        url,
+        sha256,
+        executable,
+    } = &tinymist.install
+    else {
+        panic!("Tinymist must use the fixed ZIP recipe");
+    };
+    assert_eq!(version, "0.15.2");
+    assert_eq!(
+        url,
+        "https://github.com/Myriad-Dreamin/tinymist/releases/download/v0.15.2/tinymist-x86_64-pc-windows-msvc.zip"
+    );
+    assert_eq!(
+        sha256,
+        "91edb0d21edca5841b896d702d8086622792d52b71a9b444d8befb0e937969ae"
+    );
+    assert_eq!(executable, "tinymist.exe");
+}
+
+#[test]
 fn unsafe_github_zip_recipes_are_rejected() {
     let valid_hash = "a".repeat(64);
     assert!(
@@ -962,6 +1015,18 @@ fn unsafe_github_zip_recipes_are_rejected() {
                 executable: "terraform-ls.exe".into(),
             },
             "terraform",
+        )
+        .is_err()
+    );
+    assert!(
+        validate_recipe(
+            &InstallRecipe::GithubZip {
+                version: "0.15.2".into(),
+                url: "https://releases.hashicorp.com/tinymist/0.15.2/tinymist.zip".into(),
+                sha256: valid_hash.clone(),
+                executable: "tinymist.exe".into(),
+            },
+            "tinymist",
         )
         .is_err()
     );

@@ -25,6 +25,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `sourcekit-lsp` | Swift / Objective-C / Objective-C++ | `sourcekit-lsp` | `>=5.9.0` (Swift toolchain) | manual Swift toolchain / Xcode |
 | `svelte` | Svelte | `svelteserver --stdio` | `>=0.18.4, <0.19.0` | official `svelte.svelte-vscode` extension or `svelte-language-server@0.18.4` + `typescript@5.9.2` |
 | `terraform` | Terraform / HCL variables | `terraform-ls serve` | `>=0.39.0, <0.40.0` | official `HashiCorp.terraform` extension or verified `terraform-ls` 0.39.0 archive |
+| `tinymist` | Typst | `tinymist lsp` | `>=0.15.2, <0.16.0` | official `myriad-dreamin.tinymist` extension or verified Tinymist 0.15.2 archive |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
@@ -62,6 +63,7 @@ Some server types then have an additional reuse path before installation:
 - Pyright: `dist/server.js` from the official `ms-pyright.pyright` Stable/Insiders extension, then the selected package manager's global installation
 - Svelte: `node_modules/svelte-language-server/bin/server.js` from the official `svelte.svelte-vscode` Stable/Insiders extension after strict manifest/path validation, then the selected package manager's global installation
 - Terraform: `bin/terraform-ls[.exe]` from the official `HashiCorp.terraform` Stable/Insiders extension after strict manifest/path/server-version validation, then CLSP's user-level artifact cache
+- Tinymist: `out/tinymist[.exe]` from the official `myriad-dreamin.tinymist` Stable/Insiders extension after strict manifest/path/version validation, then CLSP's user-level artifact cache
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
@@ -85,7 +87,7 @@ Disable it with:
 auto_install = false
 ```
 
-With `auto_install = false`, CLSP still reuses compatible existing servers, including supported toolchain/global locations and already-complete CLSP clangd or Terraform caches. It does not run an installer or download a new archive.
+With `auto_install = false`, CLSP still reuses compatible existing servers, including supported toolchain/global locations and already-complete CLSP clangd, Terraform, or Tinymist caches. It does not run an installer or download a new archive.
 
 ### npm-based servers
 
@@ -296,6 +298,19 @@ Configure a non-standard server directly:
 ```toml
 [lsp.terraform]
 executable = "C:/tools/terraform-ls.exe"
+```
+
+### Tinymist
+
+CLSP starts `tinymist lsp` for `.typ` and `.typc` files and accepts versions `>=0.15.2, <0.16.0`. Discovery checks project-local, explicit, and `PATH` candidates first, then verifies the exact launcher, manifest identity, extension version, and runtime-reported version in the official `myriad-dreamin.tinymist` Stable/Insiders extension, followed by CLSP's managed cache. On Windows x86-64 only, automatic installation can download the fixed 0.15.2 official archive after SHA-256 validation and bounded extraction.
+
+The nearest `typst.toml` selects the root; otherwise CLSP uses the workspace root. `.typ` uses protocol language ID `typst`, while `.typc` uses `typst-code`. CLSP does not install a separate Typst CLI, fonts, packages, or the VS Code extension.
+
+Configure a non-standard server directly:
+
+```toml
+[lsp.tinymist]
+executable = "C:/tools/tinymist.exe"
 ```
 
 ### Ruby
