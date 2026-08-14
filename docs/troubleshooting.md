@@ -202,6 +202,20 @@ The official `ms-pyright.pyright` extension disables its own editor client when 
 
 In that setup, `ide_diagnostics` may report Problems published by Pylance while `lsp_diagnostics` reports CLSP-managed Pyright diagnostics. To test the open-source Pyright extension itself, use a VS Code profile or isolated extension directory without Pylance.
 
+## Terraform Language Server cannot be resolved
+
+Check the standalone server and official extension visible to the current process:
+
+```powershell
+where.exe terraform-ls
+terraform-ls -v
+code --list-extensions --show-versions | Select-String HashiCorp.terraform
+```
+
+CLSP accepts `terraform-ls >=0.39.0, <0.40.0`. It checks project, explicit, and `PATH` candidates first, then the verified `bin/terraform-ls.exe` in the official Stable/Insiders extension, then its managed cache. On Windows x86-64 with automatic installation enabled, it downloads only the pinned 0.39.0 HashiCorp archive and verifies its SHA-256 before extraction. For a non-standard installation, set `[lsp.terraform].executable`.
+
+CLSP does not install Terraform CLI or run `terraform init`. Syntax diagnostics do not require provider downloads, but CLI-dependent validation needs a compatible local Terraform installation and initialized project; install or initialize those separately only when the project requires them.
+
 ## Svelte Language Server cannot be resolved
 
 Svelte Language Server requires Node.js 18 or newer. Check the runtime and supported existing sources:

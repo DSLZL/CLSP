@@ -53,6 +53,7 @@ const JULIALS_SERVER_ID: &str = "julials";
 const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
 const SOURCEKIT_LSP_SERVER_ID: &str = "sourcekit-lsp";
 const SVELTE_SERVER_ID: &str = "svelte";
+const TERRAFORM_SERVER_ID: &str = "terraform";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -1293,6 +1294,14 @@ fn server_initialization_options(
         return Ok(Some(json!({
             "workspaceFolders": [path_to_uri(server_root)?],
             "settings": {}
+        })));
+    }
+    if server_id == TERRAFORM_SERVER_ID {
+        return Ok(Some(json!({
+            "experimentalFeatures": {
+                "prefillRequiredFields": true,
+                "validateOnSave": true
+            }
         })));
     }
     if !matches!(server_id, ASTRO_SERVER_ID | TYPESCRIPT_SERVER_ID) {

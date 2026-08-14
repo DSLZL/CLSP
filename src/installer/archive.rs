@@ -22,7 +22,7 @@ pub(super) fn system_curl() -> Result<PathBuf, ClspError> {
     let program = if cfg!(windows) { "curl.exe" } else { "curl" };
     which::which(program).map_err(|_| {
         super::runtime_error(
-            "Windows curl.exe is required for CLSP clangd self-install; install clangd locally or set lsp.clangd.executable",
+            "curl is required for CLSP managed archive installs; install the language server locally or configure its executable",
         )
     })
 }

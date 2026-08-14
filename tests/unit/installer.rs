@@ -325,6 +325,34 @@ fn write_lua_extension(
     executable
 }
 
+fn write_terraform_extension(
+    extension_root: &Path,
+    directory_version: &str,
+    manifest_version: &str,
+    server_version: &str,
+) -> PathBuf {
+    let root = extension_root.join(format!("{TERRAFORM_EXTENSION_PREFIX}{directory_version}"));
+    let executable = root.join(if cfg!(windows) {
+        "bin/terraform-ls.exe"
+    } else {
+        "bin/terraform-ls"
+    });
+    support::create_dir_all(executable.parent().unwrap()).unwrap();
+    support::write(&executable, b"launcher").unwrap();
+    support::write(
+        root.join("package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "terraform",
+            "publisher": "hashicorp",
+            "version": manifest_version,
+            "langServer": {"version": server_version},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    executable
+}
+
 fn write_jdtls_extension(
     extension_root: &Path,
     directory_version: &str,
@@ -1060,8 +1088,8 @@ fn vscode_lua_candidates_validate_official_bounded_runtime() {
 
     let (layout, version) = validate_vscode_lua_extension(&newer, ">=3.19.0, <4.0.0").unwrap();
     assert_eq!(version, Version::new(3, 19, 0));
-    validate_lua_server_version("3.19.0", &version).unwrap();
-    assert!(validate_lua_server_version("3.19.1", &version).is_err());
+    validate_extension_server_version("3.19.0", &version, "LuaLS").unwrap();
+    assert!(validate_extension_server_version("3.19.1", &version, "LuaLS").is_err());
 
     let mismatched = write_lua_extension(
         &root.path().join("mismatched"),
@@ -1102,6 +1130,69 @@ fn vscode_lua_candidates_validate_official_bounded_runtime() {
     support::create_dir_all(outside.parent().unwrap()).unwrap();
     support::write(&outside, b"launcher").unwrap();
     assert!(lua_extension_layout(&outside).is_err());
+}
+
+#[test]
+fn vscode_terraform_candidates_validate_official_pinned_server() {
+    let root = support::tempdir().unwrap();
+    let older = write_terraform_extension(
+        &root.path().join(".vscode/extensions"),
+        "2.39.0-win32-x64",
+        "2.39.0",
+        "0.39.0",
+    );
+    let newer = write_terraform_extension(
+        &root.path().join(".vscode-insiders/extensions"),
+        "2.40.0-win32-x64",
+        "2.40.0",
+        "0.39.0",
+    );
+    assert_eq!(
+        vscode_terraform_candidates_from(root.path()),
+        [newer.clone(), older]
+    );
+
+    let (extension_root, version) =
+        validate_vscode_terraform_extension(&newer, ">=0.39.0, <0.40.0").unwrap();
+    assert_eq!(version, Version::new(0, 39, 0));
+    validate_extension_server_version("terraform-ls 0.39.0", &version, "Terraform LS").unwrap();
+    assert!(
+        validate_extension_server_version("terraform-ls 0.39.1", &version, "Terraform LS").is_err()
+    );
+
+    let mismatched = write_terraform_extension(
+        &root.path().join("mismatched"),
+        "2.40.1-win32-x64",
+        "2.40.0",
+        "0.39.0",
+    );
+    assert!(validate_vscode_terraform_extension(&mismatched, ">=0.39.0, <0.40.0").is_err());
+    let incompatible = write_terraform_extension(
+        &root.path().join("incompatible"),
+        "2.40.0-win32-x64",
+        "2.40.0",
+        "0.40.0",
+    );
+    assert!(validate_vscode_terraform_extension(&incompatible, ">=0.39.0, <0.40.0").is_err());
+
+    let workspace = root.path().join("workspace");
+    support::create_dir(&workspace).unwrap();
+    let server = Registry::builtin()
+        .unwrap()
+        .server(TERRAFORM_SERVER_ID)
+        .unwrap()
+        .clone();
+    let first = resolution_fingerprint(&server, &workspace, Some(&newer));
+    support::write(
+        extension_root.join("package.json"),
+        br#"{"name":"terraform","publisher":"other","version":"2.40.0","langServer":{"version":"0.39.0"}}"#,
+    )
+    .unwrap();
+    assert_ne!(
+        resolution_fingerprint(&server, &workspace, Some(&newer)),
+        first
+    );
+    assert!(validate_vscode_terraform_extension(&newer, ">=0.39.0, <0.40.0").is_err());
 }
 
 #[tokio::test]
@@ -2042,6 +2133,7 @@ fn parses_common_language_server_versions_and_enforces_ranges() {
         ("ILS-263.2689.0", Version::new(263, 2689, 0)),
         ("2.14.0.0", Version::new(2, 14, 0)),
         ("1.27.0", Version::new(1, 27, 0)),
+        ("terraform-ls 0.39.0", Version::new(0, 39, 0)),
     ] {
         assert_eq!(parse_version(output), Some(expected));
     }

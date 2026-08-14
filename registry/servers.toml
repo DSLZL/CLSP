@@ -323,6 +323,18 @@ version_args = []
 install = { kind = "npm", version = "0.18.4", package = "svelte-language-server", companions = ["typescript@5.9.2"] }
 
 [[server]]
+id = "terraform"
+display_name = "Terraform Language Server"
+language_id = "terraform"
+version_req = ">=0.39.0, <0.40.0"
+extensions = ["tf", "tfvars"]
+markers = [".terraform.lock.hcl", "terraform.tfstate", "*.tf"]
+command = "terraform-ls"
+args = ["serve"]
+version_args = ["-v"]
+install = { kind = "github_zip", version = "0.39.0", url = "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_windows_amd64.zip", sha256 = "6edc885fe113f6a7fd049622ed0bd255141e68c84acc2fce1bb6a54c1f47bfe1", executable = "terraform-ls.exe" }
+
+[[server]]
 id = "yaml-ls"
 display_name = "YAML Language Server"
 language_id = "yaml"

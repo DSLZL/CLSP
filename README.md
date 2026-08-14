@@ -85,6 +85,7 @@ After setup:
 | Rust | rust-analyzer | `rustup component add` |
 | Swift / Objective-C / Objective-C++ | SourceKit-LSP | Manual Swift toolchain or Xcode |
 | Svelte | Svelte Language Server | Reuse official VS Code extension or npm-compatible manager |
+| Terraform | Terraform Language Server | Reuse official VS Code extension, otherwise verified CLSP download |
 | TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
 | YAML | YAML Language Server | npm-compatible manager |
 
@@ -129,6 +130,8 @@ Ruby support covers `.rb`, `.rake`, `.gemspec`, and `.ru` files below the neares
 Oxlint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, `.vue`, `.astro`, and `.svelte`. CLSP reuses compatible `oxlint` 1.x from the selected project's `node_modules/.bin`, `PATH`, or `[lsp.oxlint].executable` and starts `oxlint --lsp`; it does not install packages or the official `oxc.oxc-vscode` extension. The extension independently uses the same external project tool and can publish Problems through the IDE bridge. Use Oxlint only in trusted projects because configuration and JavaScript plugins may execute project code.
 
 Svelte support covers `.svelte` files below the nearest `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, or `yarn.lock`, with the workspace root as fallback. CLSP first reuses a compatible project, explicit, or `PATH` server, then the verified `svelte-language-server` bundled in the official `svelte.svelte-vscode` Stable/Insiders extension, then a compatible global package; automatic installation pins `svelte-language-server@0.18.4` with `typescript@5.9.2`. Node.js 18+ is required for the JavaScript entry. The Svelte extension independently publishes VS Code Problems; CLSP does not manage the extension or its private settings.
+
+Terraform support covers `.tf` and `.tfvars` files below the nearest `.terraform.lock.hcl`, `terraform.tfstate`, or directory containing `.tf` files, with the workspace root as fallback. CLSP reuses a compatible project, explicit, or `PATH` `terraform-ls`, then the verified server bundled in the official `HashiCorp.terraform` Stable/Insiders extension, then its managed cache; on Windows x86-64, automatic installation can download the pinned, checksum-verified `terraform-ls` 0.39.0 archive. CLSP does not install Terraform CLI, providers, modules, or the VS Code extension. `.tfvars` uses the protocol language ID `terraform-vars`.
 
 SourceKit-LSP support covers `.swift`, `.objc`, and `.objcpp` below the nearest `Package.swift`, Xcode project/workspace directory, or compilation database, with the workspace root as the fallback. CLSP reuses `sourcekit-lsp` from the project, an explicit path, or `PATH`, and on macOS can resolve it through `xcrun`; it validates a short `--help` probe and Swift 5.9+. It sends the protocol language IDs `swift`, `objective-c`, and `objective-cpp` for those extensions. CLSP does not install Swift, Xcode, or the official `swiftlang.swift-vscode` extension. SwiftPM/Xcode indexing can take several minutes and may execute trusted project build configuration, so use SourceKit-LSP only in trusted workspaces.
 

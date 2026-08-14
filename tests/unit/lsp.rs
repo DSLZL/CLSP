@@ -286,6 +286,30 @@ fn pyright_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
 }
 
 #[test]
+fn terraform_initialization_enables_validation_features() {
+    let directory = support::tempdir().unwrap();
+    let root = directory.path();
+    let options = server_initialization_options(
+        TERRAFORM_SERVER_ID,
+        root,
+        root,
+        &root.join("terraform-ls.exe"),
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        options,
+        json!({
+            "experimentalFeatures": {
+                "prefillRequiredFields": true,
+                "validateOnSave": true
+            }
+        })
+    );
+}
+
+#[test]
 fn svelte_has_no_custom_initialization_and_hosts_js_entries_with_node() {
     let directory = support::tempdir().unwrap();
     let root = directory.path();

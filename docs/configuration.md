@@ -48,6 +48,13 @@ Use a custom clangd:
 executable = "C:/LLVM/bin/clangd.exe"
 ```
 
+Use a custom Terraform Language Server:
+
+```toml
+[lsp.terraform]
+executable = "C:/tools/terraform-ls.exe"
+```
+
 Use a custom Swift toolchain's SourceKit-LSP:
 
 ```toml
@@ -385,6 +392,7 @@ ruby-lsp
 rust
 sourcekit-lsp
 svelte
+terraform
 typescript
 yaml-ls
 ```

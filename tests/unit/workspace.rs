@@ -896,6 +896,46 @@ fn svelte_uses_the_nearest_lockfile_and_coexists_with_oxlint() {
 }
 
 #[test]
+fn terraform_files_use_the_nearest_opencode_marker_within_the_workspace() {
+    let parent = support::tempdir().unwrap();
+    support::write(parent.path().join("outside.tf"), "").unwrap();
+    let workspace_root = parent.path().join("workspace");
+    let project = workspace_root.join("stacks/demo");
+    let environment = project.join("env");
+    support::create_dir_all(&environment).unwrap();
+    let variables = environment.join("dev.tfvars");
+    support::write(&variables, "region = \"test\"").unwrap();
+    let workspace = Workspace::open(&workspace_root).unwrap();
+    let registry = Registry::builtin().unwrap();
+    let terraform = registry.server("terraform").unwrap();
+
+    assert_eq!(
+        workspace
+            .matching_servers(&variables, "tfvars", &registry)
+            .into_iter()
+            .map(|server| server.id.as_str())
+            .collect::<Vec<_>>(),
+        ["terraform"]
+    );
+    assert_eq!(
+        workspace.root_for_file(&variables, terraform),
+        fs::canonicalize(&workspace_root).unwrap()
+    );
+    for marker in [".terraform.lock.hcl", "terraform.tfstate"] {
+        let marker = project.join(marker);
+        support::write(&marker, "").unwrap();
+        assert_eq!(workspace.root_for_file(&variables, terraform), project);
+        fs::remove_file(marker).unwrap();
+    }
+    support::write(project.join("main.tf"), "terraform {}").unwrap();
+    assert_eq!(workspace.root_for_file(&variables, terraform), project);
+
+    let nested = environment.join("main.tf");
+    support::write(&nested, "terraform {}").unwrap();
+    assert_eq!(workspace.root_for_file(&nested, terraform), environment);
+}
+
+#[test]
 fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
     let root = support::tempdir().unwrap();
     let deno_root = root.path().join("deno-app");

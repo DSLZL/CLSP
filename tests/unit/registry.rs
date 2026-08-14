@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn builtin_is_the_closed_twenty_eight_server_set() {
+fn builtin_is_the_closed_twenty_nine_server_set() {
     let registry = Registry::builtin().unwrap();
-    assert_eq!(registry.server.len(), 28);
+    assert_eq!(registry.server.len(), 29);
     assert_eq!(
         registry
             .server
@@ -42,6 +42,15 @@ fn matches_only_declared_extensions() {
             .collect::<Vec<_>>(),
         vec!["oxlint", "svelte"]
     );
+    for extension in [".TF", ".TFVARS"] {
+        assert_eq!(
+            registry
+                .matching_extension(extension)
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["terraform"]
+        );
+    }
     for extension in [".swift", ".objc", ".objcpp"] {
         assert_eq!(
             registry
@@ -883,8 +892,79 @@ fn sourcekit_uses_protocol_language_ids_for_c_family_files() {
 }
 
 #[test]
+fn terraform_uses_the_locked_official_windows_archive() {
+    let terraform = Registry::builtin()
+        .unwrap()
+        .server("terraform")
+        .unwrap()
+        .clone();
+    assert_eq!(terraform.display_name, "Terraform Language Server");
+    assert_eq!(terraform.language_id, "terraform");
+    assert_eq!(terraform.version_req, ">=0.39.0, <0.40.0");
+    assert_eq!(terraform.extensions, ["tf", "tfvars"]);
+    assert_eq!(
+        terraform.markers,
+        [".terraform.lock.hcl", "terraform.tfstate", "*.tf"]
+    );
+    assert_eq!(terraform.command, "terraform-ls");
+    assert_eq!(terraform.args, ["serve"]);
+    assert_eq!(terraform.version_args, ["-v"]);
+    assert_eq!(
+        terraform.language_id_for_file(Path::new("main.tf")),
+        "terraform"
+    );
+    assert_eq!(
+        terraform.language_id_for_file(Path::new("dev.TFVARS")),
+        "terraform-vars"
+    );
+    let InstallRecipe::GithubZip {
+        version,
+        url,
+        sha256,
+        executable,
+    } = &terraform.install
+    else {
+        panic!("Terraform LS must use the fixed ZIP recipe");
+    };
+    assert_eq!(version, "0.39.0");
+    assert_eq!(
+        url,
+        "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_windows_amd64.zip"
+    );
+    assert_eq!(
+        sha256,
+        "6edc885fe113f6a7fd049622ed0bd255141e68c84acc2fce1bb6a54c1f47bfe1"
+    );
+    assert_eq!(executable, "terraform-ls.exe");
+}
+
+#[test]
 fn unsafe_github_zip_recipes_are_rejected() {
     let valid_hash = "a".repeat(64);
+    assert!(
+        validate_recipe(
+            &InstallRecipe::GithubZip {
+                version: "0.39.0".into(),
+                url: "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls.zip".into(),
+                sha256: valid_hash.clone(),
+                executable: "terraform-ls.exe".into(),
+            },
+            "terraform",
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_recipe(
+            &InstallRecipe::GithubZip {
+                version: "0.39.0".into(),
+                url: "https://github.com/hashicorp/terraform-ls/archive.zip".into(),
+                sha256: valid_hash.clone(),
+                executable: "terraform-ls.exe".into(),
+            },
+            "terraform",
+        )
+        .is_err()
+    );
     for recipe in [
         InstallRecipe::GithubZip {
             version: "22.1.6".into(),

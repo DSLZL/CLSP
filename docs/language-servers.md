@@ -24,6 +24,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `ruby-lsp` | Ruby | `ruby-lsp` | `>=0.26.10, <0.27.0` | `gem install ruby-lsp --version 0.26.10 --no-document` |
 | `sourcekit-lsp` | Swift / Objective-C / Objective-C++ | `sourcekit-lsp` | `>=5.9.0` (Swift toolchain) | manual Swift toolchain / Xcode |
 | `svelte` | Svelte | `svelteserver --stdio` | `>=0.18.4, <0.19.0` | official `svelte.svelte-vscode` extension or `svelte-language-server@0.18.4` + `typescript@5.9.2` |
+| `terraform` | Terraform / HCL variables | `terraform-ls serve` | `>=0.39.0, <0.40.0` | official `HashiCorp.terraform` extension or verified `terraform-ls` 0.39.0 archive |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
@@ -60,6 +61,7 @@ Some server types then have an additional reuse path before installation:
 - Prisma: `dist/language-server/bin.js` plus its schema WASM from the official `Prisma.prisma` Stable/Insiders extension, then the selected package manager's global installation
 - Pyright: `dist/server.js` from the official `ms-pyright.pyright` Stable/Insiders extension, then the selected package manager's global installation
 - Svelte: `node_modules/svelte-language-server/bin/server.js` from the official `svelte.svelte-vscode` Stable/Insiders extension after strict manifest/path validation, then the selected package manager's global installation
+- Terraform: `bin/terraform-ls[.exe]` from the official `HashiCorp.terraform` Stable/Insiders extension after strict manifest/path/server-version validation, then CLSP's user-level artifact cache
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
@@ -83,7 +85,7 @@ Disable it with:
 auto_install = false
 ```
 
-With `auto_install = false`, CLSP still reuses compatible existing servers, including supported toolchain/global locations and an already-complete CLSP clangd cache. It does not run an installer or download a new archive.
+With `auto_install = false`, CLSP still reuses compatible existing servers, including supported toolchain/global locations and already-complete CLSP clangd or Terraform caches. It does not run an installer or download a new archive.
 
 ### npm-based servers
 
@@ -283,6 +285,19 @@ executable = "C:/tools/svelte-language-server/bin/server.js"
 
 The official Svelte extension independently publishes VS Code Problems; CLSP does not install or manage the extension or its private settings. Svelte configuration and preprocessors can execute project code, so use the server only in trusted workspaces.
 
+### Terraform
+
+CLSP starts `terraform-ls serve` for `.tf` and `.tfvars` files and accepts server versions `>=0.39.0, <0.40.0`. Discovery checks project-local, explicit, and `PATH` candidates first, then verifies the exact launcher, manifest identity, pinned `langServer.version`, and runtime-reported version in the official `HashiCorp.terraform` Stable/Insiders extension, followed by CLSP's managed cache. On Windows x86-64 only, automatic installation can download the fixed 0.39.0 HashiCorp archive after SHA-256 validation and bounded extraction.
+
+The nearest `.terraform.lock.hcl`, `terraform.tfstate`, or directory containing a `.tf` file selects the root; otherwise CLSP uses the workspace root. `.tf` uses protocol language ID `terraform`, while `.tfvars` uses `terraform-vars`. HashiCorp publishes variable-file diagnostics only for automatically loaded `terraform.tfvars` and `*.auto.tfvars` files, not arbitrary `.tfvars` names. Initialization enables `prefillRequiredFields` and `validateOnSave`. CLSP does not install Terraform CLI, initialize a working directory, or download providers/modules; syntax diagnostics can work without `terraform init`, while CLI-dependent validation still requires a compatible local Terraform installation.
+
+Configure a non-standard server directly:
+
+```toml
+[lsp.terraform]
+executable = "C:/tools/terraform-ls.exe"
+```
+
 ### Ruby
 
 Ruby LSP requires Ruby 3.0 or newer. CLSP checks project-local, explicit, and `PATH` `ruby-lsp` candidates in that order and validates `ruby-lsp --version` against `>=0.26.10, <0.27.0`. If no compatible candidate exists and automatic installation is enabled, CLSP requires RubyGems and runs exactly:
@@ -420,7 +435,7 @@ The official [`swiftlang.swift-vscode`](https://marketplace.visualstudio.com/ite
 
 ### clangd
 
-clangd is the only built-in server with a direct archive download recipe.
+clangd uses the shared verified managed-archive path.
 
 Before downloading, CLSP checks:
 

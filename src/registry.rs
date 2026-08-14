@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 28] = [
+const APPROVED_IDS: [&str; 29] = [
     "astro",
     "bash",
     "csharp",
@@ -32,15 +32,16 @@ const APPROVED_IDS: [&str; 28] = [
     "rust",
     "sourcekit-lsp",
     "svelte",
+    "terraform",
     "typescript",
     "yaml-ls",
 ];
-const APPROVED_EXTENSIONS: [&str; 63] = [
+const APPROVED_EXTENSIONS: [&str; 65] = [
     "astro", "bash", "c", "c++", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "csx", "cts",
     "cxx", "dart", "edn", "ex", "exs", "fs", "fsi", "fsscript", "fsx", "gemspec", "gleam", "go",
     "h", "h++", "hh", "hpp", "hs", "hxx", "java", "jl", "js", "jsx", "ksh", "kt", "kts", "lhs",
     "lua", "mjs", "ml", "mli", "mts", "objc", "objcpp", "php", "prisma", "py", "pyi", "rake", "rb",
-    "rs", "ru", "sh", "svelte", "swift", "ts", "tsx", "vue", "yaml", "yml", "zsh",
+    "rs", "ru", "sh", "svelte", "swift", "tf", "tfvars", "ts", "tsx", "vue", "yaml", "yml", "zsh",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -143,14 +144,20 @@ pub struct ServerDefinition {
 
 impl ServerDefinition {
     pub(crate) fn language_id_for_file(&self, file: &Path) -> &str {
-        if self.id == "sourcekit-lsp" {
-            match file.extension().and_then(|extension| extension.to_str()) {
-                Some(extension) if extension.eq_ignore_ascii_case("objc") => "objective-c",
-                Some(extension) if extension.eq_ignore_ascii_case("objcpp") => "objective-cpp",
-                _ => &self.language_id,
+        match (
+            self.id.as_str(),
+            file.extension().and_then(|extension| extension.to_str()),
+        ) {
+            ("sourcekit-lsp", Some(extension)) if extension.eq_ignore_ascii_case("objc") => {
+                "objective-c"
             }
-        } else {
-            &self.language_id
+            ("sourcekit-lsp", Some(extension)) if extension.eq_ignore_ascii_case("objcpp") => {
+                "objective-cpp"
+            }
+            ("terraform", Some(extension)) if extension.eq_ignore_ascii_case("tfvars") => {
+                "terraform-vars"
+            }
+            _ => &self.language_id,
         }
     }
 }
@@ -215,26 +222,35 @@ fn validate_recipe(recipe: &InstallRecipe, server_id: &str) -> Result<(), ClspEr
             sha256,
             executable,
         } => {
-            if server_id != "clangd" || semver::Version::parse(version).is_err() {
+            let approved_host = match server_id {
+                "clangd" => "github.com",
+                "terraform" => "releases.hashicorp.com",
+                _ => {
+                    return Err(registry_error(format!(
+                        "{server_id} has an invalid managed ZIP recipe"
+                    )));
+                }
+            };
+            if semver::Version::parse(version).is_err() {
                 return Err(registry_error(format!(
-                    "{server_id} has an invalid GitHub ZIP recipe"
+                    "{server_id} has an invalid managed ZIP recipe"
                 )));
             }
             let parsed = url::Url::parse(url).map_err(registry_error)?;
             if parsed.scheme() != "https"
-                || parsed.host_str() != Some("github.com")
+                || parsed.host_str() != Some(approved_host)
                 || !parsed.username().is_empty()
                 || parsed.password().is_some()
                 || parsed.query().is_some()
                 || parsed.fragment().is_some()
             {
                 return Err(registry_error(format!(
-                    "{server_id} GitHub ZIP URL is not an approved HTTPS URL"
+                    "{server_id} managed ZIP URL is not an approved HTTPS URL"
                 )));
             }
             if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return Err(registry_error(format!(
-                    "{server_id} GitHub ZIP SHA-256 is invalid"
+                    "{server_id} managed ZIP SHA-256 is invalid"
                 )));
             }
             let executable_path = Path::new(executable);
@@ -246,7 +262,7 @@ fn validate_recipe(recipe: &InstallRecipe, server_id: &str) -> Result<(), ClspEr
                     .any(|component| !matches!(component, std::path::Component::Normal(_)))
             {
                 return Err(registry_error(format!(
-                    "{server_id} GitHub ZIP executable path is unsafe"
+                    "{server_id} managed ZIP executable path is unsafe"
                 )));
             }
             Ok(())

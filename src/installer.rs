@@ -69,6 +69,8 @@ const LUA_EXTENSION_FILE_LIMIT: u64 = 1024 * 1024;
 const SVELTE_SERVER_ID: &str = "svelte";
 const SVELTE_EXTENSION_PREFIX: &str = "svelte.svelte-vscode-";
 const SOURCEKIT_LSP_SERVER_ID: &str = "sourcekit-lsp";
+const TERRAFORM_SERVER_ID: &str = "terraform";
+const TERRAFORM_EXTENSION_PREFIX: &str = "hashicorp.terraform-";
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,6 +256,7 @@ impl ServerResolver {
             KOTLIN_LS_SERVER_ID => self.resolve_vscode_kotlin(server, workspace).await,
             LUA_LS_SERVER_ID => self.resolve_vscode_lua(server, workspace).await,
             SVELTE_SERVER_ID => self.resolve_vscode_svelte(server).await,
+            TERRAFORM_SERVER_ID => self.resolve_vscode_terraform(server, workspace).await,
             _ => None,
         };
         if vscode_resolution.is_some() {
@@ -590,7 +593,49 @@ impl ServerResolver {
             else {
                 continue;
             };
-            if validate_lua_server_version(&resolution.version_output, &extension_version).is_ok() {
+            if validate_extension_server_version(
+                &resolution.version_output,
+                &extension_version,
+                "LuaLS",
+            )
+            .is_ok()
+            {
+                return Some(resolution);
+            }
+        }
+        None
+    }
+
+    async fn resolve_vscode_terraform(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_terraform_candidates_from(home) {
+            let Ok((_, server_version)) =
+                validate_vscode_terraform_extension(&candidate, &server.version_req)
+            else {
+                continue;
+            };
+            let Some(resolution) = self
+                .resolve_candidate(
+                    server,
+                    workspace,
+                    candidate,
+                    ExecutableSource::VsCodeExtension,
+                )
+                .await
+            else {
+                continue;
+            };
+            if validate_extension_server_version(
+                &resolution.version_output,
+                &server_version,
+                "Terraform LS",
+            )
+            .is_ok()
+            {
                 return Some(resolution);
             }
         }
@@ -700,9 +745,10 @@ impl ServerResolver {
         executable: &str,
     ) -> Result<ResolvedExecutable, ClspError> {
         if !cfg!(all(windows, target_arch = "x86_64")) {
-            return Err(runtime_error(
-                "CLSP clangd self-install currently supports Windows x86-64 only; install clangd locally or set lsp.clangd.executable",
-            ));
+            return Err(runtime_error(format!(
+                "CLSP {} self-install currently supports Windows x86-64 only; install it locally or set lsp.{}.executable",
+                server.display_name, server.id
+            )));
         }
 
         let server_root = self.paths.artifacts.join(&server.id);
@@ -1798,6 +1844,15 @@ fn vscode_svelte_candidates_from(user_home: &Path) -> Vec<PathBuf> {
     )
 }
 
+fn vscode_terraform_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    let launcher = if cfg!(windows) {
+        "bin/terraform-ls.exe"
+    } else {
+        "bin/terraform-ls"
+    };
+    vscode_extension_candidates_from(user_home, TERRAFORM_EXTENSION_PREFIX, Path::new(launcher))
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct JdtlsExtensionLayout {
     pub extension_root: PathBuf,
@@ -2672,12 +2727,16 @@ fn validate_vscode_lua_extension(
     Ok((layout, extension_version))
 }
 
-fn validate_lua_server_version(output: &str, expected: &Version) -> Result<(), ClspError> {
+fn validate_extension_server_version(
+    output: &str,
+    expected: &Version,
+    label: &str,
+) -> Result<(), ClspError> {
     let actual = parse_version(output)
-        .ok_or_else(|| server_error("LuaLS probe returned no semantic version"))?;
+        .ok_or_else(|| server_error(format!("{label} probe returned no semantic version")))?;
     if &actual != expected {
         return Err(server_error(format!(
-            "LuaLS server version {actual} does not match extension {expected}"
+            "{label} server version {actual} does not match extension {expected}"
         )));
     }
     Ok(())
@@ -3021,6 +3080,106 @@ fn read_bounded_manifest(path: &Path, label: &str) -> Result<Vec<u8>, ClspError>
         )));
     }
     std::fs::read(path).map_err(server_error)
+}
+
+fn vscode_terraform_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let launcher = if cfg!(windows) {
+        "terraform-ls.exe"
+    } else {
+        "terraform-ls"
+    };
+    if !executable.is_file()
+        || !executable
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(launcher))
+    {
+        return Err(server_error(
+            "Terraform candidate is not the official platform launcher",
+        ));
+    }
+    let bin = executable
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("bin")))
+        .ok_or_else(|| server_error("Terraform launcher is outside bin"))?;
+    let extension_root = bin
+        .parent()
+        .ok_or_else(|| server_error("Terraform launcher has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let expected =
+        std::fs::canonicalize(extension_root.join("bin").join(launcher)).map_err(server_error)?;
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    if executable != expected
+        || !executable.starts_with(&extension_root)
+        || !manifest.starts_with(&extension_root)
+        || !manifest.is_file()
+    {
+        return Err(server_error("Terraform extension files escape their root"));
+    }
+    Ok(extension_root)
+}
+
+fn validate_vscode_terraform_extension(
+    executable: &Path,
+    requirement: &str,
+) -> Result<(PathBuf, Version), ClspError> {
+    let extension_root = vscode_terraform_extension_root(executable)?;
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Terraform extension root has no name"))?;
+    let directory_version = directory_name
+        .get(TERRAFORM_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..TERRAFORM_EXTENSION_PREFIX.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(TERRAFORM_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Terraform LS is outside an official extension root"))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&read_bounded_manifest(
+        &extension_root.join("package.json"),
+        "Terraform extension manifest",
+    )?)
+    .map_err(server_error)?;
+    if manifest.get("name").and_then(serde_json::Value::as_str) != Some("terraform")
+        || manifest
+            .get("publisher")
+            .and_then(serde_json::Value::as_str)
+            != Some("hashicorp")
+    {
+        return Err(server_error(
+            "Terraform LS is not from the official HashiCorp.terraform extension",
+        ));
+    }
+    let extension_version = manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Terraform extension manifest version is invalid"))?;
+    if (
+        extension_version.major,
+        extension_version.minor,
+        extension_version.patch,
+    ) != (
+        directory_version.major,
+        directory_version.minor,
+        directory_version.patch,
+    ) {
+        return Err(server_error(
+            "Terraform extension manifest version does not match its directory",
+        ));
+    }
+    let server_version = manifest
+        .get("langServer")
+        .and_then(|server| server.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Terraform extension server version is invalid"))?;
+    validate_version_output(&server_version.to_string(), requirement)?;
+    Ok((extension_root, server_version))
 }
 
 fn validate_vscode_intelephense_extension(
@@ -3760,6 +3919,7 @@ pub(crate) fn resolution_fingerprint(
             | KOTLIN_LS_SERVER_ID
             | LUA_LS_SERVER_ID
             | SVELTE_SERVER_ID
+            | TERRAFORM_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -3786,6 +3946,7 @@ pub(crate) fn resolution_fingerprint(
                 KOTLIN_LS_SERVER_ID => candidates.extend(vscode_kotlin_candidates_from(&home)),
                 LUA_LS_SERVER_ID => candidates.extend(vscode_lua_candidates_from(&home)),
                 SVELTE_SERVER_ID => candidates.extend(vscode_svelte_candidates_from(&home)),
+                TERRAFORM_SERVER_ID => candidates.extend(vscode_terraform_candidates_from(&home)),
                 _ => {}
             }
         }
@@ -3945,6 +4106,11 @@ pub(crate) fn resolution_fingerprint(
                 &mut digest,
                 extension_root.join("node_modules/svelte-language-server/package.json"),
             );
+        }
+        if server.id == TERRAFORM_SERVER_ID
+            && let Ok(extension_root) = vscode_terraform_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
         }
     }
     hex::encode(digest.finalize())
