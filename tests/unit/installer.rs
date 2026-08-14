@@ -176,6 +176,37 @@ fn write_pyright_extension(extension_root: &Path, version: &str) -> PathBuf {
     server
 }
 
+fn write_svelte_extension(
+    extension_root: &Path,
+    extension_version: &str,
+    server_version: &str,
+) -> PathBuf {
+    let root = extension_root.join(format!("{SVELTE_EXTENSION_PREFIX}{extension_version}"));
+    let server = root.join("node_modules/svelte-language-server/bin/server.js");
+    support::create_dir_all(server.parent().unwrap()).unwrap();
+    support::write(&server, b"server").unwrap();
+    support::write(
+        root.join("package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "svelte-vscode",
+            "publisher": "svelte",
+            "version": extension_version,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    support::write(
+        root.join("node_modules/svelte-language-server/package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "svelte-language-server",
+            "version": server_version,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    server
+}
+
 fn write_fsharp_extension(
     extension_root: &Path,
     extension_version: &str,
@@ -871,6 +902,68 @@ fn vscode_pyright_candidates_are_newest_first_and_official() {
 }
 
 #[test]
+fn vscode_svelte_candidates_are_newest_first_and_official() {
+    let root = support::tempdir().unwrap();
+    let older =
+        write_svelte_extension(&root.path().join(".vscode/extensions"), "109.0.0", "0.18.4");
+    let newer = write_svelte_extension(
+        &root.path().join(".vscode-insiders/extensions"),
+        "110.3.1",
+        "0.18.4",
+    );
+    let fake = root.path().join(
+        ".vscode/extensions/not-official.svelte-vscode-999.0.0/node_modules/svelte-language-server/bin/server.js",
+    );
+    support::create_dir_all(fake.parent().unwrap()).unwrap();
+    support::write(fake, b"server").unwrap();
+
+    assert_eq!(
+        vscode_svelte_candidates_from(root.path()),
+        [newer.clone(), older.clone()]
+    );
+    let probe = validate_vscode_svelte_extension(&newer, ">=0.18.4, <0.19.0").unwrap();
+    assert_eq!(
+        probe.version_output,
+        "svelte-language-server 0.18.4; svelte.svelte-vscode 110.3.1"
+    );
+    assert_eq!(
+        probe.modules_root,
+        std::fs::canonicalize(
+            root.path()
+                .join(".vscode-insiders/extensions/svelte.svelte-vscode-110.3.1/node_modules")
+        )
+        .unwrap()
+    );
+    assert!(validate_vscode_svelte_extension(&older, ">=0.18.5, <0.19.0").is_err());
+}
+
+#[test]
+fn svelte_extension_probe_rejects_forged_manifests_and_paths() {
+    let root = support::tempdir().unwrap();
+    let executable = write_svelte_extension(root.path(), "110.3.1", "0.18.4");
+    let extension_root = vscode_svelte_extension_root(&executable).unwrap();
+
+    support::write(
+        extension_root.join("package.json"),
+        br#"{"name":"svelte-vscode","publisher":"other","version":"110.3.1"}"#,
+    )
+    .unwrap();
+    assert!(validate_vscode_svelte_extension(&executable, ">=0.18.4, <0.19.0").is_err());
+
+    write_svelte_extension(root.path(), "110.3.1", "0.18.4");
+    support::write(
+        extension_root.join("node_modules/svelte-language-server/package.json"),
+        br#"{"name":"svelte-language-server","version":"0.18.3"}"#,
+    )
+    .unwrap();
+    assert!(validate_vscode_svelte_extension(&executable, ">=0.18.4, <0.19.0").is_err());
+
+    write_svelte_extension(root.path(), "110.3.1", "0.18.4");
+    std::fs::remove_file(&executable).unwrap();
+    assert!(validate_vscode_svelte_extension(&executable, ">=0.18.4, <0.19.0").is_err());
+}
+
+#[test]
 fn vscode_fsharp_candidates_and_manifest_are_official_and_bounded() {
     let root = support::tempdir().unwrap();
     let older = write_fsharp_extension(&root.path().join(".vscode/extensions"), "7.30.0", "net8.0");
@@ -1472,6 +1565,39 @@ async fn pyright_reuses_the_official_vscode_server() {
 }
 
 #[tokio::test]
+async fn svelte_reuses_the_official_vscode_server() {
+    let root = support::tempdir().unwrap();
+    let executable =
+        write_svelte_extension(&root.path().join(".vscode/extensions"), "110.3.1", "0.18.4");
+    let mut resolver = test_resolver(root.path());
+    resolver.config.auto_install = false;
+    resolver.vscode_user_home = Some(root.path().to_path_buf());
+    let server = Registry::builtin()
+        .unwrap()
+        .server(SVELTE_SERVER_ID)
+        .unwrap()
+        .clone();
+
+    let resolution = resolver.resolve_vscode_svelte(&server).await.unwrap();
+    assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+    assert_eq!(resolution.path, executable);
+    assert_eq!(
+        resolution.version_output,
+        "svelte-language-server 0.18.4; svelte.svelte-vscode 110.3.1"
+    );
+    assert_eq!(
+        resolution.npm_modules_root,
+        Some(
+            std::fs::canonicalize(
+                root.path()
+                    .join(".vscode/extensions/svelte.svelte-vscode-110.3.1/node_modules",)
+            )
+            .unwrap()
+        )
+    );
+}
+
+#[tokio::test]
 async fn github_zip_resolution_prefers_vscode_then_cache() {
     let root = support::tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -2061,6 +2187,27 @@ fn pyright_manifest_identity_changes_the_resolution_fingerprint() {
     support::write(
         manifest,
         br#"{"name":"pyright","publisher":"ms-pyright","version":"1.1.410"}"#,
+    )
+    .unwrap();
+    let second = resolution_fingerprint(server, &workspace, Some(&executable));
+    assert_ne!(first, second);
+}
+
+#[test]
+fn svelte_manifest_identity_changes_the_resolution_fingerprint() {
+    let directory = support::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    support::create_dir(&workspace).unwrap();
+    let executable = write_svelte_extension(directory.path(), "110.3.1", "0.18.4");
+    let registry = Registry::builtin().unwrap();
+    let server = registry.server(SVELTE_SERVER_ID).unwrap();
+    let manifest = vscode_svelte_extension_root(&executable)
+        .unwrap()
+        .join("node_modules/svelte-language-server/package.json");
+    let first = resolution_fingerprint(server, &workspace, Some(&executable));
+    support::write(
+        manifest,
+        br#"{"name":"svelte-language-server","version":"0.18.4"}"#,
     )
     .unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&executable));

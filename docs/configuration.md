@@ -55,6 +55,13 @@ Use a custom Swift toolchain's SourceKit-LSP:
 executable = "C:/Swift/usr/bin/sourcekit-lsp.exe"
 ```
 
+Use a custom Svelte Language Server entry:
+
+```toml
+[lsp.svelte]
+executable = "C:/tools/svelte-language-server/bin/server.js"
+```
+
 Disable a built-in server:
 
 ```toml
@@ -377,6 +384,7 @@ pyright
 ruby-lsp
 rust
 sourcekit-lsp
+svelte
 typescript
 yaml-ls
 ```

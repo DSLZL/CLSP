@@ -82,6 +82,7 @@ clsp setup --workspace .
 | Ruby | Ruby LSP | 复用本地/gem 服务端或 `gem install` |
 | Rust | rust-analyzer | `rustup component add` |
 | Swift / Objective-C / Objective-C++ | SourceKit-LSP | 手动安装 Swift 工具链或 macOS Xcode |
+| Svelte | Svelte Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
 | YAML | YAML Language Server | npm 兼容包管理器 |
 
@@ -124,6 +125,8 @@ Python 支持 `.py` 与 `.pyi` 文件，根目录取最近的 OpenCode 兼容 Py
 Ruby 支持 `.rb`、`.rake`、`.gemspec` 与 `.ru` 文件，根目录取最近的 `Gemfile`，找不到时回退到 workspace 根。本机需要 Ruby 3.0 或更新版本；CLSP 依次复用兼容的项目本地、显式路径或 `PATH` 中的 `ruby-lsp`，启用自动安装时只执行固定命令 `gem install ruby-lsp --version 0.26.10 --no-document`。官方 `Shopify.ruby-lsp` 扩展是独立的 VS Code 外部客户端，CLSP 不扫描其私有 bundle，也不管理 `.ruby-lsp` 内容。Bundler 和 Gemfile 配置可能执行项目代码，因此只应在可信项目中使用。
 
 Oxlint 支持 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.mts`、`.cts`、`.vue`、`.astro` 与 `.svelte`。CLSP 复用所选项目 `node_modules/.bin`、`PATH` 或 `[lsp.oxlint].executable` 中兼容的 Oxlint 1.x，并启动 `oxlint --lsp`；不会安装 npm 包或官方 `oxc.oxc-vscode` 扩展。该扩展会独立使用同一个项目工具，并可通过现有 IDE Bridge 提供 Problems。Oxlint 配置和 JavaScript 插件可能执行项目代码，因此只应在可信项目中使用。
+
+Svelte 支持 `.svelte` 文件，根目录取最近的 `package-lock.json`、`bun.lockb`、`bun.lock`、`pnpm-lock.yaml` 或 `yarn.lock`，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `svelte.svelte-vscode` Stable/Insiders 扩展内置且经过 manifest 校验的 `svelte-language-server`，以及兼容的全局包；启用自动安装时固定安装 `svelte-language-server@0.18.4` 和 `typescript@5.9.2`。JavaScript 入口需要 Node.js 18+。Svelte 扩展会独立提供 VS Code Problems，CLSP 不管理扩展私有配置。
 
 SourceKit-LSP 支持 `.swift`、`.objc` 与 `.objcpp`，根目录取最近的 `Package.swift`、Xcode 项目/工作区目录或编译数据库，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中的 `sourcekit-lsp`，macOS 还可通过 `xcrun` 查找；启动探测使用短时 `--help`，并校验 Swift 5.9+。这三个扩展会分别发送协议语言 ID `swift`、`objective-c` 与 `objective-cpp`。CLSP 不安装 Swift、Xcode 或官方 `swiftlang.swift-vscode` 扩展。SwiftPM/Xcode 首次索引可能需要数分钟，也可能执行可信项目的构建配置，因此只应在可信 workspace 中启动。
 

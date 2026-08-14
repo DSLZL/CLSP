@@ -52,6 +52,7 @@ const JDTLS_SERVER_ID: &str = "jdtls";
 const JULIALS_SERVER_ID: &str = "julials";
 const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
 const SOURCEKIT_LSP_SERVER_ID: &str = "sourcekit-lsp";
+const SVELTE_SERVER_ID: &str = "svelte";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -377,6 +378,7 @@ impl LspClient {
                 INTELEPHENSE_SERVER_ID => "PHP Intelephense",
                 PRISMA_SERVER_ID => "Prisma Language Server",
                 PYRIGHT_SERVER_ID => "Pyright",
+                SVELTE_SERVER_ID => "Svelte Language Server",
                 _ => unreachable!(),
             };
             let node = which::which("node")
@@ -1321,7 +1323,7 @@ fn uses_node_host(server_id: &str, executable: &Path) -> bool {
     server_id == ESLINT_SERVER_ID
         || (matches!(
             server_id,
-            INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID | PYRIGHT_SERVER_ID
+            INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID | PYRIGHT_SERVER_ID | SVELTE_SERVER_ID
         ) && executable
             .extension()
             .and_then(|extension| extension.to_str())

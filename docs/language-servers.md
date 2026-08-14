@@ -23,6 +23,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `pyright` | Python | `pyright-langserver --stdio` | `>=1.1.300, <2.0.0` | official VS Code extension or `pyright@1.1.411` |
 | `ruby-lsp` | Ruby | `ruby-lsp` | `>=0.26.10, <0.27.0` | `gem install ruby-lsp --version 0.26.10 --no-document` |
 | `sourcekit-lsp` | Swift / Objective-C / Objective-C++ | `sourcekit-lsp` | `>=5.9.0` (Swift toolchain) | manual Swift toolchain / Xcode |
+| `svelte` | Svelte | `svelteserver --stdio` | `>=0.18.4, <0.19.0` | official `svelte.svelte-vscode` extension or `svelte-language-server@0.18.4` + `typescript@5.9.2` |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
@@ -58,6 +59,7 @@ Some server types then have an additional reuse path before installation:
 - Intelephense: `node_modules/intelephense/lib/intelephense.js` from the official `bmewburn.vscode-intelephense-client` Stable/Insiders extension, then the selected package manager's global installation
 - Prisma: `dist/language-server/bin.js` plus its schema WASM from the official `Prisma.prisma` Stable/Insiders extension, then the selected package manager's global installation
 - Pyright: `dist/server.js` from the official `ms-pyright.pyright` Stable/Insiders extension, then the selected package manager's global installation
+- Svelte: `node_modules/svelte-language-server/bin/server.js` from the official `svelte.svelte-vscode` Stable/Insiders extension after strict manifest/path validation, then the selected package manager's global installation
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
 - JuliaLS: the official `julialang.language-julia` Stable/Insiders extension after local Julia environments; its manifest, matching/fallback environment, LanguageServer package, and Julia 1.11+ runtime are verified
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
@@ -267,6 +269,19 @@ Pyright requires Node.js 14 or newer. CLSP first checks the selected project's `
 If no compatible existing source is found, CLSP checks the selected package manager's global root and, when automatic installation is enabled, installs the exact `pyright@1.1.411` package. CLSP starts `pyright-langserver --stdio` and sends no extension-private settings or Pyright-specific initialization options.
 
 The nearest `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `Pipfile`, or `pyrightconfig.json` selects the root, otherwise the workspace root is used. The official extension disables its own editor client when Pylance is installed, but CLSP's server process and `lsp_diagnostics` remain independent from VS Code Problems.
+
+### Svelte
+
+Svelte Language Server requires Node.js 18 or newer. CLSP starts `svelteserver --stdio` for `.svelte` files and sends no extension-private initialization options. It first checks project-local, explicit, and `PATH` candidates, then validates the embedded `node_modules/svelte-language-server/bin/server.js` and both manifests in the official `svelte.svelte-vscode` Stable/Insiders extension. If those sources are unavailable, CLSP checks the selected package manager's global root and, when automatic installation is enabled, installs the exact `svelte-language-server@0.18.4` package with `typescript@5.9.2`.
+
+The nearest `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, or `yarn.lock` selects the root, otherwise the workspace root is used. Configure a non-standard entry directly:
+
+```toml
+[lsp.svelte]
+executable = "C:/tools/svelte-language-server/bin/server.js"
+```
+
+The official Svelte extension independently publishes VS Code Problems; CLSP does not install or manage the extension or its private settings. Svelte configuration and preprocessors can execute project code, so use the server only in trusted workspaces.
 
 ### Ruby
 

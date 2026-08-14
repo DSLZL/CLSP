@@ -286,6 +286,21 @@ fn pyright_has_no_custom_initialization_and_hosts_only_js_entries_with_node() {
 }
 
 #[test]
+fn svelte_has_no_custom_initialization_and_hosts_js_entries_with_node() {
+    let directory = support::tempdir().unwrap();
+    let root = directory.path();
+    let script = root.join("server.js");
+    let shim = root.join("svelteserver.cmd");
+    assert!(
+        server_initialization_options(SVELTE_SERVER_ID, root, root, &script, None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(uses_node_host(SVELTE_SERVER_ID, &script));
+    assert!(!uses_node_host(SVELTE_SERVER_ID, &shim));
+}
+
+#[test]
 fn fsharp_initialization_and_dll_host_are_explicit() {
     let directory = support::tempdir().unwrap();
     let root = directory.path();

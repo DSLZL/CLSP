@@ -311,6 +311,18 @@ version_args = ["--help"]
 install = { kind = "manual", version = "5.9.0", hint = "Install Swift 5.9+ (or Xcode on macOS), then ensure sourcekit-lsp and swift are on PATH or set [lsp.sourcekit-lsp].executable; CLSP does not install the Swift toolchain" }
 
 [[server]]
+id = "svelte"
+display_name = "Svelte Language Server"
+language_id = "svelte"
+version_req = ">=0.18.4, <0.19.0"
+extensions = ["svelte"]
+markers = ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]
+command = "svelteserver"
+args = ["--stdio"]
+version_args = []
+install = { kind = "npm", version = "0.18.4", package = "svelte-language-server", companions = ["typescript@5.9.2"] }
+
+[[server]]
 id = "yaml-ls"
 display_name = "YAML Language Server"
 language_id = "yaml"

@@ -66,6 +66,8 @@ const KOTLIN_METADATA_FILE_LIMIT: u64 = 1024 * 1024;
 const LUA_LS_SERVER_ID: &str = "lua-ls";
 const LUA_EXTENSION_PREFIX: &str = "sumneko.lua-";
 const LUA_EXTENSION_FILE_LIMIT: u64 = 1024 * 1024;
+const SVELTE_SERVER_ID: &str = "svelte";
+const SVELTE_EXTENSION_PREFIX: &str = "svelte.svelte-vscode-";
 const SOURCEKIT_LSP_SERVER_ID: &str = "sourcekit-lsp";
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -134,11 +136,16 @@ impl ServerResolver {
         }
         if matches!(
             server.id.as_str(),
-            ESLINT_SERVER_ID | INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID | PYRIGHT_SERVER_ID
+            ESLINT_SERVER_ID
+                | INTELEPHENSE_SERVER_ID
+                | PRISMA_SERVER_ID
+                | PYRIGHT_SERVER_ID
+                | SVELTE_SERVER_ID
         ) {
             let requirement = match server.id.as_str() {
                 PRISMA_SERVER_ID => Some(">=20.0.0"),
                 PYRIGHT_SERVER_ID => Some(">=14.0.0"),
+                SVELTE_SERVER_ID => Some(">=18.0.0"),
                 _ => None,
             };
             self.require_program("node", requirement)
@@ -246,6 +253,7 @@ impl ServerResolver {
             JULIALS_SERVER_ID => self.resolve_vscode_julials(server, workspace).await,
             KOTLIN_LS_SERVER_ID => self.resolve_vscode_kotlin(server, workspace).await,
             LUA_LS_SERVER_ID => self.resolve_vscode_lua(server, workspace).await,
+            SVELTE_SERVER_ID => self.resolve_vscode_svelte(server).await,
             _ => None,
         };
         if vscode_resolution.is_some() {
@@ -585,6 +593,23 @@ impl ServerResolver {
             if validate_lua_server_version(&resolution.version_output, &extension_version).is_ok() {
                 return Some(resolution);
             }
+        }
+        None
+    }
+
+    async fn resolve_vscode_svelte(&self, server: &ServerDefinition) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_svelte_candidates_from(home) {
+            let Ok(probe) = validate_vscode_svelte_extension(&candidate, &server.version_req)
+            else {
+                continue;
+            };
+            return Some(ResolvedExecutable {
+                path: candidate,
+                version_output: probe.version_output,
+                source: ExecutableSource::VsCodeExtension,
+                npm_modules_root: Some(probe.modules_root),
+            });
         }
         None
     }
@@ -1763,6 +1788,14 @@ fn vscode_lua_candidates_from(user_home: &Path) -> Vec<PathBuf> {
         "server/bin/lua-language-server"
     };
     vscode_extension_candidates_from(user_home, LUA_EXTENSION_PREFIX, Path::new(launcher))
+}
+
+fn vscode_svelte_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    vscode_extension_candidates_from(
+        user_home,
+        SVELTE_EXTENSION_PREFIX,
+        Path::new("node_modules/svelte-language-server/bin/server.js"),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -3066,6 +3099,117 @@ fn validate_vscode_intelephense_extension(
     })
 }
 
+fn vscode_svelte_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let name_is = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    if !executable.is_file() || !name_is(executable, "server.js") {
+        return Err(server_error(
+            "Svelte candidate is not the official svelte-language-server/bin/server.js entry",
+        ));
+    }
+    let bin = executable
+        .parent()
+        .filter(|path| name_is(path, "bin"))
+        .ok_or_else(|| server_error("Svelte entry is outside svelte-language-server/bin"))?;
+    let package = bin
+        .parent()
+        .filter(|path| name_is(path, "svelte-language-server"))
+        .ok_or_else(|| server_error("Svelte entry is outside svelte-language-server/bin"))?;
+    let node_modules = package
+        .parent()
+        .filter(|path| name_is(path, "node_modules"))
+        .ok_or_else(|| server_error("Svelte entry is outside node_modules"))?;
+    let extension_root = node_modules
+        .parent()
+        .ok_or_else(|| server_error("Svelte entry has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let expected = std::fs::canonicalize(
+        extension_root.join("node_modules/svelte-language-server/bin/server.js"),
+    )
+    .map_err(server_error)?;
+    if executable != expected || !executable.starts_with(&extension_root) {
+        return Err(server_error("Svelte entry escapes its extension root"));
+    }
+    Ok(extension_root)
+}
+
+fn validate_vscode_svelte_extension(
+    executable: &Path,
+    requirement: &str,
+) -> Result<NpmProbe, ClspError> {
+    let extension_root = vscode_svelte_extension_root(executable)?;
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Svelte extension root has no name"))?;
+    let directory_version = directory_name
+        .get(SVELTE_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..SVELTE_EXTENSION_PREFIX.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(SVELTE_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Svelte is outside an official extension root"))?;
+
+    let extension_manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    let server_manifest = std::fs::canonicalize(
+        extension_root.join("node_modules/svelte-language-server/package.json"),
+    )
+    .map_err(server_error)?;
+    for manifest in [&extension_manifest, &server_manifest] {
+        if !manifest.starts_with(&extension_root) || !manifest.is_file() {
+            return Err(server_error("Svelte manifest escapes its extension root"));
+        }
+    }
+
+    let extension: serde_json::Value = serde_json::from_slice(&read_bounded_manifest(
+        &extension_manifest,
+        "Svelte extension manifest",
+    )?)
+    .map_err(server_error)?;
+    if extension.get("name").and_then(serde_json::Value::as_str) != Some("svelte-vscode")
+        || extension
+            .get("publisher")
+            .and_then(serde_json::Value::as_str)
+            != Some("svelte")
+    {
+        return Err(server_error(
+            "Svelte server is not from the official svelte.svelte-vscode extension",
+        ));
+    }
+    let extension_version = extension
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Svelte extension manifest version is invalid"))?;
+    if extension_version != directory_version {
+        return Err(server_error(
+            "Svelte extension manifest version does not match its directory",
+        ));
+    }
+
+    let version_output = parse_npm_manifest_probe(
+        &read_bounded_manifest(&server_manifest, "Svelte server manifest")?,
+        "svelte-language-server",
+        requirement,
+    )?;
+    let modules_root = server_manifest
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| server_error("Svelte server has no node_modules root"))?
+        .to_path_buf();
+    Ok(NpmProbe {
+        version_output: format!("{version_output}; svelte.svelte-vscode {extension_version}"),
+        modules_root,
+    })
+}
+
 fn vscode_prisma_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
     let name_is = |path: &Path, expected: &str| {
         path.file_name()
@@ -3615,6 +3759,7 @@ pub(crate) fn resolution_fingerprint(
             | JULIALS_SERVER_ID
             | KOTLIN_LS_SERVER_ID
             | LUA_LS_SERVER_ID
+            | SVELTE_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -3640,6 +3785,7 @@ pub(crate) fn resolution_fingerprint(
                 }
                 KOTLIN_LS_SERVER_ID => candidates.extend(vscode_kotlin_candidates_from(&home)),
                 LUA_LS_SERVER_ID => candidates.extend(vscode_lua_candidates_from(&home)),
+                SVELTE_SERVER_ID => candidates.extend(vscode_svelte_candidates_from(&home)),
                 _ => {}
             }
         }
@@ -3790,6 +3936,15 @@ pub(crate) fn resolution_fingerprint(
             hash_executable_candidate(&mut digest, layout.script);
             hash_executable_candidate(&mut digest, layout.meta);
             hash_executable_candidate(&mut digest, layout.locale);
+        }
+        if server.id == SVELTE_SERVER_ID
+            && let Ok(extension_root) = vscode_svelte_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+            hash_executable_candidate(
+                &mut digest,
+                extension_root.join("node_modules/svelte-language-server/package.json"),
+            );
         }
     }
     hex::encode(digest.finalize())

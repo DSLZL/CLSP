@@ -862,6 +862,40 @@ fn oxlint_uses_the_nearest_opencode_marker_and_coexists_with_astro() {
 }
 
 #[test]
+fn svelte_uses_the_nearest_lockfile_and_coexists_with_oxlint() {
+    let root = support::tempdir().unwrap();
+    let workspace_root = root.path().join("workspace");
+    let project = workspace_root.join("apps/demo");
+    let source_dir = project.join("src");
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(workspace_root.join("package-lock.json"), "{}").unwrap();
+    support::write(project.join("bun.lock"), "").unwrap();
+    let file = source_dir.join("App.svelte");
+    support::write(&file, "<script>let count = 0;</script>").unwrap();
+    let workspace = Workspace::open(&workspace_root).unwrap();
+    let registry = Registry::builtin().unwrap();
+    let svelte = registry.server("svelte").unwrap();
+    let oxlint = registry.server("oxlint").unwrap();
+
+    assert_eq!(
+        workspace
+            .matching_servers(&file, "svelte", &registry)
+            .into_iter()
+            .map(|server| server.id.as_str())
+            .collect::<Vec<_>>(),
+        ["oxlint", "svelte"]
+    );
+    assert_eq!(workspace.root_for_file(&file, svelte), project);
+    assert_eq!(workspace.root_for_file(&file, oxlint), project);
+
+    fs::remove_file(project.join("bun.lock")).unwrap();
+    assert_eq!(
+        fs::canonicalize(workspace.root_for_file(&file, svelte)).unwrap(),
+        fs::canonicalize(workspace.root()).unwrap()
+    );
+}
+
+#[test]
 fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
     let root = support::tempdir().unwrap();
     let deno_root = root.path().join("deno-app");

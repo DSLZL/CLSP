@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 27] = [
+const APPROVED_IDS: [&str; 28] = [
     "astro",
     "bash",
     "csharp",
@@ -31,6 +31,7 @@ const APPROVED_IDS: [&str; 27] = [
     "ruby-lsp",
     "rust",
     "sourcekit-lsp",
+    "svelte",
     "typescript",
     "yaml-ls",
 ];

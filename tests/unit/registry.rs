@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn builtin_is_the_closed_twenty_seven_server_set() {
+fn builtin_is_the_closed_twenty_eight_server_set() {
     let registry = Registry::builtin().unwrap();
-    assert_eq!(registry.server.len(), 27);
+    assert_eq!(registry.server.len(), 28);
     assert_eq!(
         registry
             .server
@@ -34,6 +34,13 @@ fn matches_only_declared_extensions() {
             .map(|server| server.id.as_str())
             .collect::<Vec<_>>(),
         vec!["bash"]
+    );
+    assert_eq!(
+        registry
+            .matching_extension(".SVELTE")
+            .map(|server| server.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["oxlint", "svelte"]
     );
     for extension in [".swift", ".objc", ".objcpp"] {
         assert_eq!(
@@ -192,6 +199,40 @@ fn bash_uses_the_locked_official_language_server() {
     assert_eq!(version, "5.6.0");
     assert_eq!(package, "bash-language-server");
     assert!(companions.is_empty());
+}
+
+#[test]
+fn svelte_uses_the_locked_opencode_contract() {
+    let registry = Registry::builtin().unwrap();
+    let svelte = registry.server("svelte").unwrap();
+    assert_eq!(svelte.display_name, "Svelte Language Server");
+    assert_eq!(svelte.language_id, "svelte");
+    assert_eq!(svelte.version_req, ">=0.18.4, <0.19.0");
+    assert_eq!(svelte.extensions, ["svelte"]);
+    assert_eq!(
+        svelte.markers,
+        [
+            "package-lock.json",
+            "bun.lockb",
+            "bun.lock",
+            "pnpm-lock.yaml",
+            "yarn.lock"
+        ]
+    );
+    assert_eq!(svelte.command, "svelteserver");
+    assert_eq!(svelte.args, ["--stdio"]);
+    assert!(svelte.version_args.is_empty());
+    let InstallRecipe::Npm {
+        version,
+        package,
+        companions,
+    } = &svelte.install
+    else {
+        panic!("Svelte must use the npm recipe");
+    };
+    assert_eq!(version, "0.18.4");
+    assert_eq!(package, "svelte-language-server");
+    assert_eq!(companions, &vec!["typescript@5.9.2".to_owned()]);
 }
 
 #[test]

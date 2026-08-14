@@ -202,6 +202,28 @@ The official `ms-pyright.pyright` extension disables its own editor client when 
 
 In that setup, `ide_diagnostics` may report Problems published by Pylance while `lsp_diagnostics` reports CLSP-managed Pyright diagnostics. To test the open-source Pyright extension itself, use a VS Code profile or isolated extension directory without Pylance.
 
+## Svelte Language Server cannot be resolved
+
+Svelte Language Server requires Node.js 18 or newer. Check the runtime and supported existing sources:
+
+```powershell
+node --version
+Get-ChildItem node_modules/.bin/svelteserver*
+(Get-Content node_modules/svelte-language-server/package.json | ConvertFrom-Json).version
+code --list-extensions --show-versions | Select-String svelte.svelte-vscode
+```
+
+CLSP accepts `svelte-language-server >=0.18.4, <0.19.0`. It checks project, explicit, and `PATH` candidates first, then the verified `node_modules/svelte-language-server/bin/server.js` inside the official Stable/Insiders `svelte.svelte-vscode` extension, then a compatible package-manager global root. With automatic installation enabled, it installs `svelte-language-server@0.18.4` and `typescript@5.9.2` using the first available manager in `bun > pnpm > npm` order.
+
+For an official extension outside the standard directories, configure its server entry directly:
+
+```toml
+[lsp.svelte]
+executable = "C:/tools/svelte.svelte-vscode/node_modules/svelte-language-server/bin/server.js"
+```
+
+The nearest supported package-manager lockfile selects the Svelte root; otherwise CLSP uses the workspace root. The extension and CLSP publish diagnostics independently, and Svelte configuration/preprocessors may execute project code, so use only trusted workspaces.
+
 ## Ruby LSP cannot be resolved or starts slowly
 
 CLSP requires Ruby 3.0 or newer and RubyGems. Check the runtime and server visible to the current process:
