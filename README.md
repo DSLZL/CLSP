@@ -89,7 +89,7 @@ After setup:
 | Typst | Tinymist | Reuse official VS Code extension, otherwise verified CLSP download |
 | TypeScript / JavaScript | TypeScript Language Server | npm wrapper plus project, VS Code, or manager TypeScript SDK |
 | Vue | Vue Language Server | Reuse official VS Code extension or npm-compatible manager |
-| YAML | YAML Language Server | npm-compatible manager |
+| YAML | YAML Language Server | Reuse official VS Code extension or npm-compatible manager |
 
 CLSP follows a simple rule:
 
@@ -136,6 +136,8 @@ Oxlint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.ct
 Svelte support covers `.svelte` files below the nearest `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, or `yarn.lock`, with the workspace root as fallback. CLSP first reuses a compatible project, explicit, or `PATH` server, then the verified `svelte-language-server` bundled in the official `svelte.svelte-vscode` Stable/Insiders extension, then a compatible global package; automatic installation pins `svelte-language-server@0.18.4` with `typescript@5.9.2`. Node.js 18+ is required for the JavaScript entry. The Svelte extension independently publishes VS Code Problems; CLSP does not manage the extension or its private settings.
 
 Vue support covers `.vue` files below the nearest npm, Bun, pnpm, or Yarn lockfile, with the workspace root as fallback. CLSP first reuses a compatible project, explicit, or `PATH` server, then the verified `dist/language-server.js` bundled in the official `Vue.volar` Stable/Insiders extension, then a compatible global package; automatic installation pins `@vue/language-server@3.3.9` with `typescript@5.9.2`. CLSP passes a verified TypeScript SDK through `--tsdk` and sends no private initialization options. It acknowledges Vue's standalone project-info notification with the selected root config, but does not reproduce the official extension's full private TypeScript bridge; template diagnostics and document symbols work independently, while bridge-dependent semantic features remain with the official extension. Vue, ESLint, and Oxlint may run together by design.
+
+YAML support covers `.yaml` and `.yml` below the nearest npm, Bun, pnpm, or Yarn lockfile, with the workspace root as fallback. CLSP first reuses a compatible project, explicit, or `PATH` server, then the verified `dist/languageserver.js` bundle from the official `redhat.vscode-yaml` Stable/Insiders extension, then a compatible global package; automatic installation pins `yaml-language-server@1.24.0`. For the extension bundle, CLSP passes only its verified localization directory required by standalone startup. The bundle is identified by its official extension version because it does not expose a reliable standalone server version probe. Node.js is required for the bundled JavaScript entry.
 
 Terraform support covers `.tf` and `.tfvars` files below the nearest `.terraform.lock.hcl`, `terraform.tfstate`, or directory containing `.tf` files, with the workspace root as fallback. CLSP reuses a compatible project, explicit, or `PATH` `terraform-ls`, then the verified server bundled in the official `HashiCorp.terraform` Stable/Insiders extension, then its managed cache; on Windows x86-64, automatic installation can download the pinned, checksum-verified `terraform-ls` 0.39.0 archive. CLSP does not install Terraform CLI, providers, modules, or the VS Code extension. `.tfvars` uses the protocol language ID `terraform-vars`.
 

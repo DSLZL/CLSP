@@ -38,7 +38,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `ocaml-lsp` | OCaml | `ocamllsp` | `>=1.4.1, <2.0.0` | manual `ocaml-lsp-server` opam package |
 | `oxlint` | JavaScript / TypeScript / Vue / Astro / Svelte | `oxlint --lsp` | `>=1.78.0, <2.0.0` | project-local package or manual executable |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
-| `yaml-ls` | YAML | `yaml-language-server` | `>=1.14.0, <2.0.0` | `yaml-language-server@1.18.0` |
+| `yaml-ls` | YAML | `yaml-language-server --stdio` | `>=1.14.0, <2.0.0` | official `redhat.vscode-yaml` extension or `yaml-language-server@1.24.0` |
 
 ## Discovery Order
 
@@ -65,6 +65,7 @@ Some server types then have an additional reuse path before installation:
 - Pyright: `dist/server.js` from the official `ms-pyright.pyright` Stable/Insiders extension, then the selected package manager's global installation
 - Svelte: `node_modules/svelte-language-server/bin/server.js` from the official `svelte.svelte-vscode` Stable/Insiders extension after strict manifest/path validation, then the selected package manager's global installation
 - Vue: `dist/language-server.js` from the official `Vue.volar` Stable/Insiders extension after strict manifest/path/runtime-version validation, then the selected package manager's global installation
+- YAML: `dist/languageserver.js` from the official `redhat.vscode-yaml` Stable/Insiders extension after strict manifest/path/extension-version validation, then the selected package manager's global installation
 - Terraform: `bin/terraform-ls[.exe]` from the official `HashiCorp.terraform` Stable/Insiders extension after strict manifest/path/server-version validation, then CLSP's user-level artifact cache
 - Tinymist: `out/tinymist[.exe]` from the official `myriad-dreamin.tinymist` Stable/Insiders extension after strict manifest/path/version validation, then CLSP's user-level artifact cache
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
@@ -310,6 +311,12 @@ CLSP starts `vue-language-server --tsdk=<verified-typescript-lib> --stdio` for `
 The nearest `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, or `yarn.lock` selects the root, otherwise CLSP uses the workspace root. A verified TypeScript SDK is mandatory: the nearest project SDK wins; official-extension reuse can use the SDK located through the Stable/Insiders VS Code CLI; npm candidates use their package-manager modules root. CLSP validates `typescript/lib/tsserver.js` before spawning and normalizes Windows paths at the Node boundary.
 
 Vue 3.3.x emits a nested `tsserver/request` even in standalone mode. CLSP answers only `_vue:projectInfo` with the selected root's existing `tsconfig.json` or `jsconfig.json` (falling back to that root's `tsconfig.json` path), returns `null` for other well-formed private commands, and ignores malformed notifications. This bounded acknowledgement enables template diagnostics and document symbols without forwarding to a TypeScript server. The official extension still owns its full private bridge and bridge-dependent semantic features; Vue, ESLint, and Oxlint may all match the same `.vue` file, which is expected.
+
+### YAML
+
+CLSP starts `yaml-language-server --stdio` for `.yaml` and `.yml` files. It first checks project-local, explicit, and `PATH` candidates, then validates the exact `dist/languageserver.js` entry, localization bundle, `redhat/vscode-yaml` manifest identity, extension directory containment, and matching official 1.x extension version in the Stable/Insiders extension. For that bundle only, CLSP passes its verified `dist/l10n` path required by standalone startup; it sends no other extension-private initialization options. If those sources are unavailable, CLSP checks the selected package manager's global root and, when automatic installation is enabled, installs exact `yaml-language-server@1.24.0` through Bun, pnpm, or npm.
+
+The extension bundle has no reliable standalone server-version probe, so CLSP reports the verified `redhat.vscode-yaml` extension version and labels it as a bundled YAML server instead of claiming that version for `yaml-language-server`. The nearest `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, or `yarn.lock` selects the root; otherwise CLSP uses the workspace root. Node.js is required for the extension's JavaScript entry.
 
 ### Terraform
 

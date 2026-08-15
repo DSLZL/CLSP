@@ -234,6 +234,26 @@ fn write_vue_extension(
     server
 }
 
+fn write_yaml_extension(extension_root: &Path, version: &str) -> PathBuf {
+    let root = extension_root.join(format!("{YAML_EXTENSION_PREFIX}{version}"));
+    let server = root.join("dist/languageserver.js");
+    support::create_dir_all(server.parent().unwrap()).unwrap();
+    support::write(&server, b"server").unwrap();
+    support::create_dir_all(root.join("dist/l10n")).unwrap();
+    support::write(root.join("dist/l10n/bundle.l10n.json"), b"{}").unwrap();
+    support::write(
+        root.join("package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "vscode-yaml",
+            "publisher": "redhat",
+            "version": version,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    server
+}
+
 fn write_vscode_typescript_extension(
     vscode_root: &Path,
     extension_version: &str,
@@ -1075,6 +1095,35 @@ fn vscode_vue_candidates_are_newest_first_and_official() {
         Version::new(3, 3, 9)
     );
     assert!(validate_vscode_vue_extension(&older, ">=3.3.9, <4.0.0").is_err());
+}
+
+#[test]
+fn vscode_yaml_candidates_are_newest_first_and_official() {
+    let root = support::tempdir().unwrap();
+    let older = write_yaml_extension(&root.path().join(".vscode/extensions"), "1.24.0");
+    let newer = write_yaml_extension(&root.path().join(".vscode-insiders/extensions"), "1.25.0");
+    let fake = root
+        .path()
+        .join(".vscode/extensions/not-official.vscode-yaml-9.9.9/dist/languageserver.js");
+    support::create_dir_all(fake.parent().unwrap()).unwrap();
+    support::write(fake, b"server").unwrap();
+
+    assert_eq!(
+        vscode_yaml_candidates_from(root.path()),
+        [newer.clone(), older]
+    );
+    assert_eq!(
+        validate_vscode_yaml_extension(&newer).unwrap(),
+        Version::new(1, 25, 0)
+    );
+    assert_eq!(
+        yaml_extension_l10n(&newer).unwrap(),
+        std::fs::canonicalize(
+            root.path()
+                .join(".vscode-insiders/extensions/redhat.vscode-yaml-1.25.0/dist/l10n")
+        )
+        .unwrap()
+    );
 }
 
 #[test]
@@ -1984,6 +2033,53 @@ async fn vue_rejects_an_extension_whose_server_version_differs() {
     );
 }
 
+#[test]
+fn yaml_extension_probe_requires_official_matching_manifest() {
+    let root = support::tempdir().unwrap();
+    let executable = write_yaml_extension(root.path(), "1.25.0");
+    let extension_root = vscode_yaml_extension_root(&executable).unwrap();
+
+    support::write(
+        extension_root.join("package.json"),
+        br#"{"name":"vscode-yaml","publisher":"other","version":"1.25.0"}"#,
+    )
+    .unwrap();
+    assert!(validate_vscode_yaml_extension(&executable).is_err());
+
+    write_yaml_extension(root.path(), "1.25.0");
+    support::write(
+        extension_root.join("package.json"),
+        br#"{"name":"vscode-yaml","publisher":"redhat","version":"1.24.0"}"#,
+    )
+    .unwrap();
+    assert!(validate_vscode_yaml_extension(&executable).is_err());
+
+    write_yaml_extension(root.path(), "1.25.0");
+    std::fs::remove_file(extension_root.join("dist/l10n/bundle.l10n.json")).unwrap();
+    assert!(validate_vscode_yaml_extension(&executable).is_err());
+
+    write_yaml_extension(root.path(), "1.25.0");
+    std::fs::remove_file(&executable).unwrap();
+    assert!(validate_vscode_yaml_extension(&executable).is_err());
+}
+
+#[tokio::test]
+async fn yaml_reuses_the_official_vscode_server() {
+    let root = support::tempdir().unwrap();
+    let executable = write_yaml_extension(&root.path().join(".vscode/extensions"), "1.25.0");
+    let mut resolver = test_resolver(root.path());
+    resolver.config.auto_install = false;
+    resolver.vscode_user_home = Some(root.path().to_path_buf());
+    let resolution = resolver.resolve_vscode_yaml().await.unwrap();
+    assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+    assert_eq!(resolution.path, executable);
+    assert_eq!(
+        resolution.version_output,
+        "redhat.vscode-yaml 1.25.0 (bundled yaml-language-server)"
+    );
+    assert!(resolution.npm_modules_root.is_none());
+}
+
 #[tokio::test]
 async fn github_zip_resolution_prefers_vscode_then_cache() {
     let root = support::tempdir().unwrap();
@@ -2621,6 +2717,38 @@ fn vue_manifest_identity_changes_the_resolution_fingerprint() {
     support::write(
         manifest,
         br#"{"name":"volar","publisher":"Vue","version":"3.3.9","changed":true}"#,
+    )
+    .unwrap();
+    let second = resolution_fingerprint(server, &workspace, Some(&executable));
+    assert_ne!(first, second);
+}
+
+#[test]
+fn yaml_manifest_identity_changes_the_resolution_fingerprint() {
+    let directory = support::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    support::create_dir(&workspace).unwrap();
+    let executable = write_yaml_extension(directory.path(), "1.25.0");
+    let registry = Registry::builtin().unwrap();
+    let server = registry.server(YAML_LS_SERVER_ID).unwrap();
+    let manifest = vscode_yaml_extension_root(&executable)
+        .unwrap()
+        .join("package.json");
+    let first = resolution_fingerprint(server, &workspace, Some(&executable));
+    support::write(
+        manifest,
+        br#"{"name":"vscode-yaml","publisher":"redhat","version":"1.25.0","changed":true}"#,
+    )
+    .unwrap();
+    let second = resolution_fingerprint(server, &workspace, Some(&executable));
+    assert_ne!(first, second);
+
+    let first = second;
+    support::write(
+        vscode_yaml_extension_root(&executable)
+            .unwrap()
+            .join("dist/l10n/bundle.l10n.json"),
+        b"{\"changed\":true}",
     )
     .unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&executable));

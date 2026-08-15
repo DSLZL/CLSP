@@ -26,7 +26,7 @@ use crate::{
     },
     installer::{
         jdtls_extension_layout, jdtls_java_for_launcher, julials_extension_environment,
-        sanitize_command,
+        sanitize_command, yaml_extension_l10n,
     },
     protocol::{
         ClspError, Diagnostic, DiagnosticSeverity, DiagnosticsReport, ErrorCode, Location,
@@ -57,6 +57,7 @@ const SVELTE_SERVER_ID: &str = "svelte";
 const TERRAFORM_SERVER_ID: &str = "terraform";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const VUE_SERVER_ID: &str = "vue";
+const YAML_LS_SERVER_ID: &str = "yaml-ls";
 const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -390,6 +391,7 @@ impl LspClient {
                 PYRIGHT_SERVER_ID => "Pyright",
                 SVELTE_SERVER_ID => "Svelte Language Server",
                 VUE_SERVER_ID => "Vue Language Server",
+                YAML_LS_SERVER_ID => "YAML Language Server",
                 _ => unreachable!(),
             };
             let node = which::which("node")
@@ -1358,6 +1360,10 @@ fn server_initialization_options(
             }
         })));
     }
+    if server_id == YAML_LS_SERVER_ID && uses_node_host(server_id, executable) {
+        let l10n = child_process_path(&yaml_extension_l10n(executable)?);
+        return Ok(Some(json!({"l10nPath": l10n.to_string_lossy()})));
+    }
     if !matches!(server_id, ASTRO_SERVER_ID | TYPESCRIPT_SERVER_ID) {
         return Ok(None);
     }
@@ -1414,6 +1420,7 @@ fn uses_node_host(server_id: &str, executable: &Path) -> bool {
                 | PYRIGHT_SERVER_ID
                 | SVELTE_SERVER_ID
                 | VUE_SERVER_ID
+                | YAML_LS_SERVER_ID
         ) && executable
             .extension()
             .and_then(|extension| extension.to_str())

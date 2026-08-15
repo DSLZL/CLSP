@@ -933,6 +933,46 @@ fn vue_uses_the_nearest_lockfile_and_coexists_with_eslint_and_oxlint() {
 }
 
 #[test]
+fn yaml_uses_the_nearest_lockfile_for_yaml_and_yml() {
+    let root = support::tempdir().unwrap();
+    let workspace_root = root.path().join("workspace");
+    let project = workspace_root.join("apps/demo");
+    let source_dir = project.join("config");
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(workspace_root.join("package-lock.json"), "{}").unwrap();
+    support::write(project.join("bun.lock"), "").unwrap();
+    let files = [
+        source_dir.join("app.yaml"),
+        source_dir.join("values.yml"),
+        source_dir.join("UPPER.YAML"),
+    ];
+    for file in &files {
+        support::write(file, "name: demo").unwrap();
+    }
+    let workspace = Workspace::open(&workspace_root).unwrap();
+    let registry = Registry::builtin().unwrap();
+    let yaml = registry.server("yaml-ls").unwrap();
+
+    for file in &files {
+        assert_eq!(
+            workspace
+                .matching_servers(file, "yaml", &registry)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["yaml-ls"]
+        );
+        assert_eq!(workspace.root_for_file(file, yaml), project);
+    }
+
+    fs::remove_file(project.join("bun.lock")).unwrap();
+    assert_eq!(
+        fs::canonicalize(workspace.root_for_file(&files[0], yaml)).unwrap(),
+        fs::canonicalize(workspace.root()).unwrap()
+    );
+}
+
+#[test]
 fn terraform_files_use_the_nearest_opencode_marker_within_the_workspace() {
     let parent = support::tempdir().unwrap();
     support::write(parent.path().join("outside.tf"), "").unwrap();

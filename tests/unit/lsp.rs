@@ -389,6 +389,33 @@ fn svelte_has_no_custom_initialization_and_hosts_js_entries_with_node() {
 }
 
 #[test]
+fn yaml_adds_l10n_only_for_extension_js_and_hosts_it_with_node() {
+    let directory = support::tempdir().unwrap();
+    let root = directory.path();
+    let script = root.join("redhat.vscode-yaml-1.24.0/dist/languageserver.js");
+    let shim = root.join("yaml-language-server.cmd");
+    support::create_dir_all(script.parent().unwrap().join("l10n")).unwrap();
+    support::write(&script, b"server").unwrap();
+    support::write(
+        root.join("redhat.vscode-yaml-1.24.0/dist/l10n/bundle.l10n.json"),
+        b"{}",
+    )
+    .unwrap();
+    let l10n = std::fs::canonicalize(root.join("redhat.vscode-yaml-1.24.0/dist/l10n")).unwrap();
+    assert_eq!(
+        server_initialization_options(YAML_LS_SERVER_ID, root, root, &script, None).unwrap(),
+        Some(json!({"l10nPath": child_process_path(&l10n).to_string_lossy()}))
+    );
+    assert!(
+        server_initialization_options(YAML_LS_SERVER_ID, root, root, &shim, None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(uses_node_host(YAML_LS_SERVER_ID, &script));
+    assert!(!uses_node_host(YAML_LS_SERVER_ID, &shim));
+}
+
+#[test]
 fn vue_uses_a_verified_typescript_sdk_runtime_arg_and_no_custom_initialization() {
     let directory = support::tempdir().unwrap();
     let workspace = directory.path().join("workspace");

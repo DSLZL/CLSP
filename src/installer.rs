@@ -77,6 +77,8 @@ const TYPESCRIPT_SERVER_ID: &str = "typescript";
 const TYPESCRIPT_EXTENSION_ID: &str = "vscode.typescript-language-features";
 const VUE_SERVER_ID: &str = "vue";
 const VUE_EXTENSION_PREFIX: &str = "vue.volar-";
+const YAML_LS_SERVER_ID: &str = "yaml-ls";
+const YAML_EXTENSION_PREFIX: &str = "redhat.vscode-yaml-";
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +154,7 @@ impl ServerResolver {
                 | PYRIGHT_SERVER_ID
                 | SVELTE_SERVER_ID
                 | VUE_SERVER_ID
+                | YAML_LS_SERVER_ID
         ) {
             let requirement = match server.id.as_str() {
                 PRISMA_SERVER_ID => Some(">=20.0.0"),
@@ -295,6 +298,7 @@ impl ServerResolver {
             TERRAFORM_SERVER_ID => self.resolve_vscode_terraform(server, workspace).await,
             TINYMIST_SERVER_ID => self.resolve_vscode_tinymist(server, workspace).await,
             VUE_SERVER_ID => self.resolve_vscode_vue(server, workspace).await,
+            YAML_LS_SERVER_ID => self.resolve_vscode_yaml().await,
             _ => None,
         };
         if vscode_resolution.is_some() {
@@ -741,6 +745,24 @@ impl ServerResolver {
         let home = self.vscode_user_home.as_deref()?;
         self.resolve_candidates(server, workspace, vscode_vue_candidates_from(home))
             .await
+    }
+
+    async fn resolve_vscode_yaml(&self) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_yaml_candidates_from(home) {
+            let Ok(extension_version) = validate_vscode_yaml_extension(&candidate) else {
+                continue;
+            };
+            return Some(ResolvedExecutable {
+                path: candidate,
+                version_output: format!(
+                    "redhat.vscode-yaml {extension_version} (bundled yaml-language-server)"
+                ),
+                source: ExecutableSource::VsCodeExtension,
+                npm_modules_root: None,
+            });
+        }
+        None
     }
 
     async fn resolve_candidates<I>(
@@ -1959,6 +1981,14 @@ fn vscode_vue_candidates_from(user_home: &Path) -> Vec<PathBuf> {
         user_home,
         VUE_EXTENSION_PREFIX,
         Path::new("dist/language-server.js"),
+    )
+}
+
+fn vscode_yaml_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    vscode_extension_candidates_from(
+        user_home,
+        YAML_EXTENSION_PREFIX,
+        Path::new("dist/languageserver.js"),
     )
 }
 
@@ -3801,6 +3831,103 @@ fn validate_vscode_vue_extension(
     Ok(extension_version)
 }
 
+fn vscode_yaml_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let name_is = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    if !executable.is_file() || !name_is(executable, "languageserver.js") {
+        return Err(server_error(
+            "YAML candidate is not the official dist/languageserver.js entry",
+        ));
+    }
+    let dist = executable
+        .parent()
+        .filter(|path| name_is(path, "dist"))
+        .ok_or_else(|| server_error("YAML entry is outside dist"))?;
+    let extension_root = dist
+        .parent()
+        .ok_or_else(|| server_error("YAML entry has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let expected = std::fs::canonicalize(extension_root.join("dist/languageserver.js"))
+        .map_err(server_error)?;
+    if executable != expected || !executable.starts_with(&extension_root) {
+        return Err(server_error("YAML entry escapes its extension root"));
+    }
+    Ok(extension_root)
+}
+
+pub(crate) fn yaml_extension_l10n(executable: &Path) -> Result<PathBuf, ClspError> {
+    let extension_root = vscode_yaml_extension_root(executable)?;
+    let l10n = std::fs::canonicalize(extension_root.join("dist/l10n")).map_err(server_error)?;
+    let bundle = std::fs::canonicalize(l10n.join("bundle.l10n.json")).map_err(server_error)?;
+    if !l10n.starts_with(&extension_root)
+        || !l10n.is_dir()
+        || !bundle.starts_with(&l10n)
+        || !bundle.is_file()
+    {
+        return Err(server_error(
+            "YAML localization bundle escapes its extension root",
+        ));
+    }
+    Ok(l10n)
+}
+
+fn validate_vscode_yaml_extension(executable: &Path) -> Result<Version, ClspError> {
+    let l10n = yaml_extension_l10n(executable)?;
+    let extension_root = l10n
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| server_error("YAML localization bundle has no extension root"))?;
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("YAML extension root has no name"))?;
+    let directory_version = directory_name
+        .get(YAML_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..YAML_EXTENSION_PREFIX.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(YAML_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .filter(|version| version.major == 1)
+        .ok_or_else(|| server_error("YAML is outside an official 1.x extension root"))?;
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    if !manifest.starts_with(extension_root) || !manifest.is_file() {
+        return Err(server_error("YAML manifest escapes its extension root"));
+    }
+    let extension: serde_json::Value = serde_json::from_slice(&read_bounded_manifest(
+        &manifest,
+        "YAML extension manifest",
+    )?)
+    .map_err(server_error)?;
+    if extension.get("name").and_then(serde_json::Value::as_str) != Some("vscode-yaml")
+        || extension
+            .get("publisher")
+            .and_then(serde_json::Value::as_str)
+            != Some("redhat")
+    {
+        return Err(server_error(
+            "YAML server is not from the official redhat.vscode-yaml extension",
+        ));
+    }
+    let extension_version = extension
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("YAML extension manifest version is invalid"))?;
+    if extension_version != directory_version {
+        return Err(server_error(
+            "YAML extension manifest version does not match its directory",
+        ));
+    }
+    Ok(extension_version)
+}
+
 fn vscode_prisma_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
     let name_is = |path: &Path, expected: &str| {
         path.file_name()
@@ -4354,6 +4481,7 @@ pub(crate) fn resolution_fingerprint(
             | TERRAFORM_SERVER_ID
             | TINYMIST_SERVER_ID
             | VUE_SERVER_ID
+            | YAML_LS_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -4383,6 +4511,7 @@ pub(crate) fn resolution_fingerprint(
                 TERRAFORM_SERVER_ID => candidates.extend(vscode_terraform_candidates_from(&home)),
                 TINYMIST_SERVER_ID => candidates.extend(vscode_tinymist_candidates_from(&home)),
                 VUE_SERVER_ID => candidates.extend(vscode_vue_candidates_from(&home)),
+                YAML_LS_SERVER_ID => candidates.extend(vscode_yaml_candidates_from(&home)),
                 _ => {}
             }
         }
@@ -4550,6 +4679,15 @@ pub(crate) fn resolution_fingerprint(
             && let Ok(extension_root) = vscode_vue_extension_root(&candidate)
         {
             hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+        }
+        if server.id == YAML_LS_SERVER_ID
+            && let Ok(extension_root) = vscode_yaml_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+            hash_executable_candidate(
+                &mut digest,
+                extension_root.join("dist/l10n/bundle.l10n.json"),
+            );
         }
         if server.id == TERRAFORM_SERVER_ID
             && let Ok(extension_root) = vscode_terraform_extension_root(&candidate)

@@ -328,6 +328,40 @@ fn vue_uses_the_locked_opencode_contract() {
 }
 
 #[test]
+fn yaml_uses_the_locked_opencode_contract() {
+    let registry = Registry::builtin().unwrap();
+    let yaml = registry.server("yaml-ls").unwrap();
+    assert_eq!(yaml.display_name, "YAML Language Server");
+    assert_eq!(yaml.language_id, "yaml");
+    assert_eq!(yaml.version_req, ">=1.14.0, <2.0.0");
+    assert_eq!(yaml.extensions, ["yaml", "yml"]);
+    assert_eq!(
+        yaml.markers,
+        [
+            "package-lock.json",
+            "bun.lockb",
+            "bun.lock",
+            "pnpm-lock.yaml",
+            "yarn.lock"
+        ]
+    );
+    assert_eq!(yaml.command, "yaml-language-server");
+    assert_eq!(yaml.args, ["--stdio"]);
+    assert_eq!(yaml.version_args, ["--version"]);
+    let InstallRecipe::Npm {
+        version,
+        package,
+        companions,
+    } = &yaml.install
+    else {
+        panic!("YAML must use the npm recipe");
+    };
+    assert_eq!(version, "1.24.0");
+    assert_eq!(package, "yaml-language-server");
+    assert!(companions.is_empty());
+}
+
+#[test]
 fn pyright_uses_the_locked_opencode_contract() {
     let registry = Registry::builtin().unwrap();
     let pyright = registry.server("pyright").unwrap();

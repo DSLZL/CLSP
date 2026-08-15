@@ -87,7 +87,7 @@ clsp setup --workspace .
 | Typst | Tinymist | 复用官方 VS Code 扩展，否则由 CLSP 校验后下载 |
 | TypeScript / JavaScript | TypeScript Language Server | npm 包装器及项目、VS Code 或包管理器 TypeScript SDK |
 | Vue | Vue Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
-| YAML | YAML Language Server | npm 兼容包管理器 |
+| YAML | YAML Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 
 CLSP 的基本原则很简单：
 
@@ -134,6 +134,8 @@ Oxlint 支持 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.mts`、`.cts
 Svelte 支持 `.svelte` 文件，根目录取最近的 `package-lock.json`、`bun.lockb`、`bun.lock`、`pnpm-lock.yaml` 或 `yarn.lock`，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `svelte.svelte-vscode` Stable/Insiders 扩展内置且经过 manifest 校验的 `svelte-language-server`，以及兼容的全局包；启用自动安装时固定安装 `svelte-language-server@0.18.4` 和 `typescript@5.9.2`。JavaScript 入口需要 Node.js 18+。Svelte 扩展会独立提供 VS Code Problems，CLSP 不管理扩展私有配置。
 
 Vue 支持 `.vue` 文件，根目录取最近的 npm、Bun、pnpm 或 Yarn lockfile，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `Vue.volar` Stable/Insiders 扩展内置且经过校验的 `dist/language-server.js`，以及兼容的全局包；启用自动安装时固定安装 `@vue/language-server@3.3.9` 和 `typescript@5.9.2`。CLSP 通过 `--tsdk` 传入经过验证的 TypeScript SDK，不发送私有初始化选项；它只用所选根目录的配置回应独立服务端的 project-info 通知，不重建官方扩展完整的私有 TypeScript 桥。模板诊断和文档符号可独立工作，依赖该桥的语义能力仍交给官方扩展。Vue、ESLint 与 Oxlint 同时运行属于预期行为。
+
+YAML 支持 `.yaml` 与 `.yml` 文件，根目录取最近的 npm、Bun、pnpm 或 Yarn lockfile，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `redhat.vscode-yaml` Stable/Insiders 扩展内置且经过校验的 `dist/languageserver.js`，以及兼容的全局包；启用自动安装时固定安装 `yaml-language-server@1.24.0`。对扩展 bundle，CLSP 只传入独立启动所需且已校验的本地化目录。该 bundle 没有可靠的独立服务端版本探测，因此 CLSP 会明确记录官方扩展版本，不会将其冒充为服务端版本。内置 JavaScript 入口需要 Node.js。
 
 Terraform 支持 `.tf` 与 `.tfvars`，根目录取最近的 `.terraform.lock.hcl`、`terraform.tfstate` 或包含 `.tf` 文件的目录，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 `terraform-ls`、官方 `HashiCorp.terraform` Stable/Insiders 扩展内置且经过校验的服务端，以及 CLSP 托管缓存；在 Windows x86-64 上，启用自动安装时可下载固定版本、校验 SHA-256 的 `terraform-ls` 0.39.0 归档。CLSP 不安装 Terraform CLI、provider、module 或 VS Code 扩展；`.tfvars` 使用协议语言 ID `terraform-vars`。
 

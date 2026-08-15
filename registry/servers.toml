@@ -364,8 +364,8 @@ display_name = "YAML Language Server"
 language_id = "yaml"
 version_req = ">=1.14.0, <2.0.0"
 extensions = ["yaml", "yml"]
-markers = [".yamllint", ".yamllint.yml"]
+markers = ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]
 command = "yaml-language-server"
 args = ["--stdio"]
 version_args = ["--version"]
-install = { kind = "npm", version = "1.18.0", package = "yaml-language-server", companions = [] }
+install = { kind = "npm", version = "1.24.0", package = "yaml-language-server", companions = [] }
