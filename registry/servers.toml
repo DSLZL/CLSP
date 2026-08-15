@@ -347,6 +347,18 @@ version_args = ["--version"]
 install = { kind = "github_zip", version = "0.15.2", url = "https://github.com/Myriad-Dreamin/tinymist/releases/download/v0.15.2/tinymist-x86_64-pc-windows-msvc.zip", sha256 = "91edb0d21edca5841b896d702d8086622792d52b71a9b444d8befb0e937969ae", executable = "tinymist.exe" }
 
 [[server]]
+id = "vue"
+display_name = "Vue Language Server"
+language_id = "vue"
+version_req = ">=3.3.9, <4.0.0"
+extensions = ["vue"]
+markers = ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]
+command = "vue-language-server"
+args = ["--stdio"]
+version_args = ["--version"]
+install = { kind = "npm", version = "3.3.9", package = "@vue/language-server", companions = ["typescript@5.9.2"] }
+
+[[server]]
 id = "yaml-ls"
 display_name = "YAML Language Server"
 language_id = "yaml"

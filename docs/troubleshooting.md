@@ -252,6 +252,22 @@ executable = "C:/tools/svelte.svelte-vscode/node_modules/svelte-language-server/
 
 The nearest supported package-manager lockfile selects the Svelte root; otherwise CLSP uses the workspace root. The extension and CLSP publish diagnostics independently, and Svelte configuration/preprocessors may execute project code, so use only trusted workspaces.
 
+## Vue Language Server or TypeScript SDK cannot be resolved
+
+Vue Language Server requires a working local Node.js runtime and a verified TypeScript SDK. Check the server, official extension, and built-in SDK boundaries separately:
+
+```powershell
+node --version
+where.exe vue-language-server
+vue-language-server --version
+code --list-extensions --show-versions | Select-String Vue.volar
+code --locate-extension vscode.typescript-language-features
+```
+
+CLSP accepts `@vue/language-server >=3.3.9, <4.0.0`. It checks project, explicit, and `PATH` candidates first, then the verified `dist/language-server.js` entry inside the official Stable/Insiders `Vue.volar` extension, then a compatible package-manager global root. With automatic installation enabled, it installs exact `@vue/language-server@3.3.9` and `typescript@5.9.2` packages using the first available manager in `bun > pnpm > npm` order.
+
+Before spawning, CLSP must find `typescript/lib/tsserver.js`. A project-local SDK is preferred; extension reuse can use the built-in SDK located through `code` or `code-insiders`; npm sources use their selected modules root. CLSP starts the standalone OpenCode-compatible server with `--tsdk` and provides only the bounded project-info acknowledgement required for template diagnostics; it does not forward the official extension's full private TypeScript bridge. Bridge-dependent hover or other semantic results may therefore remain unavailable through CLSP even when template diagnostics and document symbols work. Seeing Vue, ESLint, and Oxlint for one `.vue` file is expected.
+
 ## Ruby LSP cannot be resolved or starts slowly
 
 CLSP requires Ruby 3.0 or newer and RubyGems. Check the runtime and server visible to the current process:
@@ -571,6 +587,21 @@ executable = "C:/Swift/usr/bin/sourcekit-lsp.exe"
 The nearest `Package.swift`, Xcode project/workspace directory, `compile_commands.json`, or `compile_flags.txt` selects the root; without one, CLSP uses the workspace root. SwiftPM/Xcode indexing and the first build may take several minutes. SourceKit-LSP and project build configuration can execute code, so use it only in a trusted workspace. The official `swiftlang.swift-vscode` extension is an independent client; installing it alone does not make CLSP's server resolution succeed.
 
 If Objective-C diagnostics are missing, check that the file uses the `.objc` or `.objcpp` extension. CLSP maps those files to the SourceKit-LSP protocol IDs `objective-c` and `objective-cpp`; Swift files use `swift`.
+
+## TypeScript server or SDK cannot be resolved
+
+The built-in VS Code TypeScript extension is not an LSP server. CLSP still needs a compatible `typescript-language-server`, then selects a TypeScript SDK separately. Check both boundaries:
+
+```powershell
+where.exe typescript-language-server
+typescript-language-server --version
+code --locate-extension vscode.typescript-language-features
+code-insiders --locate-extension vscode.typescript-language-features
+```
+
+The first SDK choice is the nearest project `node_modules/typescript/lib/tsserver.js`. Without one, CLSP validates the Stable and then Insiders built-in extension layout before falling back to the selected npm manager's TypeScript package. A custom VS Code installation whose CLI is not on `PATH` is not scanned; install TypeScript in the project or expose the appropriate CLI instead of hard-coding an internal version directory.
+
+If only VS Code is installed but no standalone wrapper is available and `auto_install = false`, resolution still fails: the built-in extension speaks the private `tsserver` protocol and cannot replace `typescript-language-server`. Files below `deno.json` or `deno.jsonc` intentionally use Deno instead.
 
 ## Deno server cannot be resolved
 

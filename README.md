@@ -87,12 +87,15 @@ After setup:
 | Svelte | Svelte Language Server | Reuse official VS Code extension or npm-compatible manager |
 | Terraform | Terraform Language Server | Reuse official VS Code extension, otherwise verified CLSP download |
 | Typst | Tinymist | Reuse official VS Code extension, otherwise verified CLSP download |
-| TypeScript / JavaScript | TypeScript Language Server | npm-compatible manager |
+| TypeScript / JavaScript | TypeScript Language Server | npm wrapper plus project, VS Code, or manager TypeScript SDK |
+| Vue | Vue Language Server | Reuse official VS Code extension or npm-compatible manager |
 | YAML | YAML Language Server | npm-compatible manager |
 
 CLSP follows a simple rule:
 
 > **Reuse first. Install only when necessary.**
+
+TypeScript support keeps `typescript-language-server` as the LSP wrapper. It prefers the nearest project TypeScript SDK, then the SDK bundled with the built-in `vscode.typescript-language-features` extension located through the Stable or Insiders CLI, and finally the selected npm manager's SDK. The built-in extension itself uses the private `tsserver` protocol and is not an LSP server.
 
 Dart support reuses `dart` from `PATH` or `[lsp.dart].executable`; CLSP does not install the Dart or Flutter SDK.
 
@@ -131,6 +134,8 @@ Ruby support covers `.rb`, `.rake`, `.gemspec`, and `.ru` files below the neares
 Oxlint support covers `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, `.vue`, `.astro`, and `.svelte`. CLSP reuses compatible `oxlint` 1.x from the selected project's `node_modules/.bin`, `PATH`, or `[lsp.oxlint].executable` and starts `oxlint --lsp`; it does not install packages or the official `oxc.oxc-vscode` extension. The extension independently uses the same external project tool and can publish Problems through the IDE bridge. Use Oxlint only in trusted projects because configuration and JavaScript plugins may execute project code.
 
 Svelte support covers `.svelte` files below the nearest `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, or `yarn.lock`, with the workspace root as fallback. CLSP first reuses a compatible project, explicit, or `PATH` server, then the verified `svelte-language-server` bundled in the official `svelte.svelte-vscode` Stable/Insiders extension, then a compatible global package; automatic installation pins `svelte-language-server@0.18.4` with `typescript@5.9.2`. Node.js 18+ is required for the JavaScript entry. The Svelte extension independently publishes VS Code Problems; CLSP does not manage the extension or its private settings.
+
+Vue support covers `.vue` files below the nearest npm, Bun, pnpm, or Yarn lockfile, with the workspace root as fallback. CLSP first reuses a compatible project, explicit, or `PATH` server, then the verified `dist/language-server.js` bundled in the official `Vue.volar` Stable/Insiders extension, then a compatible global package; automatic installation pins `@vue/language-server@3.3.9` with `typescript@5.9.2`. CLSP passes a verified TypeScript SDK through `--tsdk` and sends no private initialization options. It acknowledges Vue's standalone project-info notification with the selected root config, but does not reproduce the official extension's full private TypeScript bridge; template diagnostics and document symbols work independently, while bridge-dependent semantic features remain with the official extension. Vue, ESLint, and Oxlint may run together by design.
 
 Terraform support covers `.tf` and `.tfvars` files below the nearest `.terraform.lock.hcl`, `terraform.tfstate`, or directory containing `.tf` files, with the workspace root as fallback. CLSP reuses a compatible project, explicit, or `PATH` `terraform-ls`, then the verified server bundled in the official `HashiCorp.terraform` Stable/Insiders extension, then its managed cache; on Windows x86-64, automatic installation can download the pinned, checksum-verified `terraform-ls` 0.39.0 archive. CLSP does not install Terraform CLI, providers, modules, or the VS Code extension. `.tfvars` uses the protocol language ID `terraform-vars`.
 

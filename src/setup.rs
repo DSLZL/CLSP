@@ -158,7 +158,7 @@ fn resolve_code_cli_script(executable: &Path) -> Result<PathBuf, ClspError> {
     fs::canonicalize(candidates.pop().unwrap()).map_err(setup_error)
 }
 
-fn child_process_path(path: &Path) -> PathBuf {
+pub(crate) fn child_process_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         use std::{

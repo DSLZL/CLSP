@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::{ClspError, ErrorCode};
 
 const BUILTIN: &str = include_str!("../registry/servers.toml");
-const APPROVED_IDS: [&str; 30] = [
+const APPROVED_IDS: [&str; 31] = [
     "astro",
     "bash",
     "csharp",
@@ -35,6 +35,7 @@ const APPROVED_IDS: [&str; 30] = [
     "terraform",
     "tinymist",
     "typescript",
+    "vue",
     "yaml-ls",
 ];
 const APPROVED_EXTENSIONS: [&str; 67] = [
@@ -150,6 +151,19 @@ impl ServerDefinition {
             self.id.as_str(),
             file.extension().and_then(|extension| extension.to_str()),
         ) {
+            ("typescript", Some(extension)) if extension.eq_ignore_ascii_case("tsx") => {
+                "typescriptreact"
+            }
+            ("typescript", Some(extension)) if extension.eq_ignore_ascii_case("jsx") => {
+                "javascriptreact"
+            }
+            ("typescript", Some(extension))
+                if extension.eq_ignore_ascii_case("js")
+                    || extension.eq_ignore_ascii_case("mjs")
+                    || extension.eq_ignore_ascii_case("cjs") =>
+            {
+                "javascript"
+            }
             ("sourcekit-lsp", Some(extension)) if extension.eq_ignore_ascii_case("objc") => {
                 "objective-c"
             }

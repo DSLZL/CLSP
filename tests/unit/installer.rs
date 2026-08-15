@@ -20,6 +20,7 @@ fn test_resolver(root: &Path) -> ServerResolver {
     let mut resolver = ServerResolver::new(Config::default(), paths);
     resolver.vscode_app_data = None;
     resolver.vscode_user_home = None;
+    resolver.vscode_typescript_clis.clear();
     resolver.dotnet_cli_home = None;
     resolver
 }
@@ -205,6 +206,65 @@ fn write_svelte_extension(
     )
     .unwrap();
     server
+}
+
+fn write_vue_extension(
+    extension_root: &Path,
+    extension_version: &str,
+    server_version: &str,
+) -> PathBuf {
+    let root = extension_root.join(format!("{VUE_EXTENSION_PREFIX}{extension_version}"));
+    let server = root.join("dist/language-server.js");
+    support::create_dir_all(server.parent().unwrap()).unwrap();
+    support::write(
+        &server,
+        format!("if (process.argv.includes('--version')) console.log('{server_version}');\n"),
+    )
+    .unwrap();
+    support::write(
+        root.join("package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "volar",
+            "publisher": "Vue",
+            "version": extension_version,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    server
+}
+
+fn write_vscode_typescript_extension(
+    vscode_root: &Path,
+    extension_version: &str,
+    typescript_version: &str,
+) -> PathBuf {
+    let extensions = vscode_root.join("resources/app/extensions");
+    let extension = extensions.join("typescript-language-features");
+    let typescript = extensions.join("node_modules/typescript");
+    support::create_dir_all(&extension).unwrap();
+    support::create_dir_all(typescript.join("lib")).unwrap();
+    support::write(
+        extension.join("package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "typescript-language-features",
+            "publisher": "vscode",
+            "version": extension_version,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    support::write(
+        typescript.join("package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "typescript",
+            "version": typescript_version,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    support::write(typescript.join("lib/tsserver.js"), b"server").unwrap();
+    extension
 }
 
 fn write_fsharp_extension(
@@ -992,6 +1052,84 @@ fn vscode_svelte_candidates_are_newest_first_and_official() {
 }
 
 #[test]
+fn vscode_vue_candidates_are_newest_first_and_official() {
+    let root = support::tempdir().unwrap();
+    let older = write_vue_extension(&root.path().join(".vscode/extensions"), "3.3.8", "3.3.8");
+    let newer = write_vue_extension(
+        &root.path().join(".vscode-insiders/extensions"),
+        "3.3.9",
+        "3.3.9",
+    );
+    let fake = root
+        .path()
+        .join(".vscode/extensions/not-official.volar-9.9.9/dist/language-server.js");
+    support::create_dir_all(fake.parent().unwrap()).unwrap();
+    support::write(fake, b"server").unwrap();
+
+    assert_eq!(
+        vscode_vue_candidates_from(root.path()),
+        [newer.clone(), older.clone()]
+    );
+    assert_eq!(
+        validate_vscode_vue_extension(&newer, ">=3.3.9, <4.0.0").unwrap(),
+        Version::new(3, 3, 9)
+    );
+    assert!(validate_vscode_vue_extension(&older, ">=3.3.9, <4.0.0").is_err());
+}
+
+#[test]
+fn vscode_typescript_sdk_requires_the_official_shared_layout() {
+    let root = support::tempdir().unwrap();
+    let extension = write_vscode_typescript_extension(root.path(), "10.0.0", "6.0.3");
+    let probe = validate_vscode_typescript_extension(&extension).unwrap();
+    assert_eq!(
+        probe.version_output,
+        "typescript 6.0.3; vscode.typescript-language-features 10.0.0"
+    );
+    assert_eq!(
+        probe.modules_root,
+        std::fs::canonicalize(root.path().join("resources/app/extensions/node_modules")).unwrap()
+    );
+
+    support::write(
+        extension.join("package.json"),
+        br#"{"name":"typescript-language-features","publisher":"other","version":"10.0.0"}"#,
+    )
+    .unwrap();
+    assert!(validate_vscode_typescript_extension(&extension).is_err());
+
+    write_vscode_typescript_extension(root.path(), "10.0.0", "6.0.3");
+    std::fs::remove_file(
+        root.path()
+            .join("resources/app/extensions/node_modules/typescript/lib/tsserver.js"),
+    )
+    .unwrap();
+    assert!(validate_vscode_typescript_extension(&extension).is_err());
+}
+
+#[tokio::test]
+async fn typescript_sdk_lookup_skips_invalid_stable_and_uses_insiders() {
+    let root = support::tempdir().unwrap();
+    let extension = write_vscode_typescript_extension(root.path(), "10.0.0", "6.0.3");
+    let bin = root.path().join("bin");
+    support::create_dir_all(&bin).unwrap();
+    let stable = fake_executable(&bin, "code", "echo relative-extension");
+    let insiders = fake_executable(
+        &bin,
+        "code-insiders",
+        &format!("echo {}", extension.to_string_lossy()),
+    );
+    let probe =
+        resolve_vscode_typescript_sdk(&[stable, insiders], root.path(), Duration::from_secs(5))
+            .await
+            .unwrap();
+    assert_eq!(
+        probe.modules_root,
+        std::fs::canonicalize(root.path().join("resources/app/extensions/node_modules")).unwrap()
+    );
+}
+
+#[test]
 fn svelte_extension_probe_rejects_forged_manifests_and_paths() {
     let root = support::tempdir().unwrap();
     let executable = write_svelte_extension(root.path(), "110.3.1", "0.18.4");
@@ -1015,6 +1153,24 @@ fn svelte_extension_probe_rejects_forged_manifests_and_paths() {
     write_svelte_extension(root.path(), "110.3.1", "0.18.4");
     std::fs::remove_file(&executable).unwrap();
     assert!(validate_vscode_svelte_extension(&executable, ">=0.18.4, <0.19.0").is_err());
+}
+
+#[test]
+fn vue_extension_probe_rejects_forged_manifests_and_paths() {
+    let root = support::tempdir().unwrap();
+    let executable = write_vue_extension(root.path(), "3.3.9", "3.3.9");
+    let extension_root = vscode_vue_extension_root(&executable).unwrap();
+
+    support::write(
+        extension_root.join("package.json"),
+        br#"{"name":"volar","publisher":"other","version":"3.3.9"}"#,
+    )
+    .unwrap();
+    assert!(validate_vscode_vue_extension(&executable, ">=3.3.9, <4.0.0").is_err());
+
+    write_vue_extension(root.path(), "3.3.9", "3.3.9");
+    std::fs::remove_file(&executable).unwrap();
+    assert!(validate_vscode_vue_extension(&executable, ">=3.3.9, <4.0.0").is_err());
 }
 
 #[test]
@@ -1763,6 +1919,72 @@ async fn svelte_reuses_the_official_vscode_server() {
 }
 
 #[tokio::test]
+async fn vue_reuses_the_official_vscode_server_and_shared_typescript_sdk() {
+    let root = support::tempdir().unwrap();
+    let executable = write_vue_extension(&root.path().join(".vscode/extensions"), "3.3.9", "3.3.9");
+    let typescript_extension = write_vscode_typescript_extension(root.path(), "10.0.0", "6.0.3");
+    let bin = root.path().join("bin");
+    support::create_dir_all(&bin).unwrap();
+    let code = fake_executable(
+        &bin,
+        "code",
+        &format!("echo {}", typescript_extension.to_string_lossy()),
+    );
+    let mut resolver = test_resolver(root.path());
+    resolver.config.auto_install = false;
+    resolver.vscode_user_home = Some(root.path().to_path_buf());
+    resolver.vscode_typescript_clis = vec![code];
+    let server = Registry::builtin()
+        .unwrap()
+        .server(VUE_SERVER_ID)
+        .unwrap()
+        .clone();
+
+    let resolution = resolver
+        .resolve_vscode_vue(&server, root.path())
+        .await
+        .unwrap();
+    assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+    assert_eq!(resolution.path, executable);
+    assert_eq!(
+        resolution.version_output,
+        "vue-language-server 3.3.9; Vue.volar 3.3.9"
+    );
+    assert!(resolution.npm_modules_root.is_none());
+
+    let resolution = resolver
+        .attach_vscode_typescript_sdk(&server, root.path(), resolution)
+        .await;
+    assert_eq!(
+        resolution.npm_modules_root,
+        Some(
+            std::fs::canonicalize(root.path().join("resources/app/extensions/node_modules"))
+                .unwrap()
+        )
+    );
+}
+
+#[tokio::test]
+async fn vue_rejects_an_extension_whose_server_version_differs() {
+    let root = support::tempdir().unwrap();
+    write_vue_extension(&root.path().join(".vscode/extensions"), "3.3.9", "3.3.8");
+    let mut resolver = test_resolver(root.path());
+    resolver.vscode_user_home = Some(root.path().to_path_buf());
+    let server = Registry::builtin()
+        .unwrap()
+        .server(VUE_SERVER_ID)
+        .unwrap()
+        .clone();
+
+    assert!(
+        resolver
+            .resolve_vscode_vue(&server, root.path())
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn github_zip_resolution_prefers_vscode_then_cache() {
     let root = support::tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -2378,6 +2600,27 @@ fn svelte_manifest_identity_changes_the_resolution_fingerprint() {
     support::write(
         manifest,
         br#"{"name":"svelte-language-server","version":"0.18.4"}"#,
+    )
+    .unwrap();
+    let second = resolution_fingerprint(server, &workspace, Some(&executable));
+    assert_ne!(first, second);
+}
+
+#[test]
+fn vue_manifest_identity_changes_the_resolution_fingerprint() {
+    let directory = support::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    support::create_dir(&workspace).unwrap();
+    let executable = write_vue_extension(directory.path(), "3.3.9", "3.3.9");
+    let registry = Registry::builtin().unwrap();
+    let server = registry.server(VUE_SERVER_ID).unwrap();
+    let manifest = vscode_vue_extension_root(&executable)
+        .unwrap()
+        .join("package.json");
+    let first = resolution_fingerprint(server, &workspace, Some(&executable));
+    support::write(
+        manifest,
+        br#"{"name":"volar","publisher":"Vue","version":"3.3.9","changed":true}"#,
     )
     .unwrap();
     let second = resolution_fingerprint(server, &workspace, Some(&executable));

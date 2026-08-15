@@ -26,6 +26,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `svelte` | Svelte | `svelteserver --stdio` | `>=0.18.4, <0.19.0` | official `svelte.svelte-vscode` extension or `svelte-language-server@0.18.4` + `typescript@5.9.2` |
 | `terraform` | Terraform / HCL variables | `terraform-ls serve` | `>=0.39.0, <0.40.0` | official `HashiCorp.terraform` extension or verified `terraform-ls` 0.39.0 archive |
 | `tinymist` | Typst | `tinymist lsp` | `>=0.15.2, <0.16.0` | official `myriad-dreamin.tinymist` extension or verified Tinymist 0.15.2 archive |
+| `vue` | Vue | `vue-language-server --tsdk=<path> --stdio` | `>=3.3.9, <4.0.0` | official `Vue.volar` extension or `@vue/language-server@3.3.9` + `typescript@5.9.2` |
 | `gopls` | Go | `gopls` | `>=0.15.0, <1.0.0` | `go install golang.org/x/tools/gopls@v0.23.0` |
 | `hls` | Haskell | `haskell-language-server-wrapper --lsp` | `>=2.0.0, <3.0.0` | manual GHCup/HLS toolchain |
 | `intelephense` | PHP | `intelephense --stdio` | `>=1.18.5, <2.0.0` | official VS Code extension or `intelephense@1.18.5` |
@@ -54,6 +55,7 @@ A candidate is not accepted just because the executable exists. CLSP probes it a
 Some server types then have an additional reuse path before installation:
 
 - npm-based servers: the selected package manager's global installation
+- TypeScript: after resolving the standalone LSP wrapper, prefer the nearest project SDK, then the validated SDK shared by the built-in Stable/Insiders `vscode.typescript-language-features` extension, then the selected manager's SDK
 - command/toolchain servers: toolchain-specific locations such as Go's bin directory or the global .NET tool directory
 - ElixirLS: the official release bundled in standard Stable/Insiders VS Code extension directories
 - ESLint: `server/out/eslintServer.js` from the official `dbaeumer.vscode-eslint` Stable/Insiders extension
@@ -62,6 +64,7 @@ Some server types then have an additional reuse path before installation:
 - Prisma: `dist/language-server/bin.js` plus its schema WASM from the official `Prisma.prisma` Stable/Insiders extension, then the selected package manager's global installation
 - Pyright: `dist/server.js` from the official `ms-pyright.pyright` Stable/Insiders extension, then the selected package manager's global installation
 - Svelte: `node_modules/svelte-language-server/bin/server.js` from the official `svelte.svelte-vscode` Stable/Insiders extension after strict manifest/path validation, then the selected package manager's global installation
+- Vue: `dist/language-server.js` from the official `Vue.volar` Stable/Insiders extension after strict manifest/path/runtime-version validation, then the selected package manager's global installation
 - Terraform: `bin/terraform-ls[.exe]` from the official `HashiCorp.terraform` Stable/Insiders extension after strict manifest/path/server-version validation, then CLSP's user-level artifact cache
 - Tinymist: `out/tinymist[.exe]` from the official `myriad-dreamin.tinymist` Stable/Insiders extension after strict manifest/path/version validation, then CLSP's user-level artifact cache
 - JDTLS: the official `redhat.java` Stable/Insiders extension after local launchers; its manifest, JDTLS core, platform configuration, and Java 21+ runtime are verified
@@ -102,6 +105,19 @@ The first manager whose version probe succeeds is selected.
 That selection is sticky for the current resolution attempt: if its global-root query or install command fails, CLSP reports the failure instead of silently switching to the next manager.
 
 Managed npm installs use exact versions and disable package lifecycle scripts.
+
+### TypeScript / JavaScript
+
+CLSP starts the standalone `typescript-language-server --stdio`; the built-in VS Code TypeScript extension is not an LSP server. The wrapper receives the first valid SDK in this order:
+
+1. nearest `node_modules/typescript/lib` between the selected project root and workspace root
+2. VS Code Stable's built-in `vscode.typescript-language-features` SDK
+3. VS Code Insiders' built-in SDK
+4. the selected npm manager or wrapper-adjacent TypeScript package
+
+VS Code reuse requires `code` or `code-insiders` on `PATH`. CLSP runs `--locate-extension vscode.typescript-language-features`, then validates the official extension manifest, the shared `typescript/package.json`, semantic versions, containment, and `lib/tsserver.js`. A failed lookup is ignored and the next SDK source is tried. The LSP initialize payload contains the exact `tsserver.path`; CLSP never starts the extension's private client entry.
+
+Protocol language IDs follow the server contract: `.ts/.mts/.cts` use `typescript`, `.tsx` uses `typescriptreact`, `.js/.mjs/.cjs` use `javascript`, and `.jsx` uses `javascriptreact`. A nearer Deno marker still selects Deno instead.
 
 ### Rust
 
@@ -286,6 +302,14 @@ executable = "C:/tools/svelte-language-server/bin/server.js"
 ```
 
 The official Svelte extension independently publishes VS Code Problems; CLSP does not install or manage the extension or its private settings. Svelte configuration and preprocessors can execute project code, so use the server only in trusted workspaces.
+
+### Vue
+
+CLSP starts `vue-language-server --tsdk=<verified-typescript-lib> --stdio` for `.vue` files and sends no Vue-specific initialization options. It first checks project-local, explicit, and `PATH` candidates, then validates the exact `dist/language-server.js` entry, `Vue/volar` manifest identity, directory/manifest version, and bounded `--version` output in the official `Vue.volar` Stable/Insiders extension. If those sources are unavailable, CLSP checks the selected package manager's global root and, when automatic installation is enabled, installs exact `@vue/language-server@3.3.9` and `typescript@5.9.2` packages.
+
+The nearest `package-lock.json`, `bun.lockb`, `bun.lock`, `pnpm-lock.yaml`, or `yarn.lock` selects the root, otherwise CLSP uses the workspace root. A verified TypeScript SDK is mandatory: the nearest project SDK wins; official-extension reuse can use the SDK located through the Stable/Insiders VS Code CLI; npm candidates use their package-manager modules root. CLSP validates `typescript/lib/tsserver.js` before spawning and normalizes Windows paths at the Node boundary.
+
+Vue 3.3.x emits a nested `tsserver/request` even in standalone mode. CLSP answers only `_vue:projectInfo` with the selected root's existing `tsconfig.json` or `jsconfig.json` (falling back to that root's `tsconfig.json` path), returns `null` for other well-formed private commands, and ignores malformed notifications. This bounded acknowledgement enables template diagnostics and document symbols without forwarding to a TypeScript server. The official extension still owns its full private bridge and bridge-dependent semantic features; Vue, ESLint, and Oxlint may all match the same `.vue` file, which is expected.
 
 ### Terraform
 
@@ -501,6 +525,7 @@ Examples:
 - Go: `.go`; any ancestor `go.work` takes priority over the nearest `go.mod` or `go.sum`
 - Python: `.py` or `.pyi` below the nearest `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `Pipfile`, or `pyrightconfig.json`, with workspace-root fallback
 - TypeScript/JavaScript: JS/TS extensions plus `package.json`, `tsconfig.json`, or `jsconfig.json`
+- Vue: `.vue` below the nearest npm, Bun, pnpm, or Yarn lockfile
 - C/C++: C-family extensions plus `compile_commands.json`, `CMakeLists.txt`, or `.clangd`
 - Swift/Objective-C: `.swift`, `.objc`, or `.objcpp` plus `Package.swift`, Xcode project/workspace directories, or a compilation database
 - Dart: `.dart` plus `pubspec.yaml` or `analysis_options.yaml`

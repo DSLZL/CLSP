@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn builtin_is_the_closed_thirty_server_set() {
+fn builtin_is_the_closed_thirty_one_server_set() {
     let registry = Registry::builtin().unwrap();
-    assert_eq!(registry.server.len(), 30);
+    assert_eq!(registry.server.len(), 31);
     assert_eq!(
         registry
             .server
@@ -95,7 +95,7 @@ fn matches_only_declared_extensions() {
             .matching_extension(".VUE")
             .map(|server| server.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["eslint", "oxlint"]
+        vec!["eslint", "oxlint", "vue"]
     );
     assert_eq!(
         registry
@@ -197,6 +197,46 @@ fn astro_uses_the_locked_official_language_server() {
 }
 
 #[test]
+fn typescript_uses_the_locked_wrapper_and_protocol_language_ids() {
+    let registry = Registry::builtin().unwrap();
+    let typescript = registry.server("typescript").unwrap();
+    assert_eq!(typescript.language_id, "typescript");
+    assert_eq!(typescript.version_req, ">=4.0.0, <5.0.0");
+    assert_eq!(
+        typescript.extensions,
+        ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]
+    );
+    assert_eq!(typescript.command, "typescript-language-server");
+    assert_eq!(typescript.args, ["--stdio"]);
+    for (file, language_id) in [
+        ("main.ts", "typescript"),
+        ("main.MTS", "typescript"),
+        ("main.cts", "typescript"),
+        ("view.TSX", "typescriptreact"),
+        ("main.js", "javascript"),
+        ("main.MJS", "javascript"),
+        ("main.cjs", "javascript"),
+        ("view.JSX", "javascriptreact"),
+    ] {
+        assert_eq!(
+            typescript.language_id_for_file(Path::new(file)),
+            language_id
+        );
+    }
+    let InstallRecipe::Npm {
+        version,
+        package,
+        companions,
+    } = &typescript.install
+    else {
+        panic!("TypeScript must use the npm recipe");
+    };
+    assert_eq!(version, "4.4.0");
+    assert_eq!(package, "typescript-language-server");
+    assert_eq!(companions, &vec!["typescript@5.9.2".to_owned()]);
+}
+
+#[test]
 fn bash_uses_the_locked_official_language_server() {
     let registry = Registry::builtin().unwrap();
     let bash = registry.server("bash").unwrap();
@@ -250,6 +290,40 @@ fn svelte_uses_the_locked_opencode_contract() {
     };
     assert_eq!(version, "0.18.4");
     assert_eq!(package, "svelte-language-server");
+    assert_eq!(companions, &vec!["typescript@5.9.2".to_owned()]);
+}
+
+#[test]
+fn vue_uses_the_locked_opencode_contract() {
+    let registry = Registry::builtin().unwrap();
+    let vue = registry.server("vue").unwrap();
+    assert_eq!(vue.display_name, "Vue Language Server");
+    assert_eq!(vue.language_id, "vue");
+    assert_eq!(vue.version_req, ">=3.3.9, <4.0.0");
+    assert_eq!(vue.extensions, ["vue"]);
+    assert_eq!(
+        vue.markers,
+        [
+            "package-lock.json",
+            "bun.lockb",
+            "bun.lock",
+            "pnpm-lock.yaml",
+            "yarn.lock"
+        ]
+    );
+    assert_eq!(vue.command, "vue-language-server");
+    assert_eq!(vue.args, ["--stdio"]);
+    assert_eq!(vue.version_args, ["--version"]);
+    let InstallRecipe::Npm {
+        version,
+        package,
+        companions,
+    } = &vue.install
+    else {
+        panic!("Vue must use the npm recipe");
+    };
+    assert_eq!(version, "3.3.9");
+    assert_eq!(package, "@vue/language-server");
     assert_eq!(companions, &vec!["typescript@5.9.2".to_owned()]);
 }
 

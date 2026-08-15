@@ -85,12 +85,15 @@ clsp setup --workspace .
 | Svelte | Svelte Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | Terraform | Terraform Language Server | 复用官方 VS Code 扩展，否则由 CLSP 校验后下载 |
 | Typst | Tinymist | 复用官方 VS Code 扩展，否则由 CLSP 校验后下载 |
-| TypeScript / JavaScript | TypeScript Language Server | npm 兼容包管理器 |
+| TypeScript / JavaScript | TypeScript Language Server | npm 包装器及项目、VS Code 或包管理器 TypeScript SDK |
+| Vue | Vue Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | YAML | YAML Language Server | npm 兼容包管理器 |
 
 CLSP 的基本原则很简单：
 
 > **能复用就复用，只有确实缺失时才安装。**
+
+TypeScript 支持继续使用 `typescript-language-server` 作为 LSP 包装器。SDK 依次选择最近的项目 TypeScript、通过 Stable 或 Insiders CLI 定位的内置 `vscode.typescript-language-features` 扩展所带 SDK，以及所选 npm 包管理器的 SDK。内置扩展本身使用私有 `tsserver` 协议，并不是 LSP 服务端。
 
 Dart 支持复用 PATH 或 `[lsp.dart].executable` 中的 `dart`；CLSP 不会安装 Dart 或 Flutter SDK。
 
@@ -129,6 +132,8 @@ Ruby 支持 `.rb`、`.rake`、`.gemspec` 与 `.ru` 文件，根目录取最近�
 Oxlint 支持 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.mts`、`.cts`、`.vue`、`.astro` 与 `.svelte`。CLSP 复用所选项目 `node_modules/.bin`、`PATH` 或 `[lsp.oxlint].executable` 中兼容的 Oxlint 1.x，并启动 `oxlint --lsp`；不会安装 npm 包或官方 `oxc.oxc-vscode` 扩展。该扩展会独立使用同一个项目工具，并可通过现有 IDE Bridge 提供 Problems。Oxlint 配置和 JavaScript 插件可能执行项目代码，因此只应在可信项目中使用。
 
 Svelte 支持 `.svelte` 文件，根目录取最近的 `package-lock.json`、`bun.lockb`、`bun.lock`、`pnpm-lock.yaml` 或 `yarn.lock`，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `svelte.svelte-vscode` Stable/Insiders 扩展内置且经过 manifest 校验的 `svelte-language-server`，以及兼容的全局包；启用自动安装时固定安装 `svelte-language-server@0.18.4` 和 `typescript@5.9.2`。JavaScript 入口需要 Node.js 18+。Svelte 扩展会独立提供 VS Code Problems，CLSP 不管理扩展私有配置。
+
+Vue 支持 `.vue` 文件，根目录取最近的 npm、Bun、pnpm 或 Yarn lockfile，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的服务端、官方 `Vue.volar` Stable/Insiders 扩展内置且经过校验的 `dist/language-server.js`，以及兼容的全局包；启用自动安装时固定安装 `@vue/language-server@3.3.9` 和 `typescript@5.9.2`。CLSP 通过 `--tsdk` 传入经过验证的 TypeScript SDK，不发送私有初始化选项；它只用所选根目录的配置回应独立服务端的 project-info 通知，不重建官方扩展完整的私有 TypeScript 桥。模板诊断和文档符号可独立工作，依赖该桥的语义能力仍交给官方扩展。Vue、ESLint 与 Oxlint 同时运行属于预期行为。
 
 Terraform 支持 `.tf` 与 `.tfvars`，根目录取最近的 `.terraform.lock.hcl`、`terraform.tfstate` 或包含 `.tf` 文件的目录，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 `terraform-ls`、官方 `HashiCorp.terraform` Stable/Insiders 扩展内置且经过校验的服务端，以及 CLSP 托管缓存；在 Windows x86-64 上，启用自动安装时可下载固定版本、校验 SHA-256 的 `terraform-ls` 0.39.0 归档。CLSP 不安装 Terraform CLI、provider、module 或 VS Code 扩展；`.tfvars` 使用协议语言 ID `terraform-vars`。
 

@@ -32,6 +32,7 @@ use crate::{
         ClspError, Diagnostic, DiagnosticSeverity, DiagnosticsReport, ErrorCode, Location,
         Position, QueryOperation, QueryRequest, QueryResult, SourceFreshness, TextRange,
     },
+    setup::child_process_path,
     workspace::Workspace,
 };
 
@@ -55,6 +56,7 @@ const SOURCEKIT_LSP_SERVER_ID: &str = "sourcekit-lsp";
 const SVELTE_SERVER_ID: &str = "svelte";
 const TERRAFORM_SERVER_ID: &str = "terraform";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
+const VUE_SERVER_ID: &str = "vue";
 const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -367,6 +369,13 @@ impl LspClient {
             options.executable,
             options.npm_modules_root,
         )?;
+        let runtime_args = server_runtime_args(
+            options.server_id,
+            options.root,
+            options.workspace.root(),
+            options.executable,
+            options.npm_modules_root,
+        )?;
         let mut command = if uses_jdtls_java_host(options.server_id, options.executable) {
             jdtls_java_command(options.executable, options.root, options.request_timeout).await?
         } else if options.server_id == JULIALS_SERVER_ID
@@ -380,6 +389,7 @@ impl LspClient {
                 PRISMA_SERVER_ID => "Prisma Language Server",
                 PYRIGHT_SERVER_ID => "Pyright",
                 SVELTE_SERVER_ID => "Svelte Language Server",
+                VUE_SERVER_ID => "Vue Language Server",
                 _ => unreachable!(),
             };
             let node = which::which("node")
@@ -396,7 +406,10 @@ impl LspClient {
         } else {
             Command::new(options.executable)
         };
-        command.args(options.args).current_dir(options.root);
+        command
+            .args(runtime_args)
+            .args(options.args)
+            .current_dir(options.root);
         sanitize_command(&mut command);
         command
             .stdin(Stdio::piped())
@@ -454,6 +467,7 @@ impl LspClient {
                 Arc::clone(&client.diagnostics),
                 client.workspace.clone(),
                 client.server_id.clone(),
+                options.root.to_path_buf(),
                 options.max_message_bytes,
                 options.max_file_bytes,
                 options.max_diagnostics_per_file,
@@ -869,6 +883,7 @@ async fn reader_loop(
     diagnostics: Arc<DiagnosticsStore>,
     workspace: Workspace,
     server_id: String,
+    server_root: PathBuf,
     max_message_bytes: usize,
     max_file_bytes: u64,
     max_diagnostics_per_file: usize,
@@ -925,6 +940,12 @@ async fn reader_loop(
             if refresh_diagnostics {
                 let _ = diagnostic_refresh.try_send(());
             }
+            continue;
+        }
+        if let Some(response) =
+            server_notification_response(&server_id, method, message.get("params"), &server_root)
+        {
+            let _ = write_frame(&mut *writer.lock().await, &response, max_message_bytes).await;
             continue;
         }
         if method != "textDocument/publishDiagnostics" {
@@ -999,6 +1020,39 @@ async fn fail_pending(pending: &PendingRequests, error: ClspError) {
     for (_, sender) in pending.lock().await.drain() {
         let _ = sender.send(Err(error.clone()));
     }
+}
+
+fn server_notification_response(
+    server_id: &str,
+    method: &str,
+    params: Option<&Value>,
+    server_root: &Path,
+) -> Option<Value> {
+    if server_id != VUE_SERVER_ID || method != "tsserver/request" {
+        return None;
+    }
+    let request = params?.as_array()?.first()?.as_array()?;
+    let request_id = request.first()?.as_u64()?;
+    let command = request.get(1)?.as_str()?;
+    let body = if command == "_vue:projectInfo" {
+        let config = ["tsconfig.json", "jsconfig.json"]
+            .into_iter()
+            .map(|name| server_root.join(name))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| server_root.join("tsconfig.json"));
+        json!({
+            "configFileName": child_process_path(&config)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+    } else {
+        Value::Null
+    };
+    Some(json!({
+        "jsonrpc": "2.0",
+        "method": "tsserver/response",
+        "params": [[request_id, body]]
+    }))
 }
 
 fn server_request_response(
@@ -1307,17 +1361,40 @@ fn server_initialization_options(
     if !matches!(server_id, ASTRO_SERVER_ID | TYPESCRIPT_SERVER_ID) {
         return Ok(None);
     }
-    let tsdk = astro_typescript_sdk(server_root, workspace_root, executable, npm_modules_root)
+    let tsdk = typescript_sdk(server_root, workspace_root, executable, npm_modules_root)
         .ok_or_else(|| {
             runtime_error(format!(
                 "{server_id} language server requires typescript/lib/tsserver.js"
             ))
         })?;
-    Ok((server_id == ASTRO_SERVER_ID).then(|| {
+    let tsdk = child_process_path(&tsdk);
+    Ok(Some(if server_id == ASTRO_SERVER_ID {
         json!({
             "typescript": {"tsdk": tsdk.to_string_lossy()}
         })
+    } else {
+        json!({
+            "tsserver": {"path": tsdk.join("tsserver.js").to_string_lossy()}
+        })
     }))
+}
+
+fn server_runtime_args(
+    server_id: &str,
+    server_root: &Path,
+    workspace_root: &Path,
+    executable: &Path,
+    npm_modules_root: Option<&Path>,
+) -> Result<Vec<String>, ClspError> {
+    if server_id != VUE_SERVER_ID {
+        return Ok(Vec::new());
+    }
+    let tsdk = typescript_sdk(server_root, workspace_root, executable, npm_modules_root)
+        .ok_or_else(|| runtime_error("vue language server requires typescript/lib/tsserver.js"))?;
+    Ok(vec![format!(
+        "--tsdk={}",
+        child_process_path(&tsdk).to_string_lossy()
+    )])
 }
 
 fn uses_dotnet_host(server_id: &str, executable: &Path) -> bool {
@@ -1332,7 +1409,11 @@ fn uses_node_host(server_id: &str, executable: &Path) -> bool {
     server_id == ESLINT_SERVER_ID
         || (matches!(
             server_id,
-            INTELEPHENSE_SERVER_ID | PRISMA_SERVER_ID | PYRIGHT_SERVER_ID | SVELTE_SERVER_ID
+            INTELEPHENSE_SERVER_ID
+                | PRISMA_SERVER_ID
+                | PYRIGHT_SERVER_ID
+                | SVELTE_SERVER_ID
+                | VUE_SERVER_ID
         ) && executable
             .extension()
             .and_then(|extension| extension.to_str())
@@ -1419,7 +1500,7 @@ fn diagnostic_version(
     })
 }
 
-fn astro_typescript_sdk(
+fn typescript_sdk(
     server_root: &Path,
     workspace_root: &Path,
     executable: &Path,

@@ -73,6 +73,10 @@ const TERRAFORM_SERVER_ID: &str = "terraform";
 const TERRAFORM_EXTENSION_PREFIX: &str = "hashicorp.terraform-";
 const TINYMIST_SERVER_ID: &str = "tinymist";
 const TINYMIST_EXTENSION_PREFIX: &str = "myriad-dreamin.tinymist-";
+const TYPESCRIPT_SERVER_ID: &str = "typescript";
+const TYPESCRIPT_EXTENSION_ID: &str = "vscode.typescript-language-features";
+const VUE_SERVER_ID: &str = "vue";
+const VUE_EXTENSION_PREFIX: &str = "vue.volar-";
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +101,7 @@ pub struct ServerResolver {
     paths: StatePaths,
     vscode_app_data: Option<PathBuf>,
     vscode_user_home: Option<PathBuf>,
+    vscode_typescript_clis: Vec<PathBuf>,
     dotnet_cli_home: Option<PathBuf>,
     install_lock: Mutex<()>,
 }
@@ -108,6 +113,7 @@ impl ServerResolver {
             paths,
             vscode_app_data: std::env::var_os("APPDATA").map(PathBuf::from),
             vscode_user_home: vscode_user_home(),
+            vscode_typescript_clis: vscode_typescript_clis(),
             dotnet_cli_home: dotnet_cli_home(),
             install_lock: Mutex::new(()),
         }
@@ -145,6 +151,7 @@ impl ServerResolver {
                 | PRISMA_SERVER_ID
                 | PYRIGHT_SERVER_ID
                 | SVELTE_SERVER_ID
+                | VUE_SERVER_ID
         ) {
             let requirement = match server.id.as_str() {
                 PRISMA_SERVER_ID => Some(">=20.0.0"),
@@ -157,7 +164,9 @@ impl ServerResolver {
                 .map_err(|error| error.for_server(&server.id))?;
         }
         if let Some(resolution) = self.resolve_existing(server, workspace, explicit).await? {
-            return Ok(resolution);
+            return Ok(self
+                .attach_vscode_typescript_sdk(server, workspace, resolution)
+                .await);
         }
 
         if let InstallRecipe::Manual { hint, .. } = &server.install {
@@ -174,10 +183,12 @@ impl ServerResolver {
 
         let _guard = self.install_lock.lock().await;
         if let Some(resolution) = self.resolve_existing(server, workspace, explicit).await? {
-            return Ok(resolution);
+            return Ok(self
+                .attach_vscode_typescript_sdk(server, workspace, resolution)
+                .await);
         }
 
-        match &server.install {
+        let resolution = match &server.install {
             InstallRecipe::Manual { hint, .. } => Err(runtime_error(hint).for_server(&server.id)),
             InstallRecipe::Npm {
                 version,
@@ -214,7 +225,30 @@ impl ServerResolver {
                     .await
                     .map_err(|error| error.for_server(&server.id))
             }
+        }?;
+        Ok(self
+            .attach_vscode_typescript_sdk(server, workspace, resolution)
+            .await)
+    }
+
+    async fn attach_vscode_typescript_sdk(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+        mut resolution: ResolvedExecutable,
+    ) -> ResolvedExecutable {
+        if (server.id == TYPESCRIPT_SERVER_ID
+            || (server.id == VUE_SERVER_ID && resolution.npm_modules_root.is_none()))
+            && let Some(probe) = resolve_vscode_typescript_sdk(
+                &self.vscode_typescript_clis,
+                workspace,
+                Duration::from_millis(self.config.runtime.probe_timeout_ms),
+            )
+            .await
+        {
+            resolution.npm_modules_root = Some(probe.modules_root);
         }
+        resolution
     }
 
     async fn resolve_existing(
@@ -260,6 +294,7 @@ impl ServerResolver {
             SVELTE_SERVER_ID => self.resolve_vscode_svelte(server).await,
             TERRAFORM_SERVER_ID => self.resolve_vscode_terraform(server, workspace).await,
             TINYMIST_SERVER_ID => self.resolve_vscode_tinymist(server, workspace).await,
+            VUE_SERVER_ID => self.resolve_vscode_vue(server, workspace).await,
             _ => None,
         };
         if vscode_resolution.is_some() {
@@ -696,6 +731,16 @@ impl ServerResolver {
             });
         }
         None
+    }
+
+    async fn resolve_vscode_vue(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        self.resolve_candidates(server, workspace, vscode_vue_candidates_from(home))
+            .await
     }
 
     async fn resolve_candidates<I>(
@@ -1410,6 +1455,32 @@ impl ServerResolver {
                 npm_modules_root: None,
             });
         }
+        if server.id == VUE_SERVER_ID
+            && executable
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("js"))
+            && let Ok(extension_version) =
+                validate_vscode_vue_extension(executable, &server.version_req)
+        {
+            let node = self.require_program("node", None).await?;
+            let mut args = vec![executable.to_string_lossy().into_owned()];
+            args.extend(server.version_args.iter().cloned());
+            let version_output = self
+                .probe_compatible(&node, &args, working_dir, &server.version_req)
+                .await?;
+            validate_extension_server_version(
+                &version_output,
+                &extension_version,
+                "Vue Language Server",
+            )?;
+            return Ok(ServerProbe {
+                version_output: format!(
+                    "vue-language-server {extension_version}; Vue.volar {extension_version}"
+                ),
+                npm_modules_root: None,
+            });
+        }
         match &server.install {
             InstallRecipe::Npm { package, .. } => {
                 let probe = probe_npm_package(executable, package, &server.version_req).await?;
@@ -1880,6 +1951,14 @@ fn vscode_svelte_candidates_from(user_home: &Path) -> Vec<PathBuf> {
         user_home,
         SVELTE_EXTENSION_PREFIX,
         Path::new("node_modules/svelte-language-server/bin/server.js"),
+    )
+}
+
+fn vscode_vue_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    vscode_extension_candidates_from(
+        user_home,
+        VUE_EXTENSION_PREFIX,
+        Path::new("dist/language-server.js"),
     )
 }
 
@@ -2592,6 +2671,134 @@ fn vscode_extension_candidates_from(
             executable.is_file().then_some(executable)
         })
         .collect()
+}
+
+fn vscode_typescript_clis() -> Vec<PathBuf> {
+    ["code", "code-insiders"]
+        .into_iter()
+        .filter_map(|command| which::which(command).ok())
+        .collect()
+}
+
+async fn resolve_vscode_typescript_sdk(
+    clis: &[PathBuf],
+    working_dir: &Path,
+    probe_timeout: Duration,
+) -> Option<NpmProbe> {
+    let args = [
+        "--locate-extension".to_owned(),
+        TYPESCRIPT_EXTENSION_ID.to_owned(),
+    ];
+    for cli in clis {
+        let Ok(output) = run_checked(
+            cli,
+            &args,
+            working_dir,
+            probe_timeout,
+            "VS Code TypeScript extension lookup",
+        )
+        .await
+        else {
+            continue;
+        };
+        let Ok(extension_root) = parse_vscode_extension_location(&output.stdout) else {
+            continue;
+        };
+        if let Ok(probe) = validate_vscode_typescript_extension(&extension_root) {
+            return Some(probe);
+        }
+    }
+    None
+}
+
+fn parse_vscode_extension_location(output: &[u8]) -> Result<PathBuf, ClspError> {
+    let text = std::str::from_utf8(output).map_err(server_error)?;
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let root = lines
+        .next()
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| server_error("VS Code returned no absolute extension path"))?;
+    if lines.next().is_some() {
+        return Err(server_error("VS Code returned multiple extension paths"));
+    }
+    std::fs::canonicalize(root).map_err(server_error)
+}
+
+fn validate_vscode_typescript_extension(extension_root: &Path) -> Result<NpmProbe, ClspError> {
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let extension_manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    if !extension_manifest.starts_with(&extension_root) {
+        return Err(server_error(
+            "TypeScript extension manifest escapes its extension root",
+        ));
+    }
+    let extension: serde_json::Value = serde_json::from_slice(&read_bounded_manifest(
+        &extension_manifest,
+        "TypeScript extension manifest",
+    )?)
+    .map_err(server_error)?;
+    if extension
+        .get("publisher")
+        .and_then(serde_json::Value::as_str)
+        != Some("vscode")
+        || extension.get("name").and_then(serde_json::Value::as_str)
+            != Some("typescript-language-features")
+    {
+        return Err(server_error(
+            "TypeScript SDK is not from vscode.typescript-language-features",
+        ));
+    }
+    let extension_version = extension
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("TypeScript extension version is invalid"))?;
+
+    let extensions_root = extension_root
+        .parent()
+        .ok_or_else(|| server_error("TypeScript extension has no shared extension root"))?;
+    let typescript_root =
+        std::fs::canonicalize(extensions_root.join("node_modules").join("typescript"))
+            .map_err(server_error)?;
+    if !typescript_root.starts_with(extensions_root) || !typescript_root.is_dir() {
+        return Err(server_error(
+            "TypeScript SDK escapes the shared extension root",
+        ));
+    }
+    let typescript_manifest =
+        std::fs::canonicalize(typescript_root.join("package.json")).map_err(server_error)?;
+    let tsserver =
+        std::fs::canonicalize(typescript_root.join("lib/tsserver.js")).map_err(server_error)?;
+    for candidate in [&typescript_manifest, &tsserver] {
+        if !candidate.starts_with(&typescript_root) || !candidate.is_file() {
+            return Err(server_error("TypeScript SDK file escapes its package root"));
+        }
+    }
+    let typescript: serde_json::Value = serde_json::from_slice(&read_bounded_manifest(
+        &typescript_manifest,
+        "TypeScript SDK manifest",
+    )?)
+    .map_err(server_error)?;
+    if typescript.get("name").and_then(serde_json::Value::as_str) != Some("typescript") {
+        return Err(server_error("TypeScript SDK manifest identity is invalid"));
+    }
+    let typescript_version = typescript
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("TypeScript SDK version is invalid"))?;
+    let modules_root = typescript_root
+        .parent()
+        .ok_or_else(|| server_error("TypeScript SDK has no node_modules root"))?
+        .to_path_buf();
+    Ok(NpmProbe {
+        version_output: format!(
+            "typescript {typescript_version}; {TYPESCRIPT_EXTENSION_ID} {extension_version}"
+        ),
+        modules_root,
+    })
 }
 
 fn vscode_extension_roots_from(
@@ -3511,6 +3718,89 @@ fn validate_vscode_svelte_extension(
     })
 }
 
+fn vscode_vue_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
+    let name_is = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    if !executable.is_file() || !name_is(executable, "language-server.js") {
+        return Err(server_error(
+            "Vue candidate is not the official dist/language-server.js entry",
+        ));
+    }
+    let dist = executable
+        .parent()
+        .filter(|path| name_is(path, "dist"))
+        .ok_or_else(|| server_error("Vue entry is outside dist"))?;
+    let extension_root = dist
+        .parent()
+        .ok_or_else(|| server_error("Vue entry has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let expected = std::fs::canonicalize(extension_root.join("dist/language-server.js"))
+        .map_err(server_error)?;
+    if executable != expected || !executable.starts_with(&extension_root) {
+        return Err(server_error("Vue entry escapes its extension root"));
+    }
+    Ok(extension_root)
+}
+
+fn validate_vscode_vue_extension(
+    executable: &Path,
+    requirement: &str,
+) -> Result<Version, ClspError> {
+    let extension_root = vscode_vue_extension_root(executable)?;
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Vue extension root has no name"))?;
+    let directory_version = directory_name
+        .get(VUE_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..VUE_EXTENSION_PREFIX.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(VUE_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Vue is outside an official extension root"))?;
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    if !manifest.starts_with(&extension_root) || !manifest.is_file() {
+        return Err(server_error("Vue manifest escapes its extension root"));
+    }
+    let extension: serde_json::Value =
+        serde_json::from_slice(&read_bounded_manifest(&manifest, "Vue extension manifest")?)
+            .map_err(server_error)?;
+    if extension.get("name").and_then(serde_json::Value::as_str) != Some("volar")
+        || extension
+            .get("publisher")
+            .and_then(serde_json::Value::as_str)
+            != Some("Vue")
+    {
+        return Err(server_error(
+            "Vue server is not from the official Vue.volar extension",
+        ));
+    }
+    let extension_version = extension
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Vue extension manifest version is invalid"))?;
+    if extension_version != directory_version {
+        return Err(server_error(
+            "Vue extension manifest version does not match its directory",
+        ));
+    }
+    let requirement = VersionReq::parse(requirement).map_err(server_error)?;
+    if !requirement.matches(&extension_version) {
+        return Err(server_error(format!(
+            "Vue extension version {extension_version} does not satisfy {requirement}"
+        )));
+    }
+    Ok(extension_version)
+}
+
 fn vscode_prisma_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
     let name_is = |path: &Path, expected: &str| {
         path.file_name()
@@ -4063,6 +4353,7 @@ pub(crate) fn resolution_fingerprint(
             | SVELTE_SERVER_ID
             | TERRAFORM_SERVER_ID
             | TINYMIST_SERVER_ID
+            | VUE_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -4091,12 +4382,16 @@ pub(crate) fn resolution_fingerprint(
                 SVELTE_SERVER_ID => candidates.extend(vscode_svelte_candidates_from(&home)),
                 TERRAFORM_SERVER_ID => candidates.extend(vscode_terraform_candidates_from(&home)),
                 TINYMIST_SERVER_ID => candidates.extend(vscode_tinymist_candidates_from(&home)),
+                VUE_SERVER_ID => candidates.extend(vscode_vue_candidates_from(&home)),
                 _ => {}
             }
         }
     }
     if server.id == KOTLIN_LS_SERVER_ID {
         candidates.extend(path_kotlin_candidates());
+    }
+    if matches!(server.id.as_str(), TYPESCRIPT_SERVER_ID | VUE_SERVER_ID) {
+        candidates.extend(vscode_typescript_clis());
     }
     if matches!(server.id.as_str(), JDTLS_SERVER_ID | KOTLIN_LS_SERVER_ID) {
         digest.update(
@@ -4250,6 +4545,11 @@ pub(crate) fn resolution_fingerprint(
                 &mut digest,
                 extension_root.join("node_modules/svelte-language-server/package.json"),
             );
+        }
+        if server.id == VUE_SERVER_ID
+            && let Ok(extension_root) = vscode_vue_extension_root(&candidate)
+        {
+            hash_executable_candidate(&mut digest, extension_root.join("package.json"));
         }
         if server.id == TERRAFORM_SERVER_ID
             && let Ok(extension_root) = vscode_terraform_extension_root(&candidate)

@@ -896,6 +896,43 @@ fn svelte_uses_the_nearest_lockfile_and_coexists_with_oxlint() {
 }
 
 #[test]
+fn vue_uses_the_nearest_lockfile_and_coexists_with_eslint_and_oxlint() {
+    let root = support::tempdir().unwrap();
+    let workspace_root = root.path().join("workspace");
+    let project = workspace_root.join("apps/demo");
+    let source_dir = project.join("src");
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(workspace_root.join("package-lock.json"), "{}").unwrap();
+    support::write(project.join("bun.lock"), "").unwrap();
+    let file = source_dir.join("App.vue");
+    support::write(&file, "<template><div /></template>").unwrap();
+    let workspace = Workspace::open(&workspace_root).unwrap();
+    let registry = Registry::builtin().unwrap();
+    let vue = registry.server("vue").unwrap();
+
+    assert_eq!(
+        workspace
+            .matching_servers(&file, "vue", &registry)
+            .into_iter()
+            .map(|server| server.id.as_str())
+            .collect::<Vec<_>>(),
+        ["eslint", "oxlint", "vue"]
+    );
+    for server_id in ["eslint", "oxlint", "vue"] {
+        assert_eq!(
+            workspace.root_for_file(&file, registry.server(server_id).unwrap()),
+            project
+        );
+    }
+
+    fs::remove_file(project.join("bun.lock")).unwrap();
+    assert_eq!(
+        fs::canonicalize(workspace.root_for_file(&file, vue)).unwrap(),
+        fs::canonicalize(workspace.root()).unwrap()
+    );
+}
+
+#[test]
 fn terraform_files_use_the_nearest_opencode_marker_within_the_workspace() {
     let parent = support::tempdir().unwrap();
     support::write(parent.path().join("outside.tf"), "").unwrap();

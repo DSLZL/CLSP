@@ -165,6 +165,20 @@ fn astro_initialization_prefers_nearest_project_typescript() {
         options.pointer("/typescript/tsdk").and_then(Value::as_str),
         Some(nearest.to_string_lossy().as_ref())
     );
+
+    let options = server_initialization_options(
+        TYPESCRIPT_SERVER_ID,
+        &root,
+        workspace,
+        &root.join("node_modules/.bin/typescript-language-server.cmd"),
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        options.pointer("/tsserver/path").and_then(Value::as_str),
+        Some(nearest.join("tsserver.js").to_string_lossy().as_ref())
+    );
 }
 
 #[test]
@@ -190,21 +204,66 @@ fn astro_initialization_uses_manager_typescript() {
         Some(installed.to_string_lossy().as_ref())
     );
 
-    assert!(
-        server_initialization_options(
-            TYPESCRIPT_SERVER_ID,
-            &root,
-            &workspace,
-            &manager.join("bin/typescript-language-server.cmd"),
-            Some(&manager.join("node_modules")),
-        )
-        .unwrap()
-        .is_none()
+    let options = server_initialization_options(
+        TYPESCRIPT_SERVER_ID,
+        &root,
+        &workspace,
+        &manager.join("bin/typescript-language-server.cmd"),
+        Some(&manager.join("node_modules")),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        options.pointer("/tsserver/path").and_then(Value::as_str),
+        Some(installed.join("tsserver.js").to_string_lossy().as_ref())
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn typescript_initialization_strips_verbatim_sdk_paths_for_node() {
+    let directory = support::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let root = workspace.join("site");
+    support::create_dir_all(&root).unwrap();
+    let manager = directory.path().join("manager");
+    let installed = write_typescript_sdk(&manager);
+    let modules = std::fs::canonicalize(manager.join("node_modules")).unwrap();
+
+    let options = server_initialization_options(
+        TYPESCRIPT_SERVER_ID,
+        &root,
+        &workspace,
+        &manager.join("bin/typescript-language-server.cmd"),
+        Some(&modules),
+    )
+    .unwrap()
+    .unwrap();
+    let tsserver = options
+        .pointer("/tsserver/path")
+        .and_then(Value::as_str)
+        .unwrap();
+    assert!(!tsserver.starts_with(r"\\?\"));
+    assert_eq!(Path::new(tsserver), installed.join("tsserver.js"));
+
+    let args = server_runtime_args(
+        VUE_SERVER_ID,
+        &root,
+        &workspace,
+        &manager.join("bin/vue-language-server.cmd"),
+        Some(&modules),
+    )
+    .unwrap();
+    assert_eq!(args.len(), 1);
+    assert!(!args[0].starts_with(r"--tsdk=\\?\"));
+    assert_eq!(
+        Path::new(args[0].strip_prefix("--tsdk=").unwrap()),
+        installed
     );
 }
 
 #[test]
-fn only_astro_requires_typescript_initialization() {
+fn only_astro_and_typescript_require_a_typescript_sdk() {
     let directory = support::tempdir().unwrap();
     let root = directory.path();
     let executable = root.join("astro-ls.cmd");
@@ -213,14 +272,16 @@ fn only_astro_requires_typescript_initialization() {
             .unwrap()
             .is_none()
     );
-    let error =
-        server_initialization_options(ASTRO_SERVER_ID, root, root, &executable, None).unwrap_err();
-    assert_eq!(error.code, ErrorCode::RuntimeUnavailable);
-    assert!(
-        error
-            .message
-            .contains("requires typescript/lib/tsserver.js")
-    );
+    for server_id in [ASTRO_SERVER_ID, TYPESCRIPT_SERVER_ID] {
+        let error =
+            server_initialization_options(server_id, root, root, &executable, None).unwrap_err();
+        assert_eq!(error.code, ErrorCode::RuntimeUnavailable);
+        assert!(
+            error
+                .message
+                .contains("requires typescript/lib/tsserver.js")
+        );
+    }
 }
 
 #[test]
@@ -322,6 +383,98 @@ fn svelte_has_no_custom_initialization_and_hosts_js_entries_with_node() {
     );
     assert!(uses_node_host(SVELTE_SERVER_ID, &script));
     assert!(!uses_node_host(SVELTE_SERVER_ID, &shim));
+}
+
+#[test]
+fn vue_uses_a_verified_typescript_sdk_runtime_arg_and_no_custom_initialization() {
+    let directory = support::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let root = workspace.join("site");
+    support::create_dir_all(&root).unwrap();
+    let manager = directory.path().join("manager");
+    let tsdk = write_typescript_sdk(&manager);
+    let script = root.join("language-server.js");
+    let shim = root.join("vue-language-server.cmd");
+
+    assert!(
+        server_initialization_options(VUE_SERVER_ID, &root, &workspace, &script, None)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        server_runtime_args(
+            VUE_SERVER_ID,
+            &root,
+            &workspace,
+            &shim,
+            Some(&manager.join("node_modules")),
+        )
+        .unwrap(),
+        [format!("--tsdk={}", tsdk.to_string_lossy())]
+    );
+    assert!(uses_node_host(VUE_SERVER_ID, &script));
+    assert!(!uses_node_host(VUE_SERVER_ID, &shim));
+    assert!(
+        server_runtime_args("rust", &root, &workspace, &shim, None)
+            .unwrap()
+            .is_empty()
+    );
+
+    let error = server_runtime_args(VUE_SERVER_ID, &root, &workspace, &shim, None).unwrap_err();
+    assert_eq!(error.code, ErrorCode::RuntimeUnavailable);
+    assert!(
+        error
+            .message
+            .contains("requires typescript/lib/tsserver.js")
+    );
+}
+
+#[test]
+fn vue_tsserver_notifications_use_the_bounded_standalone_fallback() {
+    let directory = support::tempdir().unwrap();
+    let root = directory.path();
+    support::write(root.join("jsconfig.json"), "{}").unwrap();
+    let request = json!([[7, "_vue:projectInfo", {"file": "App.vue"}]]);
+    let response =
+        server_notification_response(VUE_SERVER_ID, "tsserver/request", Some(&request), root)
+            .unwrap();
+    assert_eq!(response["method"], "tsserver/response");
+    assert_eq!(response["params"][0][0], 7);
+    assert_eq!(
+        Path::new(response["params"][0][1]["configFileName"].as_str().unwrap()),
+        root.join("jsconfig.json")
+    );
+
+    support::write(root.join("tsconfig.json"), "{}").unwrap();
+    let response =
+        server_notification_response(VUE_SERVER_ID, "tsserver/request", Some(&request), root)
+            .unwrap();
+    assert_eq!(
+        Path::new(response["params"][0][1]["configFileName"].as_str().unwrap()),
+        root.join("tsconfig.json")
+    );
+    std::fs::remove_file(root.join("tsconfig.json")).unwrap();
+    std::fs::remove_file(root.join("jsconfig.json")).unwrap();
+    let response =
+        server_notification_response(VUE_SERVER_ID, "tsserver/request", Some(&request), root)
+            .unwrap();
+    assert_eq!(
+        Path::new(response["params"][0][1]["configFileName"].as_str().unwrap()),
+        root.join("tsconfig.json")
+    );
+
+    let request = json!([[8, "_vue:getComponentMeta", {}]]);
+    let response =
+        server_notification_response(VUE_SERVER_ID, "tsserver/request", Some(&request), root)
+            .unwrap();
+    assert_eq!(response["params"], json!([[8, null]]));
+    assert!(
+        server_notification_response("rust", "tsserver/request", Some(&request), root).is_none()
+    );
+    assert!(
+        server_notification_response(VUE_SERVER_ID, "tsserver/request", Some(&json!([])), root)
+            .is_none()
+    );
 }
 
 #[test]
