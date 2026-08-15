@@ -79,6 +79,9 @@ const VUE_SERVER_ID: &str = "vue";
 const VUE_EXTENSION_PREFIX: &str = "vue.volar-";
 const YAML_LS_SERVER_ID: &str = "yaml-ls";
 const YAML_EXTENSION_PREFIX: &str = "redhat.vscode-yaml-";
+const ZLS_SERVER_ID: &str = "zls";
+const ZIG_EXTENSION_PREFIX: &str = "ziglang.vscode-zig-";
+const ZIG_VERSION_REQ: &str = ">=0.16.0, <0.17.0";
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +146,11 @@ impl ServerResolver {
         }
         if server.id == RUBY_LSP_SERVER_ID {
             self.require_program("ruby", Some(">=3.0.0"))
+                .await
+                .map_err(|error| error.for_server(&server.id))?;
+        }
+        if server.id == ZLS_SERVER_ID {
+            self.require_zig()
                 .await
                 .map_err(|error| error.for_server(&server.id))?;
         }
@@ -299,6 +307,7 @@ impl ServerResolver {
             TINYMIST_SERVER_ID => self.resolve_vscode_tinymist(server, workspace).await,
             VUE_SERVER_ID => self.resolve_vscode_vue(server, workspace).await,
             YAML_LS_SERVER_ID => self.resolve_vscode_yaml().await,
+            ZLS_SERVER_ID => self.resolve_vscode_zls(server, workspace).await,
             _ => None,
         };
         if vscode_resolution.is_some() {
@@ -765,6 +774,43 @@ impl ServerResolver {
         None
     }
 
+    async fn resolve_vscode_zls(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let app_data = self.vscode_app_data.as_deref()?;
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_zls_candidates_from(app_data, home) {
+            let Ok((_, expected_version)) =
+                validate_vscode_zls_extension(&candidate, app_data, home, &server.version_req)
+            else {
+                continue;
+            };
+            let Some(resolution) = self
+                .resolve_candidate(
+                    server,
+                    workspace,
+                    candidate,
+                    ExecutableSource::VsCodeExtension,
+                )
+                .await
+            else {
+                continue;
+            };
+            if validate_extension_server_version(
+                &resolution.version_output,
+                &expected_version,
+                "ZLS",
+            )
+            .is_ok()
+            {
+                return Some(resolution);
+            }
+        }
+        None
+    }
+
     async fn resolve_candidates<I>(
         &self,
         server: &ServerDefinition,
@@ -1126,13 +1172,74 @@ impl ServerResolver {
                 "{program} is required locally; CLSP does not install prerequisite toolchains"
             ))
         })?;
-        let version_args = if program == "go" {
+        self.probe_required_program(program, &executable, requirement)
+            .await
+            .map(|(executable, _)| executable)
+    }
+
+    async fn require_zig(&self) -> Result<PathBuf, ClspError> {
+        let mut last_error = None;
+        if let Ok(executable) = which::which("zig") {
+            match self
+                .probe_required_program("zig", &executable, Some(ZIG_VERSION_REQ))
+                .await
+            {
+                Ok((executable, _)) => return Ok(executable),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if let (Some(app_data), Some(home)) = (
+            self.vscode_app_data.as_deref(),
+            self.vscode_user_home.as_deref(),
+        ) {
+            for executable in vscode_zig_candidates_from(app_data, home) {
+                let Ok((_, expected_version)) = validate_vscode_zig_tool_extension(
+                    &executable,
+                    app_data,
+                    home,
+                    "zig",
+                    ZIG_VERSION_REQ,
+                ) else {
+                    continue;
+                };
+                match self
+                    .probe_required_program("zig", &executable, Some(ZIG_VERSION_REQ))
+                    .await
+                {
+                    Ok((executable, version_output)) => {
+                        match validate_extension_server_version(
+                            &version_output,
+                            &expected_version,
+                            "Zig",
+                        ) {
+                            Ok(()) => return Ok(executable),
+                            Err(error) => last_error = Some(error),
+                        }
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            runtime_error(
+                "zig is required locally on PATH or in the paired official Zig VS Code extension; CLSP does not install prerequisite toolchains",
+            )
+        }))
+    }
+
+    async fn probe_required_program(
+        &self,
+        program: &str,
+        executable: &Path,
+        requirement: Option<&str>,
+    ) -> Result<(PathBuf, String), ClspError> {
+        let version_args = if matches!(program, "go" | "zig") {
             vec!["version".to_owned()]
         } else {
             vec!["--version".to_owned()]
         };
         let output = run_command(
-            &executable,
+            executable,
             &version_args,
             &self.paths.workspace_state,
             Duration::from_millis(self.config.runtime.probe_timeout_ms),
@@ -1147,17 +1254,15 @@ impl ServerResolver {
                 command_output_detail(&output)
             )));
         }
+        let version_output = command_output_detail(&output);
         if let Some(requirement) = requirement {
-            validate_version_output(&command_output_detail(&output), requirement).map_err(
-                |_| {
-                    runtime_error(format!(
-                        "{program} version does not satisfy {requirement}: {}",
-                        command_output_detail(&output)
-                    ))
-                },
-            )?;
+            validate_version_output(&version_output, requirement).map_err(|_| {
+                runtime_error(format!(
+                    "{program} version does not satisfy {requirement}: {version_output}"
+                ))
+            })?;
         }
-        Ok(executable)
+        Ok((executable.to_path_buf(), version_output))
     }
 
     async fn resolve_toolchain_candidate(
@@ -4208,6 +4313,186 @@ fn push_vscode_clangd_candidate(
     }
 }
 
+fn vscode_zls_candidates_from(app_data: &Path, user_home: &Path) -> Vec<PathBuf> {
+    vscode_zig_managed_candidates_from(app_data, user_home, "zls")
+}
+
+fn vscode_zig_candidates_from(app_data: &Path, user_home: &Path) -> Vec<PathBuf> {
+    vscode_zig_managed_candidates_from(app_data, user_home, "zig")
+}
+
+fn vscode_zig_managed_candidates_from(
+    app_data: &Path,
+    user_home: &Path,
+    tool: &str,
+) -> Vec<PathBuf> {
+    if !cfg!(all(windows, target_arch = "x86_64")) {
+        return Vec::new();
+    }
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (product, insiders) in [("Code", false), ("Code - Insiders", true)] {
+        if vscode_zig_extension_manifest(user_home, insiders).is_none() {
+            continue;
+        }
+        let root = app_data
+            .join(product)
+            .join("User/globalStorage/ziglang.vscode-zig")
+            .join(tool);
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries
+            .filter_map(Result::ok)
+            .take(VSCODE_INSTALL_ENTRY_LIMIT)
+        {
+            let directory = entry.path();
+            let Some(version) = vscode_zig_tool_version_from_dir(&directory) else {
+                continue;
+            };
+            let executable = directory.join(format!("{tool}.exe"));
+            if executable.is_file() && seen.insert(executable.clone()) {
+                candidates.push((version, executable));
+            }
+        }
+    }
+    candidates.sort_by(|(left_version, left_path), (right_version, right_path)| {
+        right_version
+            .cmp(left_version)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    candidates.into_iter().map(|(_, path)| path).collect()
+}
+
+fn vscode_zig_tool_version_from_dir(directory: &Path) -> Option<Version> {
+    directory
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|name| name.strip_prefix("x86_64-windows-"))
+        .and_then(|version| Version::parse(version).ok())
+}
+
+fn vscode_zig_extension_manifest(user_home: &Path, insiders: bool) -> Option<PathBuf> {
+    let extensions_root = user_home.join(if insiders {
+        ".vscode-insiders/extensions"
+    } else {
+        ".vscode/extensions"
+    });
+    vscode_extension_roots_from(user_home, ZIG_EXTENSION_PREFIX)
+        .into_iter()
+        .filter(|(_, root)| root.parent() == Some(extensions_root.as_path()))
+        .find_map(|(_, root)| validate_vscode_zig_extension(&root).ok())
+}
+
+fn validate_vscode_zig_extension(extension_root: &Path) -> Result<PathBuf, ClspError> {
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let directory_name = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| server_error("Zig extension root has no name"))?;
+    let directory_version = directory_name
+        .get(ZIG_EXTENSION_PREFIX.len()..)
+        .filter(|_| {
+            directory_name
+                .get(..ZIG_EXTENSION_PREFIX.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(ZIG_EXTENSION_PREFIX))
+        })
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("ZLS is outside an official Zig extension root"))?;
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    if !manifest.starts_with(&extension_root) {
+        return Err(server_error("Zig extension manifest escapes its root"));
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&read_bounded_manifest(&manifest, "Zig extension manifest")?)
+            .map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some("vscode-zig")
+        || value.get("publisher").and_then(serde_json::Value::as_str) != Some("ziglang")
+    {
+        return Err(server_error(
+            "ZLS is not managed by the official ziglang.vscode-zig extension",
+        ));
+    }
+    let manifest_version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("Zig extension manifest version is invalid"))?;
+    if (
+        manifest_version.major,
+        manifest_version.minor,
+        manifest_version.patch,
+    ) != (
+        directory_version.major,
+        directory_version.minor,
+        directory_version.patch,
+    ) {
+        return Err(server_error(
+            "Zig extension manifest version does not match its directory",
+        ));
+    }
+    Ok(manifest)
+}
+
+fn validate_vscode_zls_extension(
+    executable: &Path,
+    app_data: &Path,
+    user_home: &Path,
+    requirement: &str,
+) -> Result<(PathBuf, Version), ClspError> {
+    validate_vscode_zig_tool_extension(executable, app_data, user_home, "zls", requirement)
+}
+
+fn validate_vscode_zig_tool_extension(
+    executable: &Path,
+    app_data: &Path,
+    user_home: &Path,
+    tool: &str,
+    requirement: &str,
+) -> Result<(PathBuf, Version), ClspError> {
+    if !cfg!(all(windows, target_arch = "x86_64"))
+        || !executable
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(&format!("{tool}.exe")))
+    {
+        return Err(server_error(
+            "candidate is not an official Zig extension-managed Windows x86-64 executable",
+        ));
+    }
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let requirement = VersionReq::parse(requirement).map_err(server_error)?;
+    for (product, insiders) in [("Code", false), ("Code - Insiders", true)] {
+        let root = app_data
+            .join(product)
+            .join("User/globalStorage/ziglang.vscode-zig")
+            .join(tool);
+        let Ok(root) = std::fs::canonicalize(root) else {
+            continue;
+        };
+        let Some(version_directory) = executable.parent() else {
+            continue;
+        };
+        if version_directory.parent() != Some(root.as_path()) {
+            continue;
+        }
+        let Some(version) = vscode_zig_tool_version_from_dir(version_directory) else {
+            continue;
+        };
+        if !requirement.matches(&version) {
+            continue;
+        }
+        let Some(manifest) = vscode_zig_extension_manifest(user_home, insiders) else {
+            continue;
+        };
+        return Ok((manifest, version));
+    }
+    Err(server_error(
+        "executable is not from paired official Zig VS Code Stable/Insiders storage",
+    ))
+}
+
 fn sourcekit_swift_candidates(sourcekit: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut seen = BTreeSet::new();
@@ -4482,6 +4767,7 @@ pub(crate) fn resolution_fingerprint(
             | TINYMIST_SERVER_ID
             | VUE_SERVER_ID
             | YAML_LS_SERVER_ID
+            | ZLS_SERVER_ID
     ) {
         for name in ["USERPROFILE", "HOME"] {
             digest.update(
@@ -4512,9 +4798,21 @@ pub(crate) fn resolution_fingerprint(
                 TINYMIST_SERVER_ID => candidates.extend(vscode_tinymist_candidates_from(&home)),
                 VUE_SERVER_ID => candidates.extend(vscode_vue_candidates_from(&home)),
                 YAML_LS_SERVER_ID => candidates.extend(vscode_yaml_candidates_from(&home)),
+                ZLS_SERVER_ID => {
+                    if let Some(app_data) = std::env::var_os("APPDATA") {
+                        let app_data = PathBuf::from(app_data);
+                        candidates.extend(vscode_zig_candidates_from(&app_data, &home));
+                        candidates.extend(vscode_zls_candidates_from(&app_data, &home));
+                    }
+                }
                 _ => {}
             }
         }
+    }
+    if server.id == ZLS_SERVER_ID
+        && let Ok(zig) = which::which("zig")
+    {
+        candidates.push(zig);
     }
     if server.id == KOTLIN_LS_SERVER_ID {
         candidates.extend(path_kotlin_candidates());
@@ -4698,6 +4996,17 @@ pub(crate) fn resolution_fingerprint(
             && let Ok(extension_root) = vscode_tinymist_extension_root(&candidate)
         {
             hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+        }
+        if server.id == ZLS_SERVER_ID
+            && let (Some(app_data), Some(home)) = (std::env::var_os("APPDATA"), vscode_user_home())
+            && let Ok((manifest, _)) = validate_vscode_zls_extension(
+                &candidate,
+                &PathBuf::from(app_data),
+                &home,
+                &server.version_req,
+            )
+        {
+            hash_executable_candidate(&mut digest, manifest);
         }
     }
     hex::encode(digest.finalize())

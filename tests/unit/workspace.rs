@@ -1045,6 +1045,42 @@ fn tinymist_files_use_the_nearest_typst_manifest_within_the_workspace() {
 }
 
 #[test]
+fn zig_files_use_the_nearest_build_root_within_the_workspace() {
+    let parent = support::tempdir().unwrap();
+    support::write(parent.path().join("build.zig"), "").unwrap();
+    let workspace_root = parent.path().join("workspace");
+    let project = workspace_root.join("apps/demo");
+    let source_dir = project.join("src");
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(project.join("build.zig"), "const std = @import(\"std\");").unwrap();
+    let files = [source_dir.join("main.zig"), project.join("build.zig.zon")];
+    for file in &files {
+        support::write(file, "").unwrap();
+    }
+    let workspace = Workspace::open(&workspace_root).unwrap();
+    let registry = Registry::builtin().unwrap();
+    let zls = registry.server("zls").unwrap();
+
+    for file in &files {
+        assert_eq!(
+            workspace
+                .matching_servers(file, file.extension().unwrap().to_str().unwrap(), &registry,)
+                .into_iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["zls"]
+        );
+        assert_eq!(workspace.root_for_file(file, zls), project);
+    }
+
+    fs::remove_file(project.join("build.zig")).unwrap();
+    assert_eq!(
+        workspace.root_for_file(&files[0], zls),
+        fs::canonicalize(&workspace_root).unwrap()
+    );
+}
+
+#[test]
 fn deno_replaces_typescript_while_eslint_coexists_at_the_nearest_lock_root() {
     let root = support::tempdir().unwrap();
     let deno_root = root.path().join("deno-app");

@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn builtin_is_the_closed_thirty_one_server_set() {
+fn builtin_is_the_closed_thirty_two_server_set() {
     let registry = Registry::builtin().unwrap();
-    assert_eq!(registry.server.len(), 31);
+    assert_eq!(registry.server.len(), 32);
     assert_eq!(
         registry
             .server
@@ -169,6 +169,15 @@ fn matches_only_declared_extensions() {
                 .map(|server| server.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["ruby-lsp"]
+        );
+    }
+    for extension in [".ZIG", ".ZON"] {
+        assert_eq!(
+            registry
+                .matching_extension(extension)
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zls"]
         );
     }
 }
@@ -952,6 +961,38 @@ fn clangd_uses_the_locked_official_windows_archive() {
         "ce54f16e0b4fd76d450eeda9664420b195360b73febcfe40e661108fa57f2ce1"
     );
     assert_eq!(executable, "clangd_22.1.6/bin/clangd.exe");
+}
+
+#[test]
+fn zls_uses_the_locked_official_windows_archive() {
+    let zls = Registry::builtin().unwrap().server("zls").unwrap().clone();
+    assert_eq!(zls.display_name, "ZLS");
+    assert_eq!(zls.language_id, "zig");
+    assert_eq!(zls.version_req, ">=0.16.0, <0.17.0");
+    assert_eq!(zls.extensions, ["zig", "zon"]);
+    assert_eq!(zls.markers, ["build.zig"]);
+    assert_eq!(zls.command, "zls");
+    assert!(zls.args.is_empty());
+    assert_eq!(zls.version_args, ["--version"]);
+    let InstallRecipe::GithubZip {
+        version,
+        url,
+        sha256,
+        executable,
+    } = &zls.install
+    else {
+        panic!("ZLS must use the fixed GitHub ZIP recipe");
+    };
+    assert_eq!(version, "0.16.0");
+    assert_eq!(
+        url,
+        "https://github.com/zigtools/zls/releases/download/0.16.0/zls-x86_64-windows.zip"
+    );
+    assert_eq!(
+        sha256,
+        "35cbb7163224e8cf92d21099c1b1391f2aba927f25d389f021b13a21d40b96dd"
+    );
+    assert_eq!(executable, "zls.exe");
 }
 
 #[test]

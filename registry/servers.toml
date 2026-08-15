@@ -369,3 +369,15 @@ command = "yaml-language-server"
 args = ["--stdio"]
 version_args = ["--version"]
 install = { kind = "npm", version = "1.24.0", package = "yaml-language-server", companions = [] }
+
+[[server]]
+id = "zls"
+display_name = "ZLS"
+language_id = "zig"
+version_req = ">=0.16.0, <0.17.0"
+extensions = ["zig", "zon"]
+markers = ["build.zig"]
+command = "zls"
+args = []
+version_args = ["--version"]
+install = { kind = "github_zip", version = "0.16.0", url = "https://github.com/zigtools/zls/releases/download/0.16.0/zls-x86_64-windows.zip", sha256 = "35cbb7163224e8cf92d21099c1b1391f2aba927f25d389f021b13a21d40b96dd", executable = "zls.exe" }

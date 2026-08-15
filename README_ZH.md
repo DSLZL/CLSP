@@ -88,6 +88,7 @@ clsp setup --workspace .
 | TypeScript / JavaScript | TypeScript Language Server | npm 包装器及项目、VS Code 或包管理器 TypeScript SDK |
 | Vue | Vue Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
 | YAML | YAML Language Server | 复用官方 VS Code 扩展或 npm 兼容包管理器 |
+| Zig | ZLS | 复用官方 VS Code 扩展，否则由 CLSP 校验后下载；需本机 Zig |
 
 CLSP 的基本原则很简单：
 
@@ -140,6 +141,8 @@ YAML 支持 `.yaml` 与 `.yml` 文件，根目录取最近的 npm、Bun、pnpm �
 Terraform 支持 `.tf` 与 `.tfvars`，根目录取最近的 `.terraform.lock.hcl`、`terraform.tfstate` 或包含 `.tf` 文件的目录，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 `terraform-ls`、官方 `HashiCorp.terraform` Stable/Insiders 扩展内置且经过校验的服务端，以及 CLSP 托管缓存；在 Windows x86-64 上，启用自动安装时可下载固定版本、校验 SHA-256 的 `terraform-ls` 0.39.0 归档。CLSP 不安装 Terraform CLI、provider、module 或 VS Code 扩展；`.tfvars` 使用协议语言 ID `terraform-vars`。
 
 Typst 支持 `.typ` 与 `.typc`，根目录取最近的 `typst.toml`，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 Tinymist、官方 `myriad-dreamin.tinymist` Stable/Insiders 扩展内置且经过校验的服务端，以及 CLSP 托管缓存；在 Windows x86-64 上，启用自动安装时可下载固定版本、校验 SHA-256 的 Tinymist 0.15.2 归档。CLSP 启动 `tinymist lsp`，不会安装 VS Code 扩展或单独的 Typst CLI；`.typc` 使用协议语言 ID `typst-code`。
+
+Zig 支持 `.zig` 与 `.zon`，根目录取最近的 `build.zig`，找不到时回退到 workspace 根。本机 `PATH` 中或配对的官方 `ziglang.vscode-zig` Stable/Insiders 扩展内必须已有 Zig `0.16.x`；CLSP 依次复用项目本地、显式路径或 `PATH` 中兼容的 ZLS、该扩展管理且经过校验的 ZLS `0.16.x`、以及 CLSP 托管缓存。在 Windows x86-64 上，启用自动安装时可下载固定版本、校验 SHA-256 的 ZLS 0.16.0 归档。CLSP 不安装 Zig 或 VS Code 扩展；Zig 项目构建逻辑可能执行代码，因此只应在可信 workspace 中使用 ZLS。
 
 SourceKit-LSP 支持 `.swift`、`.objc` 与 `.objcpp`，根目录取最近的 `Package.swift`、Xcode 项目/工作区目录或编译数据库，找不到时回退到 workspace 根。CLSP 依次复用项目本地、显式路径或 `PATH` 中的 `sourcekit-lsp`，macOS 还可通过 `xcrun` 查找；启动探测使用短时 `--help`，并校验 Swift 5.9+。这三个扩展会分别发送协议语言 ID `swift`、`objective-c` 与 `objective-cpp`。CLSP 不安装 Swift、Xcode 或官方 `swiftlang.swift-vscode` 扩展。SwiftPM/Xcode 首次索引可能需要数分钟，也可能执行可信项目的构建配置，因此只应在可信 workspace 中启动。
 

@@ -459,6 +459,47 @@ fn write_tinymist_extension(
     executable
 }
 
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn write_zls_extension(
+    app_data: &Path,
+    user_home: &Path,
+    insiders: bool,
+    extension_version: &str,
+    zls_version: &str,
+) -> (PathBuf, PathBuf) {
+    let extensions = user_home.join(if insiders {
+        ".vscode-insiders/extensions"
+    } else {
+        ".vscode/extensions"
+    });
+    let extension = extensions.join(format!("{ZIG_EXTENSION_PREFIX}{extension_version}"));
+    support::create_dir_all(&extension).unwrap();
+    let manifest = extension.join("package.json");
+    support::write(
+        &manifest,
+        serde_json::to_vec(&serde_json::json!({
+            "name": "vscode-zig",
+            "publisher": "ziglang",
+            "version": extension_version,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let executable = app_data
+        .join(if insiders { "Code - Insiders" } else { "Code" })
+        .join("User/globalStorage/ziglang.vscode-zig/zls")
+        .join(format!("x86_64-windows-{zls_version}/zls.exe"));
+    support::create_dir_all(executable.parent().unwrap()).unwrap();
+    support::write(&executable, b"launcher").unwrap();
+    let zig = app_data
+        .join(if insiders { "Code - Insiders" } else { "Code" })
+        .join("User/globalStorage/ziglang.vscode-zig/zig")
+        .join(format!("x86_64-windows-{zls_version}/zig.exe"));
+    support::create_dir_all(zig.parent().unwrap()).unwrap();
+    support::write(zig, b"launcher").unwrap();
+    (executable, manifest)
+}
+
 fn write_jdtls_extension(
     extension_root: &Path,
     directory_version: &str,
@@ -1472,6 +1513,187 @@ fn vscode_tinymist_candidates_validate_official_pinned_server() {
         first
     );
     assert!(validate_vscode_tinymist_extension(&newer, ">=0.15.2, <0.16.0").is_err());
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn vscode_zls_candidates_require_a_paired_official_extension() {
+    let root = support::tempdir().unwrap();
+    let app_data = root.path().join("appdata");
+    let user_home = root.path().join("home");
+    let (older, _) = write_zls_extension(&app_data, &user_home, false, "0.6.18", "0.15.0");
+    let (newer, manifest) = write_zls_extension(&app_data, &user_home, true, "0.6.19", "0.16.0");
+
+    assert_eq!(
+        vscode_zls_candidates_from(&app_data, &user_home),
+        [newer.clone(), older.clone()]
+    );
+    let newer_zig = newer
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("zig/x86_64-windows-0.16.0/zig.exe");
+    assert_eq!(
+        vscode_zig_candidates_from(&app_data, &user_home)[0],
+        newer_zig
+    );
+    assert_eq!(
+        validate_vscode_zig_tool_extension(
+            &newer_zig,
+            &app_data,
+            &user_home,
+            "zig",
+            ZIG_VERSION_REQ,
+        )
+        .unwrap()
+        .1,
+        Version::new(0, 16, 0)
+    );
+    let (validated_manifest, version) =
+        validate_vscode_zls_extension(&newer, &app_data, &user_home, ">=0.16.0, <0.17.0").unwrap();
+    assert_eq!(
+        validated_manifest,
+        std::fs::canonicalize(&manifest).unwrap()
+    );
+    assert_eq!(version, Version::new(0, 16, 0));
+    assert!(
+        validate_vscode_zls_extension(&older, &app_data, &user_home, ">=0.16.0, <0.17.0").is_err()
+    );
+    assert!(vscode_zls_candidates_from(&app_data, &root.path().join("other-home")).is_empty());
+    let outside = root.path().join("outside/zls.exe");
+    support::create_dir_all(outside.parent().unwrap()).unwrap();
+    support::write(&outside, b"launcher").unwrap();
+    assert!(
+        validate_vscode_zls_extension(&outside, &app_data, &user_home, ">=0.16.0, <0.17.0")
+            .is_err()
+    );
+
+    support::write(
+        &manifest,
+        br#"{"name":"vscode-zig","publisher":"other","version":"0.6.19"}"#,
+    )
+    .unwrap();
+    assert!(
+        validate_vscode_zls_extension(&newer, &app_data, &user_home, ">=0.16.0, <0.17.0").is_err()
+    );
+    assert_eq!(vscode_zls_candidates_from(&app_data, &user_home), [older]);
+}
+
+#[tokio::test]
+async fn zig_prerequisite_probe_requires_a_compatible_version() {
+    let root = support::tempdir().unwrap();
+    let resolver = test_resolver(root.path());
+    let executable = fake_executable(root.path(), "zig", "echo 0.16.0");
+    assert!(
+        resolver
+            .probe_required_program("zig", &executable, Some(ZIG_VERSION_REQ))
+            .await
+            .is_ok()
+    );
+
+    let executable = fake_executable(root.path(), "old-zig", "echo 0.15.2");
+    assert!(
+        resolver
+            .probe_required_program("zig", &executable, Some(ZIG_VERSION_REQ))
+            .await
+            .is_err()
+    );
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[tokio::test]
+async fn zls_resolution_keeps_local_explicit_extension_cache_order() {
+    let root = support::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    support::create_dir_all(workspace.join("bin")).unwrap();
+    let output = run_command(
+        &system_curl().unwrap(),
+        &["--version".to_owned()],
+        &workspace,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    let version = parse_version(&command_output_detail(&output)).unwrap();
+
+    let app_data = root.path().join("appdata");
+    let user_home = root.path().join("home");
+    let (extension, _) =
+        write_zls_extension(&app_data, &user_home, true, "0.6.19", &version.to_string());
+    compatible_test_executable(&extension);
+
+    let mut resolver = test_resolver(root.path());
+    resolver.config.auto_install = false;
+    resolver.vscode_app_data = Some(app_data);
+    resolver.vscode_user_home = Some(user_home);
+    let mut server = Registry::builtin()
+        .unwrap()
+        .server(ZLS_SERVER_ID)
+        .unwrap()
+        .clone();
+    server.command = "zls-order-test".into();
+    server.version_req = format!("={version}");
+    let (artifact_version, artifact_executable) = match &server.install {
+        InstallRecipe::GithubZip {
+            version,
+            executable,
+            ..
+        } => (version.clone(), executable.clone()),
+        _ => unreachable!(),
+    };
+
+    let local = workspace
+        .join("bin")
+        .join(&executable_names(&server.command)[0]);
+    let explicit = root.path().join("explicit-zls.exe");
+    let cached = github_zip_candidate(
+        &resolver.paths.artifacts,
+        &server.id,
+        &artifact_version,
+        &artifact_executable,
+    );
+    for executable in [&local, &explicit, &cached] {
+        support::create_dir_all(executable.parent().unwrap()).unwrap();
+        compatible_test_executable(executable);
+    }
+
+    let resolution = resolver
+        .resolve_existing(&server, &workspace, Some(&explicit))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolution.source, ExecutableSource::ProjectLocal);
+    assert_eq!(resolution.path, local);
+
+    std::fs::remove_file(&resolution.path).unwrap();
+    let resolution = resolver
+        .resolve_existing(&server, &workspace, Some(&explicit))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolution.source, ExecutableSource::Explicit);
+    assert_eq!(resolution.path, explicit);
+
+    std::fs::remove_file(&resolution.path).unwrap();
+    let resolution = resolver
+        .resolve_existing(&server, &workspace, Some(&explicit))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolution.source, ExecutableSource::VsCodeExtension);
+    assert_eq!(resolution.path, extension);
+
+    std::fs::remove_file(&resolution.path).unwrap();
+    let resolution = resolver
+        .resolve_existing(&server, &workspace, Some(&explicit))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolution.source, ExecutableSource::Installed);
+    assert_eq!(resolution.path, cached);
 }
 
 #[tokio::test]

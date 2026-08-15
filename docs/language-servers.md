@@ -39,6 +39,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `oxlint` | JavaScript / TypeScript / Vue / Astro / Svelte | `oxlint --lsp` | `>=1.78.0, <2.0.0` | project-local package or manual executable |
 | `clangd` | C / C++ | `clangd` | `>=16.0.0` | verified clangd `22.1.6` archive |
 | `yaml-ls` | YAML | `yaml-language-server --stdio` | `>=1.14.0, <2.0.0` | official `redhat.vscode-yaml` extension or `yaml-language-server@1.24.0` |
+| `zls` | Zig | `zls` | `>=0.16.0, <0.17.0` | official `ziglang.vscode-zig` extension or verified ZLS 0.16.0 archive |
 
 ## Discovery Order
 
@@ -73,6 +74,7 @@ Some server types then have an additional reuse path before installation:
 - Kotlin: `intellij-server` on `PATH`, then the server bundled with the official `JetBrains.kotlin-server` Stable/Insiders extension; its manifest, product/build metadata, launcher, and JBR 25 are verified
 - LuaLS: the complete server bundled with the official `sumneko.lua` Stable/Insiders extension after standalone executables; its manifest, launcher, runtime files, and actual server version are verified
 - clangd: the VS Code clangd extension's managed install, then CLSP's user-level artifact cache
+- ZLS: the `x86_64-windows-*` server managed in the paired official `ziglang.vscode-zig` Stable/Insiders global storage after strict extension/path/server-version validation, then CLSP's user-level artifact cache
 - SourceKit-LSP: macOS `xcrun --find sourcekit-lsp` after local/explicit/PATH candidates; CLSP never scans arbitrary VS Code extension directories
 
 Only after those reuse paths fail does automatic installation begin.
@@ -91,7 +93,7 @@ Disable it with:
 auto_install = false
 ```
 
-With `auto_install = false`, CLSP still reuses compatible existing servers, including supported toolchain/global locations and already-complete CLSP clangd, Terraform, or Tinymist caches. It does not run an installer or download a new archive.
+With `auto_install = false`, CLSP still reuses compatible existing servers, including supported toolchain/global locations and already-complete CLSP clangd, Terraform, Tinymist, or ZLS caches. It does not run an installer or download a new archive.
 
 ### npm-based servers
 
@@ -506,6 +508,21 @@ If you use a custom VS Code user-data directory that CLSP cannot discover, confi
 executable = "C:/path/to/clangd.exe"
 ```
 
+### ZLS
+
+CLSP starts `zls` for `.zig` and `.zon` files and requires both Zig and ZLS versions `>=0.16.0, <0.17.0`. Zig must already be available on `PATH` or in the paired official `ziglang.vscode-zig` Stable/Insiders global storage; CLSP checks its canonical `zig version` output and never installs the compiler.
+
+ZLS discovery checks project-local, explicit, and `PATH` candidates first. It then accepts only an `x86_64-windows-*` ZLS managed in the global storage paired with an installed official `ziglang.vscode-zig` Stable or Insiders extension, followed by CLSP's user-level artifact cache. The extension identity, directory/manifest version, storage containment, ZLS directory version, and runtime-reported version are verified. On Windows x86-64 only, automatic installation can download the fixed ZLS 0.16.0 archive after SHA-256 validation and bounded extraction; it does not install Zig or the extension.
+
+The nearest `build.zig` selects the root; otherwise CLSP uses the workspace root. Use only trusted Zig workspaces because `build.zig` and related project build logic may execute code.
+
+Configure a non-standard ZLS directly:
+
+```toml
+[lsp.zls]
+executable = "C:/tools/zls.exe"
+```
+
 ## Per-server Overrides
 
 Every built-in server can be disabled or pointed at a specific executable:
@@ -537,6 +554,7 @@ Examples:
 - Swift/Objective-C: `.swift`, `.objc`, or `.objcpp` plus `Package.swift`, Xcode project/workspace directories, or a compilation database
 - Dart: `.dart` plus `pubspec.yaml` or `analysis_options.yaml`
 - Deno: `.ts`, `.tsx`, `.js`, `.jsx`, or `.mjs` below `deno.json` or `deno.jsonc`; this takes precedence over the TypeScript server within that root
+- Zig: `.zig` or `.zon` below the nearest `build.zig`, with workspace-root fallback
 - Elixir: `.ex` or `.exs` below the nearest `mix.exs` or `mix.lock`
 - F#: `.fs`, `.fsi`, `.fsx`, or `.fsscript` below the nearest solution, `*.fsproj`, or `global.json`
 - Gleam: `.gleam` below the nearest `gleam.toml`, with workspace-root fallback

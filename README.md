@@ -90,6 +90,7 @@ After setup:
 | TypeScript / JavaScript | TypeScript Language Server | npm wrapper plus project, VS Code, or manager TypeScript SDK |
 | Vue | Vue Language Server | Reuse official VS Code extension or npm-compatible manager |
 | YAML | YAML Language Server | Reuse official VS Code extension or npm-compatible manager |
+| Zig | ZLS | Reuse official VS Code extension, otherwise verified CLSP download; Zig required |
 
 CLSP follows a simple rule:
 
@@ -142,6 +143,8 @@ YAML support covers `.yaml` and `.yml` below the nearest npm, Bun, pnpm, or Yarn
 Terraform support covers `.tf` and `.tfvars` files below the nearest `.terraform.lock.hcl`, `terraform.tfstate`, or directory containing `.tf` files, with the workspace root as fallback. CLSP reuses a compatible project, explicit, or `PATH` `terraform-ls`, then the verified server bundled in the official `HashiCorp.terraform` Stable/Insiders extension, then its managed cache; on Windows x86-64, automatic installation can download the pinned, checksum-verified `terraform-ls` 0.39.0 archive. CLSP does not install Terraform CLI, providers, modules, or the VS Code extension. `.tfvars` uses the protocol language ID `terraform-vars`.
 
 Typst support covers `.typ` and `.typc` files below the nearest `typst.toml`, with the workspace root as fallback. CLSP reuses a compatible project, explicit, or `PATH` Tinymist, then the verified server bundled in the official `myriad-dreamin.tinymist` Stable/Insiders extension, then its managed cache; on Windows x86-64, automatic installation can download the pinned, checksum-verified Tinymist 0.15.2 archive. CLSP starts `tinymist lsp` and does not install the VS Code extension or a separate Typst CLI. `.typc` uses the protocol language ID `typst-code`.
+
+Zig support covers `.zig` and `.zon` files below the nearest `build.zig`, with the workspace root as fallback. Zig `0.16.x` must already be on `PATH` or managed by the paired official `ziglang.vscode-zig` Stable/Insiders extension; CLSP reuses a compatible project, explicit, or `PATH` ZLS, then the extension-managed ZLS `0.16.x`, then its managed cache. On Windows x86-64, automatic installation can download the pinned, checksum-verified ZLS 0.16.0 archive. CLSP does not install Zig or the VS Code extension; use ZLS only in trusted Zig workspaces because project build logic may execute code.
 
 SourceKit-LSP support covers `.swift`, `.objc`, and `.objcpp` below the nearest `Package.swift`, Xcode project/workspace directory, or compilation database, with the workspace root as the fallback. CLSP reuses `sourcekit-lsp` from the project, an explicit path, or `PATH`, and on macOS can resolve it through `xcrun`; it validates a short `--help` probe and Swift 5.9+. It sends the protocol language IDs `swift`, `objective-c`, and `objective-cpp` for those extensions. CLSP does not install Swift, Xcode, or the official `swiftlang.swift-vscode` extension. SwiftPM/Xcode indexing can take several minutes and may execute trusted project build configuration, so use SourceKit-LSP only in trusted workspaces.
 
