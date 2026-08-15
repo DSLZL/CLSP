@@ -18,7 +18,9 @@ const DENO_SERVER_ID: &str = "deno";
 const GOPLS_SERVER_ID: &str = "gopls";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const KOTLIN_LS_SERVER_ID: &str = "kotlin-ls";
+const RUST_SERVER_ID: &str = "rust";
 const TYPESCRIPT_SERVER_ID: &str = "typescript";
+const CARGO_MANIFEST_LIMIT: u64 = 1024 * 1024;
 const JDTLS_POM_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -343,6 +345,9 @@ fn nearest_marked_root(
             directory = candidate.parent();
         }
     }
+    if server.id == RUST_SERVER_ID {
+        return nearest_rust_root(file, workspace, &server.markers);
+    }
 
     let mut directory = file.parent();
     while let Some(candidate) = directory {
@@ -359,6 +364,39 @@ fn nearest_marked_root(
         directory = candidate.parent();
     }
     None
+}
+
+fn nearest_rust_root(file: &Path, workspace: &Path, markers: &[String]) -> Option<PathBuf> {
+    let markers = markers.iter().map(String::as_str).collect::<Vec<_>>();
+    let root = nearest_root_with_markers(file, workspace, &markers)?;
+    if !root.join("Cargo.toml").is_file() && !root.join("Cargo.lock").is_file() {
+        return Some(root);
+    }
+
+    let mut directory = Some(root.as_path());
+    while let Some(candidate) = directory {
+        if cargo_declares_workspace(&candidate.join("Cargo.toml")) {
+            return Some(candidate.to_path_buf());
+        }
+        if is_workspace_root(candidate, workspace) {
+            break;
+        }
+        directory = candidate.parent();
+    }
+    Some(root)
+}
+
+fn cargo_declares_workspace(manifest: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(manifest) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() > CARGO_MANIFEST_LIMIT {
+        return false;
+    }
+    fs::read_to_string(manifest)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .is_some_and(|manifest| manifest.get("workspace").is_some())
 }
 
 fn nearest_jdtls_root(file: &Path, workspace: &Path) -> Option<PathBuf> {

@@ -269,6 +269,39 @@ fn bash_uses_the_locked_official_language_server() {
 }
 
 #[test]
+fn rust_uses_the_rustup_and_workspace_contract() {
+    let registry = Registry::builtin().unwrap();
+    let rust = registry.server("rust").unwrap();
+    assert_eq!(rust.display_name, "rust-analyzer");
+    assert_eq!(rust.language_id, "rust");
+    assert_eq!(rust.version_req, ">=1.75.0");
+    assert_eq!(rust.extensions, ["rs"]);
+    assert_eq!(
+        rust.markers,
+        [
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-project.json",
+            ".rust-project.json",
+        ]
+    );
+    assert_eq!(rust.command, "rust-analyzer");
+    assert!(rust.args.is_empty());
+    assert_eq!(rust.version_args, ["--version"]);
+    let InstallRecipe::Command {
+        version,
+        program,
+        args,
+    } = &rust.install
+    else {
+        panic!("Rust must use the rustup component recipe");
+    };
+    assert_eq!(version, "rustup-component");
+    assert_eq!(program, "rustup");
+    assert_eq!(args, &["component", "add", "rust-analyzer"]);
+}
+
+#[test]
 fn svelte_uses_the_locked_opencode_contract() {
     let registry = Registry::builtin().unwrap();
     let svelte = registry.server("svelte").unwrap();

@@ -82,7 +82,7 @@ After setup:
 | Prisma | Prisma Language Server | Reuse official VS Code extension or npm-compatible manager |
 | Python | Pyright | Reuse official VS Code extension or npm-compatible manager |
 | Ruby | Ruby LSP | Reuse local/gem-installed server or `gem install` |
-| Rust | rust-analyzer | `rustup component add` |
+| Rust | rust-analyzer | Reuse official VS Code extension, otherwise `rustup component add` |
 | Swift / Objective-C / Objective-C++ | SourceKit-LSP | Manual Swift toolchain or Xcode |
 | Svelte | Svelte Language Server | Reuse official VS Code extension or npm-compatible manager |
 | Terraform | Terraform Language Server | Reuse official VS Code extension, otherwise verified CLSP download |
@@ -111,6 +111,8 @@ F# support covers `.fs`, `.fsi`, `.fsx`, and `.fsscript` below the nearest solut
 Gleam support covers `.gleam` files below the nearest `gleam.toml`, with the workspace root as the fallback. CLSP reuses a compatible Gleam `1.x` compiler from `PATH` or `[lsp.gleam].executable` and starts its built-in `gleam lsp`; it does not install Gleam, Erlang/OTP, or scan the official `Gleam.gleam` extension for a bundled server. The extension uses the same external compiler and can independently publish VS Code Problems through the IDE bridge.
 
 Go support covers `.go` files. A `go.work` anywhere between the file and workspace root takes priority over the nearest `go.mod` or `go.sum`; CLSP reuses a compatible `gopls` or installs the pinned version through the existing Go toolchain. The official `golang.Go` VS Code extension is a separate client of the same external server and can independently publish Problems through the IDE bridge.
+
+Rust support covers `.rs` files and Rust project markers. CLSP first reuses a compatible local or `PATH` server, then on Windows x64 the verified server bundled with the official `rust-lang.rust-analyzer` Stable/Insiders extension, then the workspace-selected `rustup` component. Only when no existing source works and automatic installation is enabled does CLSP run `rustup component add rust-analyzer`; it never installs Rust, rustup, or the VS Code extension. A member crate is promoted to the nearest containing Cargo workspace root.
 
 Haskell support covers `.hs` and `.lhs` files below the nearest `stack.yaml`, `cabal.project`, `hie.yaml`, or `*.cabal`, with the workspace root as the fallback. CLSP reuses a compatible HLS `2.x` wrapper from `PATH` or `[lsp.hls].executable` and starts `haskell-language-server-wrapper --lsp`; it does not install or select GHC/HLS versions. The official `haskell.haskell` extension is an independent client of an external HLS and can publish Problems through the IDE bridge. Start HLS only in trusted projects because project cradle/build configuration may execute code.
 

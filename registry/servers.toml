@@ -124,7 +124,7 @@ display_name = "rust-analyzer"
 language_id = "rust"
 version_req = ">=1.75.0"
 extensions = ["rs"]
-markers = ["Cargo.toml", "rust-project.json"]
+markers = ["Cargo.toml", "Cargo.lock", "rust-project.json", ".rust-project.json"]
 command = "rust-analyzer"
 args = []
 version_args = ["--version"]

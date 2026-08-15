@@ -177,6 +177,33 @@ fn write_pyright_extension(extension_root: &Path, version: &str) -> PathBuf {
     server
 }
 
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn write_rust_analyzer_extension(user_home: &Path, insiders: bool, version: &str) -> PathBuf {
+    let extensions = user_home.join(if insiders {
+        ".vscode-insiders/extensions"
+    } else {
+        ".vscode/extensions"
+    });
+    let root = extensions.join(format!(
+        "{RUST_ANALYZER_EXTENSION_PREFIX}{version}{RUST_ANALYZER_EXTENSION_PLATFORM_SUFFIX}"
+    ));
+    let executable = root.join("server/rust-analyzer.exe");
+    support::create_dir_all(executable.parent().unwrap()).unwrap();
+    support::write(&executable, b"launcher").unwrap();
+    support::write(
+        root.join("package.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "rust-analyzer",
+            "publisher": "rust-lang",
+            "version": version,
+            "__metadata": {"targetPlatform": "win32-x64"},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    executable
+}
+
 fn write_svelte_extension(
     extension_root: &Path,
     extension_version: &str,
@@ -1074,6 +1101,43 @@ fn vscode_pyright_candidates_are_newest_first_and_official() {
     );
     assert!(validate_vscode_pyright_extension(&newer, ">=1.1.300, <2.0.0").is_ok());
     assert!(validate_vscode_pyright_extension(&older, ">=1.1.411, <2.0.0").is_err());
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn vscode_rust_analyzer_orders_platform_candidates_and_validates_manifest() {
+    let root = support::tempdir().unwrap();
+    let older = write_rust_analyzer_extension(root.path(), false, "0.3.3007");
+    let stable = write_rust_analyzer_extension(root.path(), false, "0.3.3008");
+    let insiders = write_rust_analyzer_extension(root.path(), true, "0.3.3008");
+    let newer = write_rust_analyzer_extension(root.path(), true, "0.3.3009");
+    assert_eq!(
+        vscode_rust_analyzer_candidates_from(root.path()),
+        [newer, stable.clone(), insiders, older]
+    );
+
+    let (manifest, version) =
+        validate_vscode_rust_analyzer_extension(&stable, root.path()).unwrap();
+    assert_eq!(version, Version::new(0, 3, 3008));
+    assert!(
+        validate_rust_analyzer_extension_server_version(
+            "rust-analyzer 0.3.3008-standalone (test 2026-08-10)",
+            &version,
+        )
+        .is_ok()
+    );
+    for output in [
+        "rust-analyzer 0.3.3007-standalone (test 2026-08-03)",
+        "rust-analyzer 0.3.3008-dev (test 2026-08-10)",
+    ] {
+        assert!(validate_rust_analyzer_extension_server_version(output, &version).is_err());
+    }
+    support::write(
+        manifest,
+        br#"{"name":"rust-analyzer","publisher":"rust-lang","version":"0.3.3008","__metadata":{"targetPlatform":"linux-x64"}}"#,
+    )
+    .unwrap();
+    assert!(validate_vscode_rust_analyzer_extension(&stable, root.path()).is_err());
 }
 
 #[test]

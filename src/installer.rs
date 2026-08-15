@@ -50,6 +50,9 @@ const PRISMA_EXTENSION_PREFIX: &str = "prisma.prisma-";
 const PYRIGHT_SERVER_ID: &str = "pyright";
 const PYRIGHT_EXTENSION_PREFIX: &str = "ms-pyright.pyright-";
 const RUBY_LSP_SERVER_ID: &str = "ruby-lsp";
+const RUST_SERVER_ID: &str = "rust";
+const RUST_ANALYZER_EXTENSION_PREFIX: &str = "rust-lang.rust-analyzer-";
+const RUST_ANALYZER_EXTENSION_PLATFORM_SUFFIX: &str = "-win32-x64";
 const JDTLS_SERVER_ID: &str = "jdtls";
 const JDTLS_EXTENSION_PREFIX: &str = "redhat.java-";
 const JDTLS_PLUGIN_ENTRY_LIMIT: usize = 512;
@@ -297,6 +300,7 @@ impl ServerResolver {
             INTELEPHENSE_SERVER_ID => self.resolve_vscode_intelephense(server).await,
             PRISMA_SERVER_ID => self.resolve_vscode_prisma(server).await,
             PYRIGHT_SERVER_ID => self.resolve_vscode_pyright(server).await,
+            RUST_SERVER_ID => self.resolve_vscode_rust_analyzer(server, workspace).await,
             FSHARP_SERVER_ID => self.resolve_vscode_fsharp(server, workspace).await,
             JDTLS_SERVER_ID => self.resolve_vscode_jdtls(server, workspace).await,
             JULIALS_SERVER_ID => self.resolve_vscode_julials(server, workspace).await,
@@ -522,6 +526,53 @@ impl ServerResolver {
                 source: ExecutableSource::VsCodeExtension,
                 npm_modules_root: None,
             });
+        }
+        None
+    }
+
+    async fn resolve_vscode_rust_analyzer(
+        &self,
+        server: &ServerDefinition,
+        workspace: &Path,
+    ) -> Option<ResolvedExecutable> {
+        let home = self.vscode_user_home.as_deref()?;
+        for candidate in vscode_rust_analyzer_candidates_from(home) {
+            let Ok((_, extension_version)) =
+                validate_vscode_rust_analyzer_extension(&candidate, home)
+            else {
+                continue;
+            };
+            let Ok(output) = run_checked(
+                &candidate,
+                &server.version_args,
+                workspace,
+                Duration::from_millis(self.config.runtime.probe_timeout_ms),
+                "rust-analyzer extension probe",
+            )
+            .await
+            else {
+                continue;
+            };
+            let output = if output.stdout.is_empty() {
+                &output.stderr
+            } else {
+                &output.stdout
+            };
+            let version_output: String = String::from_utf8_lossy(output)
+                .trim()
+                .chars()
+                .take(512)
+                .collect();
+            if validate_rust_analyzer_extension_server_version(&version_output, &extension_version)
+                .is_ok()
+            {
+                return Some(ResolvedExecutable {
+                    path: candidate,
+                    version_output,
+                    source: ExecutableSource::VsCodeExtension,
+                    npm_modules_root: None,
+                });
+            }
         }
         None
     }
@@ -1275,7 +1326,7 @@ impl ServerResolver {
         let candidate = match server.id.as_str() {
             "csharp" | FSHARP_SERVER_ID => self.dotnet_tool_candidate(server, program).await?,
             "gopls" => self.gopls_candidate(program).await?,
-            "rust" => self.rustup_candidate(program, workspace, installed).await?,
+            RUST_SERVER_ID => self.rustup_candidate(program, workspace, installed).await?,
             _ => None,
         };
         let Some(candidate) = candidate else {
@@ -1320,7 +1371,7 @@ impl ServerResolver {
         } else {
             args.to_vec()
         };
-        let cwd = if server.id == "rust" {
+        let cwd = if server.id == RUST_SERVER_ID {
             workspace
         } else {
             &self.paths.workspace_state
@@ -2019,6 +2070,57 @@ fn vscode_pyright_candidates_from(user_home: &Path) -> Vec<PathBuf> {
         PYRIGHT_EXTENSION_PREFIX,
         Path::new("dist/server.js"),
     )
+}
+
+fn vscode_rust_analyzer_candidates_from(user_home: &Path) -> Vec<PathBuf> {
+    if !cfg!(all(windows, target_arch = "x86_64")) {
+        return Vec::new();
+    }
+    let mut candidates = Vec::new();
+    for (product_order, extensions) in [
+        (0, user_home.join(".vscode/extensions")),
+        (1, user_home.join(".vscode-insiders/extensions")),
+    ] {
+        let Ok(entries) = std::fs::read_dir(extensions) else {
+            continue;
+        };
+        for entry in entries
+            .filter_map(Result::ok)
+            .take(VSCODE_EXTENSION_ENTRY_LIMIT)
+        {
+            let root = entry.path();
+            let Some(version) = root
+                .file_name()
+                .and_then(OsStr::to_str)
+                .and_then(rust_analyzer_extension_directory_version)
+            else {
+                continue;
+            };
+            let executable = root.join("server/rust-analyzer.exe");
+            if executable.is_file() {
+                candidates.push((version, product_order, executable));
+            }
+        }
+    }
+    candidates.sort_by(
+        |(left_version, left_product, left_path), (right_version, right_product, right_path)| {
+            right_version
+                .cmp(left_version)
+                .then_with(|| left_product.cmp(right_product))
+                .then_with(|| left_path.cmp(right_path))
+        },
+    );
+    candidates.into_iter().map(|(_, _, path)| path).collect()
+}
+
+fn rust_analyzer_extension_directory_version(name: &str) -> Option<Version> {
+    let prefix = name.get(..RUST_ANALYZER_EXTENSION_PREFIX.len())?;
+    if !prefix.eq_ignore_ascii_case(RUST_ANALYZER_EXTENSION_PREFIX) {
+        return None;
+    }
+    name.get(RUST_ANALYZER_EXTENSION_PREFIX.len()..)?
+        .strip_suffix(RUST_ANALYZER_EXTENSION_PLATFORM_SUFFIX)
+        .and_then(|version| Version::parse(version).ok())
 }
 
 fn vscode_fsharp_candidates_from(user_home: &Path) -> Vec<PathBuf> {
@@ -3132,6 +3234,26 @@ fn validate_extension_server_version(
     Ok(())
 }
 
+fn validate_rust_analyzer_extension_server_version(
+    output: &str,
+    expected: &Version,
+) -> Result<(), ClspError> {
+    let actual = parse_version(output)
+        .ok_or_else(|| server_error("rust-analyzer probe returned no semantic version"))?;
+    let official_standalone = (actual.major, actual.minor, actual.patch)
+        == (expected.major, expected.minor, expected.patch)
+        && actual.pre.as_str() == "standalone"
+        && actual.build.as_str().is_empty()
+        && expected.pre.as_str().is_empty()
+        && expected.build.as_str().is_empty();
+    if &actual != expected && !official_standalone {
+        return Err(server_error(format!(
+            "rust-analyzer server version {actual} does not match extension {expected}"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 struct KotlinExtensionLayout {
     extension_root: PathBuf,
@@ -3470,6 +3592,81 @@ fn read_bounded_manifest(path: &Path, label: &str) -> Result<Vec<u8>, ClspError>
         )));
     }
     std::fs::read(path).map_err(server_error)
+}
+
+fn validate_vscode_rust_analyzer_extension(
+    executable: &Path,
+    user_home: &Path,
+) -> Result<(PathBuf, Version), ClspError> {
+    if !cfg!(all(windows, target_arch = "x86_64"))
+        || executable.file_name() != Some(OsStr::new("rust-analyzer.exe"))
+    {
+        return Err(server_error(
+            "rust-analyzer candidate is not the official Windows x86-64 launcher",
+        ));
+    }
+    let server = executable
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("server")))
+        .ok_or_else(|| server_error("rust-analyzer launcher is outside server"))?;
+    let extension_root = server
+        .parent()
+        .ok_or_else(|| server_error("rust-analyzer launcher has no extension root"))?;
+    let extension_root = std::fs::canonicalize(extension_root).map_err(server_error)?;
+    let executable = std::fs::canonicalize(executable).map_err(server_error)?;
+    let expected = std::fs::canonicalize(extension_root.join("server/rust-analyzer.exe"))
+        .map_err(server_error)?;
+    let manifest =
+        std::fs::canonicalize(extension_root.join("package.json")).map_err(server_error)?;
+    let inside_known_root = [
+        user_home.join(".vscode/extensions"),
+        user_home.join(".vscode-insiders/extensions"),
+    ]
+    .into_iter()
+    .filter_map(|root| std::fs::canonicalize(root).ok())
+    .any(|root| extension_root.parent() == Some(root.as_path()));
+    if executable != expected
+        || !executable.starts_with(&extension_root)
+        || !manifest.starts_with(&extension_root)
+        || !inside_known_root
+    {
+        return Err(server_error(
+            "rust-analyzer extension files escape the VS Code extension root",
+        ));
+    }
+    let directory_version = extension_root
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(rust_analyzer_extension_directory_version)
+        .ok_or_else(|| server_error("rust-analyzer extension directory is invalid"))?;
+    let value: serde_json::Value = serde_json::from_slice(&read_bounded_manifest(
+        &manifest,
+        "rust-analyzer extension manifest",
+    )?)
+    .map_err(server_error)?;
+    if value.get("name").and_then(serde_json::Value::as_str) != Some("rust-analyzer")
+        || value.get("publisher").and_then(serde_json::Value::as_str) != Some("rust-lang")
+        || value
+            .get("__metadata")
+            .and_then(|metadata| metadata.get("targetPlatform"))
+            .and_then(serde_json::Value::as_str)
+            != Some("win32-x64")
+    {
+        return Err(server_error(
+            "rust-analyzer is not from the official rust-lang.rust-analyzer win32-x64 extension",
+        ));
+    }
+    let manifest_version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| server_error("rust-analyzer extension version is invalid"))?;
+    if manifest_version != directory_version {
+        return Err(server_error(
+            "rust-analyzer extension manifest version does not match its directory",
+        ));
+    }
+    Ok((manifest, manifest_version))
 }
 
 fn vscode_terraform_extension_root(executable: &Path) -> Result<PathBuf, ClspError> {
@@ -4758,6 +4955,7 @@ pub(crate) fn resolution_fingerprint(
             | INTELEPHENSE_SERVER_ID
             | PRISMA_SERVER_ID
             | PYRIGHT_SERVER_ID
+            | RUST_SERVER_ID
             | JDTLS_SERVER_ID
             | JULIALS_SERVER_ID
             | KOTLIN_LS_SERVER_ID
@@ -4787,6 +4985,7 @@ pub(crate) fn resolution_fingerprint(
                 }
                 PRISMA_SERVER_ID => candidates.extend(vscode_prisma_candidates_from(&home)),
                 PYRIGHT_SERVER_ID => candidates.extend(vscode_pyright_candidates_from(&home)),
+                RUST_SERVER_ID => candidates.extend(vscode_rust_analyzer_candidates_from(&home)),
                 JDTLS_SERVER_ID => candidates.extend(vscode_jdtls_candidates_from(&home)),
                 JULIALS_SERVER_ID => {
                     candidates.extend(vscode_julials_environment_projects_from(&home))
@@ -4928,6 +5127,12 @@ pub(crate) fn resolution_fingerprint(
             && let Ok(extension_root) = vscode_pyright_extension_root(&candidate)
         {
             hash_executable_candidate(&mut digest, extension_root.join("package.json"));
+        }
+        if server.id == RUST_SERVER_ID
+            && let Some(home) = vscode_user_home()
+            && let Ok((manifest, _)) = validate_vscode_rust_analyzer_extension(&candidate, &home)
+        {
+            hash_executable_candidate(&mut digest, manifest);
         }
         if server.id == JDTLS_SERVER_ID
             && let Ok(layout) = jdtls_extension_layout(&candidate)

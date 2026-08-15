@@ -74,6 +74,91 @@ fn discovers_nearest_monorepo_roots() {
 }
 
 #[test]
+fn rust_promotes_crates_and_lockfiles_to_the_nearest_cargo_workspace() {
+    let root = support::tempdir().unwrap();
+    let crate_root = root.path().join("crates/demo");
+    let source_dir = crate_root.join("src");
+    support::create_dir_all(&source_dir).unwrap();
+    support::write(
+        root.path().join("Cargo.toml"),
+        "[workspace]\nmembers = ['crates/demo']",
+    )
+    .unwrap();
+    support::write(
+        crate_root.join("Cargo.toml"),
+        "[package]\nname = 'demo'\nversion = '0.1.0'",
+    )
+    .unwrap();
+    let source = source_dir.join("lib.rs");
+    support::write(&source, "pub fn answer() -> u8 { 42 }").unwrap();
+    let registry = Registry::builtin().unwrap();
+    let workspace = Workspace::open(root.path()).unwrap();
+    let rust = registry.server(RUST_SERVER_ID).unwrap();
+
+    assert_eq!(workspace.root_for_file(&source, rust), root.path());
+    fs::remove_file(crate_root.join("Cargo.toml")).unwrap();
+    support::write(crate_root.join("Cargo.lock"), "version = 4").unwrap();
+    assert_eq!(workspace.root_for_file(&source, rust), root.path());
+    fs::remove_file(root.path().join("Cargo.toml")).unwrap();
+    assert_eq!(workspace.root_for_file(&source, rust), crate_root);
+}
+
+#[test]
+fn rust_project_markers_remain_nearest_and_respect_the_workspace_boundary() {
+    let parent = support::tempdir().unwrap();
+    support::write(parent.path().join("Cargo.toml"), "[workspace]").unwrap();
+    let root = parent.path().join("workspace");
+    let project = root.join("generated");
+    support::create_dir_all(&project).unwrap();
+    support::write(root.join("Cargo.toml"), "[workspace]").unwrap();
+    let source = project.join("main.rs");
+    support::write(&source, "fn main() {}").unwrap();
+    let registry = Registry::builtin().unwrap();
+    let workspace = Workspace::open(&root).unwrap();
+    let rust = registry.server(RUST_SERVER_ID).unwrap();
+
+    for marker in ["rust-project.json", ".rust-project.json"] {
+        support::write(project.join(marker), "{}").unwrap();
+        assert_eq!(workspace.root_for_file(&source, rust), project);
+        fs::remove_file(project.join(marker)).unwrap();
+    }
+    fs::remove_file(root.join("Cargo.toml")).unwrap();
+    assert_eq!(
+        workspace.root_for_file(&source, rust),
+        fs::canonicalize(&root).unwrap()
+    );
+}
+
+#[test]
+fn rust_ignores_malformed_and_oversized_workspace_manifests() {
+    let root = support::tempdir().unwrap();
+    let crate_root = root.path().join("crate");
+    support::create_dir_all(crate_root.join("src")).unwrap();
+    support::write(root.path().join("Cargo.toml"), "[workspace").unwrap();
+    support::write(
+        crate_root.join("Cargo.toml"),
+        "[package]\nname = 'demo'\nversion = '0.1.0'",
+    )
+    .unwrap();
+    let source = crate_root.join("src/lib.rs");
+    support::write(&source, "").unwrap();
+    let registry = Registry::builtin().unwrap();
+    let workspace = Workspace::open(root.path()).unwrap();
+    let rust = registry.server(RUST_SERVER_ID).unwrap();
+
+    assert_eq!(workspace.root_for_file(&source, rust), crate_root);
+    support::write(
+        root.path().join("Cargo.toml"),
+        format!(
+            "[workspace]\n# {}",
+            "x".repeat(CARGO_MANIFEST_LIMIT as usize)
+        ),
+    )
+    .unwrap();
+    assert_eq!(workspace.root_for_file(&source, rust), crate_root);
+}
+
+#[test]
 fn file_detection_precedence_matrix_is_stable() {
     let root = support::tempdir().unwrap();
     let rust_root = root.path().join("rust");

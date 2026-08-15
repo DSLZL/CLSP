@@ -18,7 +18,7 @@ The source of truth is [`registry/servers.toml`](../registry/servers.toml).
 | `eslint` | JavaScript / TypeScript / Vue | `node eslintServer.js --stdio` | `>=3.0.34, <3.1.0` | official VS Code extension; manual |
 | `fsharp` | F# | `fsautocomplete` | `=0.83.0` | official Ionide VS Code extension or global `dotnet tool` |
 | `gleam` | Gleam | `gleam lsp` | `>=1.0.0, <2.0.0` | manual Gleam compiler |
-| `rust` | Rust | `rust-analyzer` | `>=1.75.0` | `rustup component add rust-analyzer` |
+| `rust` | Rust | `rust-analyzer` | `>=1.75.0` (standalone/rustup) | official `rust-lang.rust-analyzer` extension or `rustup component add rust-analyzer` |
 | `typescript` | TypeScript / JavaScript | `typescript-language-server` | `>=4.0.0, <5.0.0` | `typescript-language-server@4.4.0` + `typescript@5.9.2` |
 | `pyright` | Python | `pyright-langserver --stdio` | `>=1.1.300, <2.0.0` | official VS Code extension or `pyright@1.1.411` |
 | `ruby-lsp` | Ruby | `ruby-lsp` | `>=0.26.10, <0.27.0` | `gem install ruby-lsp --version 0.26.10 --no-document` |
@@ -64,6 +64,7 @@ Some server types then have an additional reuse path before installation:
 - Intelephense: `node_modules/intelephense/lib/intelephense.js` from the official `bmewburn.vscode-intelephense-client` Stable/Insiders extension, then the selected package manager's global installation
 - Prisma: `dist/language-server/bin.js` plus its schema WASM from the official `Prisma.prisma` Stable/Insiders extension, then the selected package manager's global installation
 - Pyright: `dist/server.js` from the official `ms-pyright.pyright` Stable/Insiders extension, then the selected package manager's global installation
+- Rust: `server/rust-analyzer.exe` from the official Windows x64 `rust-lang.rust-analyzer` Stable/Insiders extension, then the workspace-selected `rustup` component
 - Svelte: `node_modules/svelte-language-server/bin/server.js` from the official `svelte.svelte-vscode` Stable/Insiders extension after strict manifest/path validation, then the selected package manager's global installation
 - Vue: `dist/language-server.js` from the official `Vue.volar` Stable/Insiders extension after strict manifest/path/runtime-version validation, then the selected package manager's global installation
 - YAML: `dist/languageserver.js` from the official `redhat.vscode-yaml` Stable/Insiders extension after strict manifest/path/extension-version validation, then the selected package manager's global installation
@@ -124,13 +125,19 @@ Protocol language IDs follow the server contract: `.ts/.mts/.cts` use `typescrip
 
 ### Rust
 
-CLSP requires `rustup` when it needs to install rust-analyzer:
+CLSP first checks project-local, explicit, and `PATH` `rust-analyzer` candidates. On Windows x64 it then checks the standard Stable/Insiders directories for the official [`rust-lang.rust-analyzer`](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer) extension, followed by the component selected for the workspace by `rustup which rust-analyzer`.
+
+Extension reuse requires the exact `server/rust-analyzer.exe` entry, official publisher/name, `win32-x64` package metadata, matching directory/manifest versions, extension-root containment, and an equal runtime `--version` result. The newest valid extension wins; Stable wins an exact version tie. The extension's `0.3.x` release version is validated against its bundled server independently from the `>=1.75.0` standalone/rustup requirement.
+
+Only when no existing source works and automatic installation is enabled does CLSP run:
 
 ```powershell
 rustup component add rust-analyzer
 ```
 
-If a compatible project-local or `PATH` rust-analyzer is already available, no install command is run.
+CLSP never installs Rust, rustup, or the VS Code extension. With `auto_install = false`, it still reuses a valid extension bundle or existing rustup component but runs no component install. A custom extension root must be configured through `[lsp.rust].executable`.
+
+Root selection follows OpenCode markers. `rust-project.json` and `.rust-project.json` use their nearest directory. `Cargo.toml` or `Cargo.lock` starts from the nearest manifest and promotes a member crate to the nearest ancestor manifest containing `[workspace]`, bounded by the CLSP workspace; otherwise the nearest Cargo manifest wins.
 
 ### Go
 
@@ -545,7 +552,7 @@ The built-in registry uses file extensions and project markers to decide which s
 
 Examples:
 
-- Rust: `.rs`, `Cargo.toml`, `rust-project.json`
+- Rust: `.rs` below `Cargo.toml`, `Cargo.lock`, `rust-project.json`, or `.rust-project.json`; Cargo members promote to the nearest containing `[workspace]` manifest
 - Go: `.go`; any ancestor `go.work` takes priority over the nearest `go.mod` or `go.sum`
 - Python: `.py` or `.pyi` below the nearest `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `Pipfile`, or `pyrightconfig.json`, with workspace-root fallback
 - TypeScript/JavaScript: JS/TS extensions plus `package.json`, `tsconfig.json`, or `jsconfig.json`
