@@ -2,7 +2,7 @@
   "name": "clsp-ide",
   "displayName": "CLSP IDE Bridge",
   "description": "Local VS Code bridge for CLSP and Codex CLI",
-  "version": "0.2.26",
+  "version": "0.2.27",
   "publisher": "clsp",
   "license": "AGPL-3.0-only",
   "repository": {
