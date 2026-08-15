@@ -244,7 +244,10 @@ fn typescript_initialization_strips_verbatim_sdk_paths_for_node() {
         .and_then(Value::as_str)
         .unwrap();
     assert!(!tsserver.starts_with(r"\\?\"));
-    assert_eq!(Path::new(tsserver), installed.join("tsserver.js"));
+    assert_eq!(
+        std::fs::canonicalize(tsserver).unwrap(),
+        std::fs::canonicalize(installed.join("tsserver.js")).unwrap()
+    );
 
     let args = server_runtime_args(
         VUE_SERVER_ID,
@@ -257,8 +260,8 @@ fn typescript_initialization_strips_verbatim_sdk_paths_for_node() {
     assert_eq!(args.len(), 1);
     assert!(!args[0].starts_with(r"--tsdk=\\?\"));
     assert_eq!(
-        Path::new(args[0].strip_prefix("--tsdk=").unwrap()),
-        installed
+        std::fs::canonicalize(args[0].strip_prefix("--tsdk=").unwrap()).unwrap(),
+        std::fs::canonicalize(installed).unwrap()
     );
 }
 
